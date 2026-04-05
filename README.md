@@ -15,7 +15,7 @@ git fetch --tags
 git checkout tags/1.2.4
 ```
 
-#### Install amy
+#### Install amy python library
 ```
 cd components/amy/amy
 

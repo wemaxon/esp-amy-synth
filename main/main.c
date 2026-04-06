@@ -2,252 +2,118 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 
 #include "esp_log.h"
-#include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "audio_element.h"
 #include "audio_pipeline.h"
-#include "audio_event_iface.h"
-#include "audio_common.h"
-#include "http_stream.h"
 #include "i2s_stream.h"
-#include "mp3_decoder.h"
 
-#include "esp_peripherals.h"
-#include "periph_wifi.h"
 #include "board.h"
 #include "audio_hal.h"
-
-// ES8388 register access functions
 #include "es8388.h"
-
-#define CONFIG_WIFI_SSID       "buongiorno"
-#define CONFIG_WIFI_PASSWORD   "q7d$$bv387z--coPWD"
-
+#include "amy_esp_adf.h"
 
 static const char *TAG = "main";
+static const uint32_t APP_TASK_STACK_SIZE = 12288;
 
-static void log_setup() {
+static void log_setup(void)
+{
     esp_log_level_set("*", ESP_LOG_WARN);
-    esp_log_level_set(TAG, ESP_LOG_DEBUG);
+    esp_log_level_set(TAG, ESP_LOG_INFO);
 }
 
-static void dump_es8388_registers() {
+static void dump_es8388_registers(void)
+{
     ESP_LOGI(TAG, "=== ES8388 Register Dump ===");
-    
-    // Try to read a few key registers manually to verify
-    uint8_t reg_val;
-    
-    // Note: es8388_read_all() should work, but let's also try manual reads
-    // Since there's no public read function, we'll rely on es8388_read_all()
-    es8388_read_all();  
-    
-    // Also log what we just wrote
-    ESP_LOGI(TAG, "Just wrote to registers:");
-    ESP_LOGI(TAG, "  DAC_CONTROL4 (0x1a): 0x1E (Left DAC vol 0dB)");
-    ESP_LOGI(TAG, "  DAC_CONTROL5 (0x1b): 0x1E (Right DAC vol 0dB)");
-    ESP_LOGI(TAG, "  DAC_CONTROL24 (0x2e): 0x1E (LOUT1 vol 0dB)");
-    ESP_LOGI(TAG, "  DAC_CONTROL25 (0x2f): 0x1E (ROUT1 vol 0dB)");
-    ESP_LOGI(TAG, "  DAC_CONTROL26 (0x30): 0x1E (LOUT2 vol 0dB - headphone)");
-    ESP_LOGI(TAG, "  DAC_CONTROL27 (0x31): 0x1E (ROUT2 vol 0dB - headphone)");
-    ESP_LOGI(TAG, "  DAC_POWER (0x04): 0x%02x (Headphone outputs only)", DAC_OUTPUT_ROUT2 | DAC_OUTPUT_LOUT2);
-    
+    es8388_read_all();
     ESP_LOGI(TAG, "=== End Register Dump ===");
 }
 
-void app_main(void) {
+static void configure_codec_outputs(void)
+{
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL4, 0x1E));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL5, 0x1E));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL24, 0x1E));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL25, 0x1E));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL26, 0x1E));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL27, 0x1E));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ROUT2 | DAC_OUTPUT_LOUT2));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL17, 0x90));
+    ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL20, 0x90));
+}
+
+static void app_task(void *arg)
+{
+    (void)arg;
+
     log_setup();
 
     esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
-        // NVS partition was truncated and needs to be erased
-        // Retry nvs_flash_init
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         err = nvs_flash_init();
     }
+    ESP_ERROR_CHECK(err);
 
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    audio_pipeline_handle_t pipeline;
-    audio_element_handle_t http_stream_reader, i2s_stream_writer, mp3_decoder;
-
-    ESP_LOGI(TAG, "[ 1 ] Start audio codec chip");
+    ESP_LOGI(TAG, "[1] Start audio codec chip");
     audio_board_handle_t board_handle = audio_board_init();
-    esp_err_t codec_err = audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
-    if (codec_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to start codec: %d", codec_err);
-    } else {
-        ESP_LOGI(TAG, "[1.0] Codec started successfully");
-    }
-    
-    // Set volume to MAXIMUM (100%) - headphone output needs higher level
-    audio_hal_set_volume(board_handle->audio_hal, 100);
-    ESP_LOGI(TAG, "[1.1] Volume set to 100%%");
-    
-    // Read current ES8388 register values for debugging
-    ESP_LOGI(TAG, "[1.2] Reading ES8388 registers:");
-    uint8_t reg_val;
-    
-    // DAC volume registers - set to 0dB (maximum)
-    esp_err_t reg_err;
-    reg_err = es8388_write_reg(ES8388_DACCONTROL4, 0x1E);  // Left DAC volume to 0dB
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL4: %d", reg_err);
-    
-    reg_err = es8388_write_reg(ES8388_DACCONTROL5, 0x1E);  // Right DAC volume to 0dB
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL5: %d", reg_err);
-    
-    // Output volume registers - set to maximum for headphones
-    reg_err = es8388_write_reg(ES8388_DACCONTROL24, 0x1E); // LOUT1 volume to 0dB
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL24: %d", reg_err);
-    
-    reg_err = es8388_write_reg(ES8388_DACCONTROL25, 0x1E); // ROUT1 volume to 0dB
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL25: %d", reg_err);
-    
-    reg_err = es8388_write_reg(ES8388_DACCONTROL26, 0x1E); // LOUT2 volume to 0dB (headphone)
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL26: %d", reg_err);
-    
-    reg_err = es8388_write_reg(ES8388_DACCONTROL27, 0x1E); // ROUT2 volume to 0dB (headphone)
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL27: %d", reg_err);
-    
-    // Enable headphone outputs (ROUT2/LOUT2) - disable speaker outputs
-    reg_err = es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ROUT2 | DAC_OUTPUT_LOUT2);
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_POWER: %d", reg_err);
-    
-    // Configure DAC mixer routing - route DAC to headphone outputs
-    reg_err = es8388_write_reg(ES8388_DACCONTROL17, 0x90); // Left DAC to left mixer
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL17: %d", reg_err);
-    
-    reg_err = es8388_write_reg(ES8388_DACCONTROL20, 0x90); // Right DAC to right mixer  
-    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL20: %d", reg_err);
-    
-    // Try different approach - enable ALL outputs but set speaker volume low
-    // reg_err = es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ALL);
-    // es8388_write_reg(ES8388_DACCONTROL24, 0x00); // LOUT1 volume to minimum
-    // es8388_write_reg(ES8388_DACCONTROL25, 0x00); // ROUT1 volume to minimum
-    
-    ESP_LOGI(TAG, "[1.3] ES8388 registers configured for maximum headphone volume");
-    
-    // Set volume again after register writes to ensure it takes effect
-    audio_hal_set_volume(board_handle->audio_hal, 100);
-    ESP_LOGI(TAG, "[1.4] Volume re-set to 100%% after register configuration");
-    
-    // Dump all register values for debugging
+    audio_hal_codec_i2s_iface_t codec_iface = {
+        .mode = AUDIO_HAL_MODE_SLAVE,
+        .fmt = AUDIO_HAL_I2S_NORMAL,
+        .samples = amy_esp_adf_audio_hal_sample_rate(),
+        .bits = AUDIO_HAL_BIT_LENGTH_16BITS,
+    };
+    ESP_ERROR_CHECK(audio_hal_codec_iface_config(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, &codec_iface));
+    ESP_ERROR_CHECK(audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START));
+    ESP_ERROR_CHECK(audio_hal_set_volume(board_handle->audio_hal, 100));
+    configure_codec_outputs();
     dump_es8388_registers();
 
-    ESP_LOGI(TAG, "[2.0] Create audio pipeline for playback");
+    ESP_LOGI(TAG, "[2] Start AMY synthesizer");
+    amy_esp_adf_config_t amy_cfg = amy_esp_adf_default_config();
+    ESP_ERROR_CHECK(amy_esp_adf_init(&amy_cfg));
+
+    ESP_LOGI(TAG, "[3] Create AMY -> I2S pipeline");
     audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
-    pipeline = audio_pipeline_init(&pipeline_cfg);
-    mem_assert(pipeline);
+    audio_pipeline_handle_t pipeline = audio_pipeline_init(&pipeline_cfg);
+    audio_element_handle_t amy_stream = amy_esp_adf_stream_init("amy");
 
-    ESP_LOGI(TAG, "[2.1] Create http stream to read data");
-    http_stream_cfg_t http_cfg = HTTP_STREAM_CFG_DEFAULT();
-    http_stream_reader = http_stream_init(&http_cfg);
-
-    ESP_LOGI(TAG, "[2.2] Create i2s stream to write data to codec chip");
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
     i2s_cfg.type = AUDIO_STREAM_WRITER;
-    i2s_stream_writer = i2s_stream_init(&i2s_cfg);
-    ESP_LOGI(TAG, "[2.2.1] I2S configured with default settings (44100Hz, 16-bit, Stereo)");
+    audio_element_handle_t i2s_stream_writer = i2s_stream_init(&i2s_cfg);
 
-    ESP_LOGI(TAG, "[2.3] Create mp3 decoder to decode mp3 file");
-    mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
-    mp3_decoder = mp3_decoder_init(&mp3_cfg);
+    audio_pipeline_register(pipeline, amy_stream, "amy");
+    audio_pipeline_register(pipeline, i2s_stream_writer, "i2s");
 
-    ESP_LOGI(TAG, "[2.4] Register all elements to audio pipeline");
-    audio_pipeline_register(pipeline, http_stream_reader, "http");
-    audio_pipeline_register(pipeline, mp3_decoder,        "mp3");
-    audio_pipeline_register(pipeline, i2s_stream_writer,  "i2s");
+    const char *link_tag[2] = {"amy", "i2s"};
+    ESP_ERROR_CHECK(audio_pipeline_link(pipeline, link_tag, 2));
+    ESP_ERROR_CHECK(i2s_stream_set_clk(i2s_stream_writer, amy_esp_adf_sample_rate(), 16, amy_esp_adf_channels()));
+    ESP_ERROR_CHECK(audio_pipeline_run(pipeline));
 
-    ESP_LOGI(TAG, "[2.5] Link it together http_stream-->mp3_decoder-->i2s_stream-->[codec_chip]");
-    const char *link_tag[3] = {"http", "mp3", "i2s"};
-    audio_pipeline_link(pipeline, &link_tag[0], 3);
+    ESP_LOGI(TAG, "[4] Pipeline running at %d Hz, 16-bit, %d channels", amy_esp_adf_sample_rate(), amy_esp_adf_channels());
 
-    ESP_LOGI(TAG, "[2.6] Set up  uri (http as http_stream, mp3 as mp3 decoder, and default output is i2s)");
-    audio_element_set_uri(http_stream_reader, "https://dl.espressif.com/dl/audio/ff-16b-2c-44100hz.mp3");
-
-    ESP_LOGI(TAG, "[ 3 ] Start and wait for Wi-Fi network");
-    esp_periph_config_t periph_cfg = DEFAULT_ESP_PERIPH_SET_CONFIG();
-    esp_periph_set_handle_t set = esp_periph_set_init(&periph_cfg);
-    periph_wifi_cfg_t wifi_cfg = {
-        .wifi_config.sta.ssid = CONFIG_WIFI_SSID,
-        .wifi_config.sta.password = CONFIG_WIFI_PASSWORD,
-    };
-    esp_periph_handle_t wifi_handle = periph_wifi_init(&wifi_cfg);
-    esp_periph_start(set, wifi_handle);
-    periph_wifi_wait_for_connected(wifi_handle, portMAX_DELAY);
-    
-    // Example of using an audio event -- START
-    ESP_LOGI(TAG, "[ 4 ] Set up  event listener");
-    audio_event_iface_cfg_t evt_cfg = AUDIO_EVENT_IFACE_DEFAULT_CFG();
-    audio_event_iface_handle_t evt = audio_event_iface_init(&evt_cfg);
-
-    ESP_LOGI(TAG, "[4.1] Listening event from all elements of pipeline");
-    audio_pipeline_set_listener(pipeline, evt);
-
-    ESP_LOGI(TAG, "[4.2] Listening event from peripherals");
-    audio_event_iface_set_listener(esp_periph_set_get_event_iface(set), evt);
-
-    ESP_LOGI(TAG, "[ 5 ] Start audio_pipeline");
-    audio_pipeline_run(pipeline);
-
+    const uint8_t note_pattern[] = {60, 64, 67, 72};
+    size_t note_index = 0;
     while (1) {
-        audio_event_iface_msg_t msg;
-        esp_err_t ret = audio_event_iface_listen(evt, &msg, portMAX_DELAY);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "[ * ] Event interface error : %d", ret);
-            continue;
-        }
-
-        if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT
-            && msg.source == (void *) mp3_decoder
-            && msg.cmd == AEL_MSG_CMD_REPORT_MUSIC_INFO) {
-            audio_element_info_t music_info = {0};
-            audio_element_getinfo(mp3_decoder, &music_info);
-
-            ESP_LOGI(TAG, "[ * ] Receive music info from mp3 decoder, sample_rates=%d, bits=%d, ch=%d",
-                     music_info.sample_rates, music_info.bits, music_info.channels);
-
-            i2s_stream_set_clk(i2s_stream_writer, music_info.sample_rates, music_info.bits, music_info.channels);
-            ESP_LOGI(TAG, "[ * ] I2S clock set to: %dHz, %dbit, %dch", music_info.sample_rates, music_info.bits, music_info.channels);
-            continue;
-        }
-
-        /* Stop when the last pipeline element (i2s_stream_writer in this case) receives stop event */
-        if (msg.source_type == AUDIO_ELEMENT_TYPE_ELEMENT && msg.source == (void *) i2s_stream_writer
-            && msg.cmd == AEL_MSG_CMD_REPORT_STATUS
-            && (((int)msg.data == AEL_STATUS_STATE_STOPPED) || ((int)msg.data == AEL_STATUS_STATE_FINISHED))) {
-            ESP_LOGW(TAG, "[ * ] Stop event received");
-            break;
-        }
+        ESP_ERROR_CHECK(amy_esp_adf_schedule_note(0, note_pattern[note_index], 1.0f, 350, 10));
+        note_index = (note_index + 1) % (sizeof(note_pattern) / sizeof(note_pattern[0]));
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
-    // Example of using an audio event -- END
+}
 
-    ESP_LOGI(TAG, "[ 6 ] Stop audio_pipeline");
-    audio_pipeline_stop(pipeline);
-    audio_pipeline_wait_for_stop(pipeline);
-    audio_pipeline_terminate(pipeline);
+void app_main(void)
+{
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        app_task,
+        "app_task",
+        APP_TASK_STACK_SIZE,
+        NULL,
+        5,
+        NULL,
+        tskNO_AFFINITY
+    );
 
-    /* Terminate the pipeline before removing the listener */
-    audio_pipeline_unregister(pipeline, http_stream_reader);
-    audio_pipeline_unregister(pipeline, i2s_stream_writer);
-    audio_pipeline_unregister(pipeline, mp3_decoder);
-
-    audio_pipeline_remove_listener(pipeline);
-
-    /* Stop all peripherals before removing the listener */
-    esp_periph_set_stop_all(set);
-    audio_event_iface_remove_listener(esp_periph_set_get_event_iface(set), evt);
-
-    /* Make sure audio_pipeline_remove_listener & audio_event_iface_remove_listener are called before destroying event_iface */
-    audio_event_iface_destroy(evt);
-
-    /* Release all resources */
-    audio_pipeline_deinit(pipeline);
-    audio_element_deinit(http_stream_reader);
-    audio_element_deinit(i2s_stream_writer);
-    audio_element_deinit(mp3_decoder);
-    esp_periph_set_destroy(set);
+    ESP_ERROR_CHECK((task_created == pdPASS) ? ESP_OK : ESP_FAIL);
 }

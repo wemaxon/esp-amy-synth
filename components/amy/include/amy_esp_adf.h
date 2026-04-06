@@ -38,6 +38,10 @@ esp_err_t amy_esp_adf_configure_synth(uint8_t synth, uint16_t patch_number, uint
 
 esp_err_t amy_esp_adf_configure_dreamy_pad_synth(uint8_t synth, uint16_t num_voices);
 
+esp_err_t amy_esp_adf_set_synth_filter_shape(uint8_t synth, float base_freq_hz, float note_tracking, float env_amount, float resonance);
+
+esp_err_t amy_esp_adf_set_synth_pan(uint8_t synth, float pan);
+
 esp_err_t amy_esp_adf_set_fx(float reverb_level, float chorus_level, float echo_level);
 
 esp_err_t amy_esp_adf_set_master_volume(float master_volume);

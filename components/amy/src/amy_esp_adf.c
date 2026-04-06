@@ -188,6 +188,37 @@ esp_err_t amy_esp_adf_configure_dreamy_pad_synth(uint8_t synth, uint16_t num_voi
     return ESP_OK;
 }
 
+esp_err_t amy_esp_adf_set_synth_filter_shape(uint8_t synth, float base_freq_hz, float note_tracking, float env_amount, float resonance)
+{
+    if (!s_state.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    amy_event event = amy_default_event();
+    event.synth = synth;
+    event.filter_freq_coefs[COEF_CONST] = base_freq_hz;
+    event.filter_freq_coefs[COEF_NOTE] = note_tracking;
+    event.filter_freq_coefs[COEF_EG1] = env_amount;
+    event.resonance = resonance;
+    amy_add_event(&event);
+
+    return ESP_OK;
+}
+
+esp_err_t amy_esp_adf_set_synth_pan(uint8_t synth, float pan)
+{
+    if (!s_state.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    amy_event event = amy_default_event();
+    event.synth = synth;
+    event.pan_coefs[COEF_CONST] = pan;
+    amy_add_event(&event);
+
+    return ESP_OK;
+}
+
 esp_err_t amy_esp_adf_set_fx(float reverb_level, float chorus_level, float echo_level)
 {
     if (!s_state.started) {

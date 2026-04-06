@@ -1,5 +1,6 @@
 #include "app_synth.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -18,10 +19,23 @@ static const uint16_t MELODY_NOTE_DURATION_MS = 320;
 static const uint16_t MELODY_STEP_MS = 500;
 static const uint8_t PENTATONIC_BASE_NOTE = 60;
 static const uint8_t PENTATONIC_INTERVALS[] = {0, 2, 4, 7, 9, 12, 14, 16, 19, 21};
-static const float HELD_CHORD_VELOCITIES[] = {0.44f, 0.34f, 0.26f};
-static const float MELODY_VELOCITY = 0.86f;
-static const float MASTER_VOLUME_TARGETS[] = {2.45f, 2.18f, 1.95f, 1.78f};
+static const float HELD_CHORD_VELOCITIES[] = {0.52f, 0.40f, 0.30f};
+static const float MELODY_VELOCITY = 0.72f;
+static const float MASTER_VOLUME_TARGETS[] = {2.52f, 2.24f, 2.00f, 1.82f};
 static const TickType_t BUTTON_DEBOUNCE_TICKS = pdMS_TO_TICKS(40);
+static const TickType_t CHORD_MOTION_STEP_TICKS = pdMS_TO_TICKS(90);
+static const TickType_t MELODY_FILTER_STEP_TICKS = pdMS_TO_TICKS(180);
+static const float BUTTON_PANS[] = {0.18f, 0.30f, 0.42f, 0.58f, 0.70f, 0.82f};
+static const float CHORD_PAN_SWAY = 0.07f;
+static const float CHORD_MOTION_RATE = 0.28f;
+static const float MELODY_FILTER_BASE_HZ = 210.0f;
+static const float MELODY_FILTER_SWEEP_HZ = 430.0f;
+static const float MELODY_FILTER_NOTE_TRACKING = 0.74f;
+static const float MELODY_FILTER_ENV_AMOUNT = 1.70f;
+static const float MELODY_FILTER_RESONANCE_BASE = 0.92f;
+static const float MELODY_FILTER_RESONANCE_SWEEP = 0.30f;
+static const float MELODY_FILTER_PHASE_STEP = 0.16f;
+static const float TAU_F = 6.28318530718f;
 
 typedef struct {
     int button_id;
@@ -29,31 +43,38 @@ typedef struct {
     uint8_t synth;
     bool is_held;
     uint8_t active_notes[3];
+    TickType_t hold_started_tick;
     int last_cmd;
     TickType_t last_event_tick;
 } button_chord_map_t;
 
 typedef struct {
     uint32_t next_melody_tick;
+    TickType_t next_chord_motion_tick;
+    TickType_t next_filter_tick;
     size_t melody_step;
     size_t phrase_index;
     uint32_t phrase_counter;
+    float filter_phase;
 } app_synth_state_t;
 
 static app_synth_state_t s_state = {
     .next_melody_tick = 0,
+    .next_chord_motion_tick = 0,
+    .next_filter_tick = 0,
     .melody_step = 0,
     .phrase_index = 0,
     .phrase_counter = 0,
+    .filter_phase = 0.0f,
 };
 
 static button_chord_map_t BUTTON_MAP[] = {
-    {BUTTON_REC_ID, 0, 20, false, {0}, -1, 0},
-    {BUTTON_MODE_ID, 1, 21, false, {0}, -1, 0},
-    {BUTTON_SET_ID, 2, 22, false, {0}, -1, 0},
-    {BUTTON_PLAY_ID, 3, 23, false, {0}, -1, 0},
-    {BUTTON_VOLDOWN_ID, 4, 24, false, {0}, -1, 0},
-    {BUTTON_VOLUP_ID, 5, 25, false, {0}, -1, 0},
+    {BUTTON_REC_ID, 0, 20, false, {0}, 0, -1, 0},
+    {BUTTON_MODE_ID, 1, 21, false, {0}, 0, -1, 0},
+    {BUTTON_SET_ID, 2, 22, false, {0}, 0, -1, 0},
+    {BUTTON_PLAY_ID, 3, 23, false, {0}, 0, -1, 0},
+    {BUTTON_VOLDOWN_ID, 4, 24, false, {0}, 0, -1, 0},
+    {BUTTON_VOLUP_ID, 5, 25, false, {0}, 0, -1, 0},
 };
 
 // Phrase variants all stay inside the same pentatonic pool so changes remain musical.
@@ -112,6 +133,64 @@ static esp_err_t update_master_volume_for_density(void)
     return amy_esp_adf_set_master_volume(MASTER_VOLUME_TARGETS[target_index]);
 }
 
+static float clamp_unit(float value)
+{
+    if (value < 0.0f) {
+        return 0.0f;
+    }
+    if (value > 1.0f) {
+        return 1.0f;
+    }
+    return value;
+}
+
+static esp_err_t update_chord_motion(TickType_t now_ticks)
+{
+    while ((int32_t)(now_ticks - s_state.next_chord_motion_tick) >= 0) {
+        for (size_t i = 0; i < sizeof(BUTTON_MAP) / sizeof(BUTTON_MAP[0]); ++i) {
+            button_chord_map_t *button = &BUTTON_MAP[i];
+            if (!button->is_held) {
+                continue;
+            }
+
+            float held_ms = (float)pdTICKS_TO_MS(now_ticks - button->hold_started_tick);
+            float phase = ((float)i * 0.9f) + (held_ms * 0.001f * TAU_F * CHORD_MOTION_RATE);
+            float pan = clamp_unit(BUTTON_PANS[i] + (CHORD_PAN_SWAY * sinf(phase)));
+            ESP_ERROR_CHECK(amy_esp_adf_set_synth_pan(button->synth, pan));
+        }
+
+        s_state.next_chord_motion_tick += CHORD_MOTION_STEP_TICKS;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t update_melody_filter_motion(TickType_t now_ticks)
+{
+    while ((int32_t)(now_ticks - s_state.next_filter_tick) >= 0) {
+        float sweep = 0.5f + (0.5f * sinf(s_state.filter_phase));
+        float resonance_sweep = 0.5f + (0.5f * sinf(s_state.filter_phase + 1.1f));
+        float cutoff_hz = MELODY_FILTER_BASE_HZ + (MELODY_FILTER_SWEEP_HZ * sweep);
+        float resonance = MELODY_FILTER_RESONANCE_BASE + (MELODY_FILTER_RESONANCE_SWEEP * resonance_sweep);
+
+        ESP_ERROR_CHECK(amy_esp_adf_set_synth_filter_shape(
+            MELODY_SYNTH,
+            cutoff_hz,
+            MELODY_FILTER_NOTE_TRACKING,
+            MELODY_FILTER_ENV_AMOUNT,
+            resonance
+        ));
+
+        s_state.filter_phase += MELODY_FILTER_PHASE_STEP;
+        if (s_state.filter_phase > TAU_F) {
+            s_state.filter_phase -= TAU_F;
+        }
+        s_state.next_filter_tick += MELODY_FILTER_STEP_TICKS;
+    }
+
+    return ESP_OK;
+}
+
 static void fill_chord_notes(const button_chord_map_t *button, uint8_t notes[3])
 {
     for (size_t voice = 0; voice < 3; ++voice) {
@@ -146,6 +225,7 @@ static esp_err_t press_pentatonic_chord(int button_id)
 
     fill_chord_notes(button, button->active_notes);
     button->is_held = true;
+    button->hold_started_tick = xTaskGetTickCount();
     ESP_ERROR_CHECK(update_master_volume_for_density());
     ESP_LOGI(TAG, "Button %d pressed", button_id);
 
@@ -174,6 +254,8 @@ static esp_err_t release_pentatonic_chord(int button_id)
     }
 
     button->is_held = false;
+    button->hold_started_tick = 0;
+    ESP_ERROR_CHECK(amy_esp_adf_set_synth_pan(button->synth, BUTTON_PANS[(size_t)(button - BUTTON_MAP)]));
     ESP_ERROR_CHECK(update_master_volume_for_density());
 
     return ESP_OK;
@@ -188,20 +270,26 @@ esp_err_t app_synth_init(void)
     for (size_t i = 0; i < sizeof(BUTTON_MAP) / sizeof(BUTTON_MAP[0]); ++i) {
         button_chord_map_t *button = &BUTTON_MAP[i];
         button->is_held = false;
+        button->hold_started_tick = 0;
         button->last_cmd = -1;
         button->last_event_tick = 0;
         for (size_t voice = 0; voice < 3; ++voice) {
             button->active_notes[voice] = 0;
         }
         ESP_ERROR_CHECK(amy_esp_adf_configure_synth(button->synth, 1024, 3));
+        ESP_ERROR_CHECK(amy_esp_adf_set_synth_pan(button->synth, BUTTON_PANS[i]));
     }
 
-    ESP_ERROR_CHECK(amy_esp_adf_set_fx(1.45f, 0.26f, 0.14f));
+    ESP_ERROR_CHECK(amy_esp_adf_set_fx(1.90f, 0.42f, 0.12f));
 
     s_state.next_melody_tick = xTaskGetTickCount();
+    s_state.next_chord_motion_tick = s_state.next_melody_tick;
+    s_state.next_filter_tick = s_state.next_melody_tick;
     s_state.melody_step = 0;
     s_state.phrase_index = 0;
     s_state.phrase_counter = 0;
+    s_state.filter_phase = 0.0f;
+    ESP_ERROR_CHECK(update_melody_filter_motion(s_state.next_filter_tick));
 
     return ESP_OK;
 }
@@ -256,6 +344,9 @@ bool app_synth_handle_button_event(const audio_event_iface_msg_t *msg)
 void app_synth_update(uint32_t now_ticks)
 {
     size_t phrase_len = sizeof(MELODY_PHRASES[0]) / sizeof(MELODY_PHRASES[0][0]);
+
+    ESP_ERROR_CHECK(update_chord_motion((TickType_t)now_ticks));
+    ESP_ERROR_CHECK(update_melody_filter_motion((TickType_t)now_ticks));
 
     while ((int32_t)(now_ticks - s_state.next_melody_tick) >= 0) {
         uint8_t midi_note = melody_note_for_step(s_state.phrase_index, s_state.melody_step);

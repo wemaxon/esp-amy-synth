@@ -22,7 +22,7 @@ amy_esp_adf_config_t amy_esp_adf_default_config(void)
         .multithread = false,
         .multicore = false,
         .default_synth = 1,
-        .master_volume = 8.0f,
+        .master_volume = 5.0f,
     };
     return config;
 }

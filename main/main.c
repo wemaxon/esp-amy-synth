@@ -37,7 +37,24 @@ static void log_setup() {
 
 static void dump_es8388_registers() {
     ESP_LOGI(TAG, "=== ES8388 Register Dump ===");
-    es8388_read_all();  // This will log all register values
+    
+    // Try to read a few key registers manually to verify
+    uint8_t reg_val;
+    
+    // Note: es8388_read_all() should work, but let's also try manual reads
+    // Since there's no public read function, we'll rely on es8388_read_all()
+    es8388_read_all();  
+    
+    // Also log what we just wrote
+    ESP_LOGI(TAG, "Just wrote to registers:");
+    ESP_LOGI(TAG, "  DAC_CONTROL4 (0x1a): 0x1E (Left DAC vol 0dB)");
+    ESP_LOGI(TAG, "  DAC_CONTROL5 (0x1b): 0x1E (Right DAC vol 0dB)");
+    ESP_LOGI(TAG, "  DAC_CONTROL24 (0x2e): 0x1E (LOUT1 vol 0dB)");
+    ESP_LOGI(TAG, "  DAC_CONTROL25 (0x2f): 0x1E (ROUT1 vol 0dB)");
+    ESP_LOGI(TAG, "  DAC_CONTROL26 (0x30): 0x1E (LOUT2 vol 0dB - headphone)");
+    ESP_LOGI(TAG, "  DAC_CONTROL27 (0x31): 0x1E (ROUT2 vol 0dB - headphone)");
+    ESP_LOGI(TAG, "  DAC_POWER (0x04): 0x%02x (Headphone outputs only)", DAC_OUTPUT_ROUT2 | DAC_OUTPUT_LOUT2);
+    
     ESP_LOGI(TAG, "=== End Register Dump ===");
 }
 
@@ -59,7 +76,12 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "[ 1 ] Start audio codec chip");
     audio_board_handle_t board_handle = audio_board_init();
-    audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+    esp_err_t codec_err = audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+    if (codec_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start codec: %d", codec_err);
+    } else {
+        ESP_LOGI(TAG, "[1.0] Codec started successfully");
+    }
     
     // Set volume to MAXIMUM (100%) - headphone output needs higher level
     audio_hal_set_volume(board_handle->audio_hal, 100);
@@ -69,20 +91,48 @@ void app_main(void) {
     ESP_LOGI(TAG, "[1.2] Reading ES8388 registers:");
     uint8_t reg_val;
     
-    // DAC volume registers
-    es8388_write_reg(ES8388_DACCONTROL4, 0x1E);  // Left DAC volume to 0dB
-    es8388_write_reg(ES8388_DACCONTROL5, 0x1E);  // Right DAC volume to 0dB
+    // DAC volume registers - set to 0dB (maximum)
+    esp_err_t reg_err;
+    reg_err = es8388_write_reg(ES8388_DACCONTROL4, 0x1E);  // Left DAC volume to 0dB
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL4: %d", reg_err);
+    
+    reg_err = es8388_write_reg(ES8388_DACCONTROL5, 0x1E);  // Right DAC volume to 0dB
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL5: %d", reg_err);
     
     // Output volume registers - set to maximum for headphones
-    es8388_write_reg(ES8388_DACCONTROL24, 0x1E); // LOUT1 volume to 0dB
-    es8388_write_reg(ES8388_DACCONTROL25, 0x1E); // ROUT1 volume to 0dB  
-    es8388_write_reg(ES8388_DACCONTROL26, 0x1E); // LOUT2 volume to 0dB (headphone)
-    es8388_write_reg(ES8388_DACCONTROL27, 0x1E); // ROUT2 volume to 0dB (headphone)
+    reg_err = es8388_write_reg(ES8388_DACCONTROL24, 0x1E); // LOUT1 volume to 0dB
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL24: %d", reg_err);
+    
+    reg_err = es8388_write_reg(ES8388_DACCONTROL25, 0x1E); // ROUT1 volume to 0dB
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL25: %d", reg_err);
+    
+    reg_err = es8388_write_reg(ES8388_DACCONTROL26, 0x1E); // LOUT2 volume to 0dB (headphone)
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL26: %d", reg_err);
+    
+    reg_err = es8388_write_reg(ES8388_DACCONTROL27, 0x1E); // ROUT2 volume to 0dB (headphone)
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL27: %d", reg_err);
     
     // Enable headphone outputs (ROUT2/LOUT2) - disable speaker outputs
-    es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ROUT2 | DAC_OUTPUT_LOUT2);
+    reg_err = es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ROUT2 | DAC_OUTPUT_LOUT2);
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_POWER: %d", reg_err);
+    
+    // Configure DAC mixer routing - route DAC to headphone outputs
+    reg_err = es8388_write_reg(ES8388_DACCONTROL17, 0x90); // Left DAC to left mixer
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL17: %d", reg_err);
+    
+    reg_err = es8388_write_reg(ES8388_DACCONTROL20, 0x90); // Right DAC to right mixer  
+    if (reg_err != ESP_OK) ESP_LOGE(TAG, "Failed to write DAC_CONTROL20: %d", reg_err);
+    
+    // Try different approach - enable ALL outputs but set speaker volume low
+    // reg_err = es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ALL);
+    // es8388_write_reg(ES8388_DACCONTROL24, 0x00); // LOUT1 volume to minimum
+    // es8388_write_reg(ES8388_DACCONTROL25, 0x00); // ROUT1 volume to minimum
     
     ESP_LOGI(TAG, "[1.3] ES8388 registers configured for maximum headphone volume");
+    
+    // Set volume again after register writes to ensure it takes effect
+    audio_hal_set_volume(board_handle->audio_hal, 100);
+    ESP_LOGI(TAG, "[1.4] Volume re-set to 100%% after register configuration");
     
     // Dump all register values for debugging
     dump_es8388_registers();
@@ -100,6 +150,7 @@ void app_main(void) {
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
     i2s_cfg.type = AUDIO_STREAM_WRITER;
     i2s_stream_writer = i2s_stream_init(&i2s_cfg);
+    ESP_LOGI(TAG, "[2.2.1] I2S configured with default settings (44100Hz, 16-bit, Stereo)");
 
     ESP_LOGI(TAG, "[2.3] Create mp3 decoder to decode mp3 file");
     mp3_decoder_cfg_t mp3_cfg = DEFAULT_MP3_DECODER_CONFIG();
@@ -160,6 +211,7 @@ void app_main(void) {
                      music_info.sample_rates, music_info.bits, music_info.channels);
 
             i2s_stream_set_clk(i2s_stream_writer, music_info.sample_rates, music_info.bits, music_info.channels);
+            ESP_LOGI(TAG, "[ * ] I2S clock set to: %dHz, %dbit, %dch", music_info.sample_rates, music_info.bits, music_info.channels);
             continue;
         }
 

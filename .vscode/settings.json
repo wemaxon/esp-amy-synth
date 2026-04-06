@@ -13,5 +13,7 @@
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\maxan\\Hobby\\Inforelektrikbau\\Synth_Sampler\\esp-amy-synth\\build"
-  ]
+  ],
+  "idf.portWin": "COM10",
+  "idf.flashType": "UART"
 }

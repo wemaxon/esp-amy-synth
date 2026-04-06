@@ -7,11 +7,13 @@
 typedef struct {
     bool started;
     uint8_t default_synth;
+    float master_volume;
 } amy_esp_adf_state_t;
 
 static amy_esp_adf_state_t s_state = {
     .started = false,
     .default_synth = 1,
+    .master_volume = 1.0f,
 };
 
 amy_esp_adf_config_t amy_esp_adf_default_config(void)
@@ -59,10 +61,21 @@ esp_err_t amy_esp_adf_init(const amy_esp_adf_config_t *config)
     amy_start(amy_config);
     s_state.started = true;
     s_state.default_synth = config->default_synth;
+    s_state.master_volume = config->master_volume;
+
+    return amy_esp_adf_set_master_volume(config->master_volume);
+}
+
+esp_err_t amy_esp_adf_set_master_volume(float master_volume)
+{
+    if (!s_state.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     amy_event volume_event = amy_default_event();
-    volume_event.volume = config->master_volume;
+    volume_event.volume = master_volume;
     amy_add_event(&volume_event);
+    s_state.master_volume = master_volume;
 
     return ESP_OK;
 }
@@ -132,6 +145,49 @@ esp_err_t amy_esp_adf_configure_synth(uint8_t synth, uint16_t patch_number, uint
     return ESP_OK;
 }
 
+esp_err_t amy_esp_adf_configure_dreamy_pad_synth(uint8_t synth, uint16_t num_voices)
+{
+    if (!s_state.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const uint16_t patch_number = 1030;
+
+    amy_event event = amy_default_event();
+    event.patch_number = patch_number;
+    event.reset_osc = RESET_PATCH;
+    amy_add_event(&event);
+
+    event = amy_default_event();
+    event.patch_number = patch_number;
+    event.osc = 0;
+    event.wave = TRIANGLE;
+    event.amp_coefs[COEF_VEL] = 0.52f;
+    event.amp_coefs[COEF_EG0] = 1.0f;
+    event.freq_coefs[COEF_CONST] = 130.81f;
+    event.freq_coefs[COEF_NOTE] = 1.0f;
+    event.filter_type = FILTER_LPF;
+    event.filter_freq_coefs[COEF_CONST] = 420.0f;
+    event.filter_freq_coefs[COEF_NOTE] = 0.92f;
+    event.filter_freq_coefs[COEF_EG1] = 0.75f;
+    event.resonance = 0.95f;
+    event.eg0_times[0] = 40;    event.eg0_values[0] = 1.0f;
+    event.eg0_times[1] = 900;   event.eg0_values[1] = 0.60f;
+    event.eg0_times[2] = 900;   event.eg0_values[2] = 0.0f;
+    event.eg1_times[0] = 55;    event.eg1_values[0] = 1.0f;
+    event.eg1_times[1] = 700;   event.eg1_values[1] = 0.25f;
+    event.eg1_times[2] = 850;   event.eg1_values[2] = 0.0f;
+    amy_add_event(&event);
+
+    event = amy_default_event();
+    event.synth = synth;
+    event.patch_number = patch_number;
+    event.num_voices = num_voices;
+    amy_add_event(&event);
+
+    return ESP_OK;
+}
+
 esp_err_t amy_esp_adf_set_fx(float reverb_level, float chorus_level, float echo_level)
 {
     if (!s_state.started) {
@@ -157,28 +213,52 @@ esp_err_t amy_esp_adf_set_fx(float reverb_level, float chorus_level, float echo_
     return ESP_OK;
 }
 
-esp_err_t amy_esp_adf_schedule_note(uint8_t synth, uint8_t note, float velocity, uint16_t duration_ms, uint32_t delay_ms)
+esp_err_t amy_esp_adf_note_on(uint8_t synth, uint8_t note, float velocity, uint32_t delay_ms)
 {
     if (!s_state.started) {
         return ESP_ERR_INVALID_STATE;
     }
 
     uint8_t target_synth = (synth == 0) ? s_state.default_synth : synth;
-    uint32_t start_time = amy_sysclock() + delay_ms;
 
     amy_event note_on = amy_default_event();
-    note_on.time = start_time;
+    note_on.time = amy_sysclock() + delay_ms;
     note_on.synth = target_synth;
     note_on.midi_note = note;
     note_on.velocity = velocity;
     amy_add_event(&note_on);
 
+    return ESP_OK;
+}
+
+esp_err_t amy_esp_adf_note_off(uint8_t synth, uint8_t note, uint32_t delay_ms)
+{
+    if (!s_state.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint8_t target_synth = (synth == 0) ? s_state.default_synth : synth;
+
     amy_event note_off = amy_default_event();
-    note_off.time = start_time + duration_ms;
+    note_off.time = amy_sysclock() + delay_ms;
     note_off.synth = target_synth;
     note_off.midi_note = note;
     note_off.velocity = 0.0f;
     amy_add_event(&note_off);
 
     return ESP_OK;
+}
+
+esp_err_t amy_esp_adf_schedule_note(uint8_t synth, uint8_t note, float velocity, uint16_t duration_ms, uint32_t delay_ms)
+{
+    if (!s_state.started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = amy_esp_adf_note_on(synth, note, velocity, delay_ms);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return amy_esp_adf_note_off(synth, note, delay_ms + duration_ms);
 }

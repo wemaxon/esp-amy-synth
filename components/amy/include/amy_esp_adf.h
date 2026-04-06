@@ -36,7 +36,15 @@ int amy_esp_adf_channels(void);
 
 esp_err_t amy_esp_adf_configure_synth(uint8_t synth, uint16_t patch_number, uint16_t num_voices);
 
+esp_err_t amy_esp_adf_configure_dreamy_pad_synth(uint8_t synth, uint16_t num_voices);
+
 esp_err_t amy_esp_adf_set_fx(float reverb_level, float chorus_level, float echo_level);
+
+esp_err_t amy_esp_adf_set_master_volume(float master_volume);
+
+esp_err_t amy_esp_adf_note_on(uint8_t synth, uint8_t note, float velocity, uint32_t delay_ms);
+
+esp_err_t amy_esp_adf_note_off(uint8_t synth, uint8_t note, uint32_t delay_ms);
 
 esp_err_t amy_esp_adf_schedule_note(uint8_t synth, uint8_t note, float velocity, uint16_t duration_ms, uint32_t delay_ms);
 

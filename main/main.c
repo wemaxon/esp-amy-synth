@@ -19,6 +19,10 @@
 #include "esp_peripherals.h"
 #include "periph_wifi.h"
 #include "board.h"
+#include "audio_hal.h"
+
+// ES8388 register access functions
+#include "es8388.h"
 
 #define CONFIG_WIFI_SSID       "buongiorno"
 #define CONFIG_WIFI_PASSWORD   "q7d$$bv387z--coPWD"
@@ -29,6 +33,12 @@ static const char *TAG = "main";
 static void log_setup() {
     esp_log_level_set("*", ESP_LOG_WARN);
     esp_log_level_set(TAG, ESP_LOG_DEBUG);
+}
+
+static void dump_es8388_registers() {
+    ESP_LOGI(TAG, "=== ES8388 Register Dump ===");
+    es8388_read_all();  // This will log all register values
+    ESP_LOGI(TAG, "=== End Register Dump ===");
 }
 
 void app_main(void) {
@@ -50,6 +60,32 @@ void app_main(void) {
     ESP_LOGI(TAG, "[ 1 ] Start audio codec chip");
     audio_board_handle_t board_handle = audio_board_init();
     audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+    
+    // Set volume to MAXIMUM (100%) - headphone output needs higher level
+    audio_hal_set_volume(board_handle->audio_hal, 100);
+    ESP_LOGI(TAG, "[1.1] Volume set to 100%%");
+    
+    // Read current ES8388 register values for debugging
+    ESP_LOGI(TAG, "[1.2] Reading ES8388 registers:");
+    uint8_t reg_val;
+    
+    // DAC volume registers
+    es8388_write_reg(ES8388_DACCONTROL4, 0x1E);  // Left DAC volume to 0dB
+    es8388_write_reg(ES8388_DACCONTROL5, 0x1E);  // Right DAC volume to 0dB
+    
+    // Output volume registers - set to maximum for headphones
+    es8388_write_reg(ES8388_DACCONTROL24, 0x1E); // LOUT1 volume to 0dB
+    es8388_write_reg(ES8388_DACCONTROL25, 0x1E); // ROUT1 volume to 0dB  
+    es8388_write_reg(ES8388_DACCONTROL26, 0x1E); // LOUT2 volume to 0dB (headphone)
+    es8388_write_reg(ES8388_DACCONTROL27, 0x1E); // ROUT2 volume to 0dB (headphone)
+    
+    // Enable headphone outputs (ROUT2/LOUT2) - disable speaker outputs
+    es8388_write_reg(ES8388_DACPOWER, DAC_OUTPUT_ROUT2 | DAC_OUTPUT_LOUT2);
+    
+    ESP_LOGI(TAG, "[1.3] ES8388 registers configured for maximum headphone volume");
+    
+    // Dump all register values for debugging
+    dump_es8388_registers();
 
     ESP_LOGI(TAG, "[2.0] Create audio pipeline for playback");
     audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();

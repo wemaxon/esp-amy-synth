@@ -22,6 +22,7 @@ amy_esp_adf_config_t amy_esp_adf_default_config(void)
         .multithread = false,
         .multicore = false,
         .default_synth = 1,
+        .master_volume = 8.0f,
     };
     return config;
 }
@@ -58,6 +59,10 @@ esp_err_t amy_esp_adf_init(const amy_esp_adf_config_t *config)
     amy_start(amy_config);
     s_state.started = true;
     s_state.default_synth = config->default_synth;
+
+    amy_event volume_event = amy_default_event();
+    volume_event.volume = config->master_volume;
+    amy_add_event(&volume_event);
 
     return ESP_OK;
 }

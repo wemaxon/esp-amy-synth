@@ -20,7 +20,7 @@ static const uint32_t APP_TASK_STACK_SIZE = 12288;
 
 static void log_setup(void)
 {
-    esp_log_level_set("*", ESP_LOG_WARN);
+    esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set(TAG, ESP_LOG_INFO);
 }
 
@@ -68,6 +68,9 @@ static void app_task(void *arg)
     ESP_ERROR_CHECK(audio_hal_codec_iface_config(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, &codec_iface));
     ESP_ERROR_CHECK(audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START));
     ESP_ERROR_CHECK(audio_hal_set_volume(board_handle->audio_hal, 100));
+    ESP_ERROR_CHECK(es8388_pa_power(true));
+    ESP_ERROR_CHECK(es8388_set_voice_volume(100));
+
     configure_codec_outputs();
     dump_es8388_registers();
 

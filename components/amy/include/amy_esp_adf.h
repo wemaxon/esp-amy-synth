@@ -17,6 +17,7 @@ typedef struct {
     bool multithread;
     bool multicore;
     uint8_t default_synth;
+    float master_volume;
 } amy_esp_adf_config_t;
 
 amy_esp_adf_config_t amy_esp_adf_default_config(void);

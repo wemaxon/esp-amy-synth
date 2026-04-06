@@ -13,6 +13,10 @@
 #include "esp_flash.h"
 #include "esp_system.h"
 
+
+#include "audio_pipeline.h"
+
+
 void app_main(void)
 {
     printf("Hello world!\n");

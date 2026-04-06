@@ -4,7 +4,11 @@
 # esp-amy-synth
 
 
-## Setup
+### Prereqisites
+
+#### ESP-ADF
+- Through the VS-CODE extension
+- Set the esp_adf path in the extension settings
 
 #### Python environment
 ```

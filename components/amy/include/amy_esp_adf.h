@@ -26,11 +26,17 @@ esp_err_t amy_esp_adf_init(const amy_esp_adf_config_t *config);
 
 audio_element_handle_t amy_esp_adf_stream_init(const char *tag);
 
+audio_element_handle_t amy_esp_adf_stream_init_for_core(const char *tag, int task_core, int task_prio);
+
 audio_hal_iface_samples_t amy_esp_adf_audio_hal_sample_rate(void);
 
 int amy_esp_adf_sample_rate(void);
 
 int amy_esp_adf_channels(void);
+
+esp_err_t amy_esp_adf_configure_synth(uint8_t synth, uint16_t patch_number, uint16_t num_voices);
+
+esp_err_t amy_esp_adf_set_fx(float reverb_level, float chorus_level, float echo_level);
 
 esp_err_t amy_esp_adf_schedule_note(uint8_t synth, uint8_t note, float velocity, uint16_t duration_ms, uint32_t delay_ms);
 

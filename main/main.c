@@ -20,10 +20,12 @@
 
 static const char *TAG = "main";
 static const uint32_t APP_TASK_STACK_SIZE = 12288;
+static const BaseType_t APP_TASK_CORE = 0;
+static const BaseType_t AUDIO_TASK_CORE = 1;
 static const uint8_t MELODY_SYNTH = 1;
 static const uint16_t MELODY_NOTE_DURATION_MS = 350;
 static const uint16_t MELODY_STEP_MS = 500;
-static const uint8_t CHORD_SYNTH = 1;
+static const uint8_t CHORD_SYNTH = 3;
 static const uint16_t CHORD_NOTE_DURATION_MS = 1200;
 static const uint8_t PENTATONIC_BASE_NOTE = 60;
 
@@ -134,8 +136,11 @@ static void app_task(void *arg)
     ESP_LOGI(TAG, "[2] Start AMY synthesizer");
     amy_esp_adf_config_t amy_cfg = amy_esp_adf_default_config();
     ESP_ERROR_CHECK(amy_esp_adf_init(&amy_cfg));
+    ESP_ERROR_CHECK(amy_esp_adf_configure_synth(CHORD_SYNTH, 1024, 8));
+    ESP_ERROR_CHECK(amy_esp_adf_set_fx(1.2f, 0.22f, 0.18f));
 
     esp_periph_config_t periph_cfg = DEFAULT_ESP_PERIPH_SET_CONFIG();
+    periph_cfg.task_core = APP_TASK_CORE;
     esp_periph_set_handle_t periph_set = esp_periph_set_init(&periph_cfg);
     ESP_ERROR_CHECK(audio_board_key_init(periph_set));
 
@@ -146,10 +151,11 @@ static void app_task(void *arg)
     ESP_LOGI(TAG, "[3] Create AMY -> I2S pipeline");
     audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
     audio_pipeline_handle_t pipeline = audio_pipeline_init(&pipeline_cfg);
-    audio_element_handle_t amy_stream = amy_esp_adf_stream_init("amy");
+    audio_element_handle_t amy_stream = amy_esp_adf_stream_init_for_core("amy", AUDIO_TASK_CORE, 22);
 
     i2s_stream_cfg_t i2s_cfg = I2S_STREAM_CFG_DEFAULT();
     i2s_cfg.type = AUDIO_STREAM_WRITER;
+    i2s_cfg.task_core = AUDIO_TASK_CORE;
     audio_element_handle_t i2s_stream_writer = i2s_stream_init(&i2s_cfg);
 
     audio_pipeline_register(pipeline, amy_stream, "amy");
@@ -190,7 +196,7 @@ void app_main(void)
         NULL,
         5,
         NULL,
-        tskNO_AFFINITY
+        APP_TASK_CORE
     );
 
     ESP_ERROR_CHECK((task_created == pdPASS) ? ESP_OK : ESP_FAIL);

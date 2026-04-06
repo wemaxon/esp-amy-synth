@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS
+        "app_synth.c"
         "main.c"
 
     REQUIRES
@@ -9,9 +10,11 @@ idf_component_register(
         audio_board
         audio_hal
         esp_peripherals
+        input_key_service
         nvs_flash
         esp_wifi
 
     INCLUDE_DIRS
         ""
+        "include"
 )

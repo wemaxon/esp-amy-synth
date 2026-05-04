@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -15,8 +16,12 @@
 #include "board.h"
 #include "audio_hal.h"
 #include "es8388.h"
+#include "periph_button.h"
 #include "app_beat.h"
 #include "app_synth.h"
+#if defined(CONFIG_AUDIO_BOARD_MY_SYNTH_V1)
+#include "my_synth_v1_input.h"
+#endif
 
 static const char *TAG = "main";
 static const uint32_t APP_TASK_STACK_SIZE = 12288;
@@ -51,6 +56,32 @@ static void configure_codec_outputs(void)
     ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL17, 0x90));
     ESP_ERROR_CHECK(es8388_write_reg(ES8388_DACCONTROL20, 0x90));
 }
+
+#if defined(CONFIG_AUDIO_BOARD_MY_SYNTH_V1)
+static void handle_my_synth_v1_input(void)
+{
+    esp_err_t err = my_synth_v1_input_update();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Input update failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    my_synth_v1_input_event_t event = {0};
+    while (my_synth_v1_input_pop_event(&event) == ESP_OK) {
+        audio_event_iface_msg_t msg = {
+            .source_type = PERIPH_ID_BUTTON,
+            .source = NULL,
+            .cmd = event.type == MY_SYNTH_V1_INPUT_EVENT_SWITCH_PRESSED ?
+                PERIPH_BUTTON_PRESSED :
+                PERIPH_BUTTON_RELEASE,
+            .data = (void *)(intptr_t)event.sw,
+            .data_len = 0,
+            .need_free_data = false,
+        };
+        (void)app_synth_handle_button_event(&msg);
+    }
+}
+#endif
 
 static void app_task(void *arg)
 {
@@ -121,6 +152,10 @@ static void app_task(void *arg)
         TickType_t now_ticks = xTaskGetTickCount();
         ESP_ERROR_CHECK(app_beat_update(now_ticks));
         app_synth_update((uint32_t)now_ticks);
+
+#if defined(CONFIG_AUDIO_BOARD_MY_SYNTH_V1)
+        handle_my_synth_v1_input();
+#endif
 
         audio_event_iface_msg_t msg = {0};
         esp_err_t ret = audio_event_iface_listen(button_evt, &msg, pdMS_TO_TICKS(20));

@@ -4,7 +4,7 @@
 #include "esp_log.h"
 #include "led_indicator.h"
 
-static const char *TAG = "MY_SYNTH_V1_BOARD";
+static const char *TAG = "ESP_POCKET_AUDIO_BOARD";
 
 static audio_board_handle_t board_handle = 0;
 
@@ -56,7 +56,7 @@ display_service_handle_t audio_board_led_init(void)
 esp_err_t audio_board_key_init(esp_periph_set_handle_t set)
 {
     (void)set;
-    return my_synth_v1_input_init();
+    return esp_pocket_audio_input_init();
 }
 
 audio_board_handle_t audio_board_get_handle(void)

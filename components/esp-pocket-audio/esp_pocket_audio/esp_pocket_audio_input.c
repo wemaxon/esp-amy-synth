@@ -1,4 +1,4 @@
-#include "my_synth_v1_input.h"
+#include "esp_pocket_audio_input.h"
 
 #include <stddef.h>
 
@@ -8,7 +8,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "my_synth_v1_board_config.h"
+#include "esp_pocket_audio_board_config.h"
 #include "pcf8574.h"
 
 #define EVENT_QUEUE_LEN 16
@@ -24,63 +24,63 @@ typedef struct {
     TickType_t changed_at;
 } switch_debounce_t;
 
-static const char *TAG = "MY_SYNTH_V1_INPUT";
+static const char *TAG = "ESP_POCKET_AUDIO_INPUT";
 
 static const uint8_t PCF8574_ADDRS[] = {
-    MY_SYNTH_V1_PCF8574_0_ADDR,
-    MY_SYNTH_V1_PCF8574_1_ADDR,
+    ESP_POCKET_AUDIO_PCF8574_0_ADDR,
+    ESP_POCKET_AUDIO_PCF8574_1_ADDR,
 };
 
-static const switch_mapping_t SWITCH_MAP[MY_SYNTH_V1_SWITCH_COUNT] = {
-    [MY_SYNTH_V1_SWITCH_CHORD_1] = {MY_SYNTH_V1_SW_CHORD_1_EXPANDER, MY_SYNTH_V1_SW_CHORD_1_PIN},
-    [MY_SYNTH_V1_SWITCH_CHORD_2] = {MY_SYNTH_V1_SW_CHORD_2_EXPANDER, MY_SYNTH_V1_SW_CHORD_2_PIN},
-    [MY_SYNTH_V1_SWITCH_CHORD_3] = {MY_SYNTH_V1_SW_CHORD_3_EXPANDER, MY_SYNTH_V1_SW_CHORD_3_PIN},
-    [MY_SYNTH_V1_SWITCH_CHORD_4] = {MY_SYNTH_V1_SW_CHORD_4_EXPANDER, MY_SYNTH_V1_SW_CHORD_4_PIN},
-    [MY_SYNTH_V1_SWITCH_CHORD_5] = {MY_SYNTH_V1_SW_CHORD_5_EXPANDER, MY_SYNTH_V1_SW_CHORD_5_PIN},
-    [MY_SYNTH_V1_SWITCH_CHORD_6] = {MY_SYNTH_V1_SW_CHORD_6_EXPANDER, MY_SYNTH_V1_SW_CHORD_6_PIN},
-    [MY_SYNTH_V1_SWITCH_CHORD_7] = {MY_SYNTH_V1_SW_CHORD_7_EXPANDER, MY_SYNTH_V1_SW_CHORD_7_PIN},
-    [MY_SYNTH_V1_SWITCH_JOYSTICK_CLICK] = {MY_SYNTH_V1_SW_JOYSTICK_CLICK_EXPANDER, MY_SYNTH_V1_SW_JOYSTICK_CLICK_PIN},
-    [MY_SYNTH_V1_SWITCH_KEY_MENU] = {MY_SYNTH_V1_SW_KEY_MENU_EXPANDER, MY_SYNTH_V1_SW_KEY_MENU_PIN},
-    [MY_SYNTH_V1_SWITCH_TEMPO_MENU] = {MY_SYNTH_V1_SW_TEMPO_MENU_EXPANDER, MY_SYNTH_V1_SW_TEMPO_MENU_PIN},
-    [MY_SYNTH_V1_SWITCH_SOUND_MENU] = {MY_SYNTH_V1_SW_SOUND_MENU_EXPANDER, MY_SYNTH_V1_SW_SOUND_MENU_PIN},
+static const switch_mapping_t SWITCH_MAP[ESP_POCKET_AUDIO_SWITCH_COUNT] = {
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_1] = {ESP_POCKET_AUDIO_SW_CHORD_1_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_1_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_2] = {ESP_POCKET_AUDIO_SW_CHORD_2_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_2_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_3] = {ESP_POCKET_AUDIO_SW_CHORD_3_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_3_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_4] = {ESP_POCKET_AUDIO_SW_CHORD_4_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_4_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_5] = {ESP_POCKET_AUDIO_SW_CHORD_5_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_5_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_6] = {ESP_POCKET_AUDIO_SW_CHORD_6_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_6_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_7] = {ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_7_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_JOYSTICK_CLICK] = {ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_EXPANDER, ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_KEY_MENU] = {ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_MENU_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_TEMPO_MENU] = {ESP_POCKET_AUDIO_SW_TEMPO_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_TEMPO_MENU_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_SOUND_MENU] = {ESP_POCKET_AUDIO_SW_SOUND_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_SOUND_MENU_PIN},
 };
 
 static bool s_initialized;
 static ads1115_t s_ads1115;
 static pcf8574_t s_pcf8574[2];
 static uint8_t s_pcf_port_state[2] = {0xFF, 0xFF};
-static switch_debounce_t s_switches[MY_SYNTH_V1_SWITCH_COUNT];
-static my_synth_v1_input_event_t s_events[EVENT_QUEUE_LEN];
+static switch_debounce_t s_switches[ESP_POCKET_AUDIO_SWITCH_COUNT];
+static esp_pocket_audio_input_event_t s_events[EVENT_QUEUE_LEN];
 static size_t s_event_head;
 static size_t s_event_tail;
-static my_synth_v1_joystick_state_t s_joystick;
+static esp_pocket_audio_joystick_state_t s_joystick;
 
 static size_t configured_expander_count(void)
 {
-    if (MY_SYNTH_V1_PCF8574_COUNT > 2) {
+    if (ESP_POCKET_AUDIO_PCF8574_COUNT > 2) {
         return 2;
     }
-    return MY_SYNTH_V1_PCF8574_COUNT;
+    return ESP_POCKET_AUDIO_PCF8574_COUNT;
 }
 
 static esp_err_t init_i2c_bus(void)
 {
     i2c_config_t i2c_cfg = {
         .mode = I2C_MODE_MASTER,
-        .sda_io_num = MY_SYNTH_V1_INPUT_I2C_SDA_GPIO,
-        .scl_io_num = MY_SYNTH_V1_INPUT_I2C_SCL_GPIO,
+        .sda_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO,
+        .scl_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO,
         .sda_pullup_en = GPIO_PULLUP_ENABLE,
         .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = MY_SYNTH_V1_INPUT_I2C_CLK_HZ,
+        .master.clk_speed = ESP_POCKET_AUDIO_INPUT_I2C_CLK_HZ,
         .clk_flags = 0,
     };
 
-    esp_err_t err = i2c_param_config(MY_SYNTH_V1_INPUT_I2C_PORT, &i2c_cfg);
+    esp_err_t err = i2c_param_config(ESP_POCKET_AUDIO_INPUT_I2C_PORT, &i2c_cfg);
     if (err != ESP_OK) {
         return err;
     }
 
-    err = i2c_driver_install(MY_SYNTH_V1_INPUT_I2C_PORT, I2C_MODE_MASTER, 0, 0, 0);
+    err = i2c_driver_install(ESP_POCKET_AUDIO_INPUT_I2C_PORT, I2C_MODE_MASTER, 0, 0, 0);
     if (err == ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "Input I2C bus already installed");
         return ESP_OK;
@@ -90,12 +90,12 @@ static esp_err_t init_i2c_bus(void)
 
 static esp_err_t init_interrupt_pin(void)
 {
-    if (MY_SYNTH_V1_PCF8574_INT_GPIO == GPIO_NUM_NC) {
+    if (ESP_POCKET_AUDIO_PCF8574_INT_GPIO == GPIO_NUM_NC) {
         return ESP_OK;
     }
 
     gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << MY_SYNTH_V1_PCF8574_INT_GPIO,
+        .pin_bit_mask = 1ULL << ESP_POCKET_AUDIO_PCF8574_INT_GPIO,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -105,7 +105,7 @@ static esp_err_t init_interrupt_pin(void)
     return gpio_config(&cfg);
 }
 
-static void push_event(my_synth_v1_switch_t sw, bool pressed)
+static void push_event(esp_pocket_audio_switch_t sw, bool pressed)
 {
     size_t next_head = (s_event_head + 1) % EVENT_QUEUE_LEN;
     if (next_head == s_event_tail) {
@@ -115,8 +115,8 @@ static void push_event(my_synth_v1_switch_t sw, bool pressed)
 
     s_events[s_event_head].sw = sw;
     s_events[s_event_head].type = pressed ?
-        MY_SYNTH_V1_INPUT_EVENT_SWITCH_PRESSED :
-        MY_SYNTH_V1_INPUT_EVENT_SWITCH_RELEASED;
+        ESP_POCKET_AUDIO_INPUT_EVENT_SWITCH_PRESSED :
+        ESP_POCKET_AUDIO_INPUT_EVENT_SWITCH_RELEASED;
     s_event_head = next_head;
 }
 
@@ -132,7 +132,7 @@ static bool raw_switch_pressed(const switch_mapping_t *mapping)
     }
 
     bool level = ((s_pcf_port_state[mapping->expander] >> mapping->pin) & 0x01) != 0;
-#if MY_SYNTH_V1_SWITCH_ACTIVE_LOW
+#if ESP_POCKET_AUDIO_SWITCH_ACTIVE_LOW
     return !level;
 #else
     return level;
@@ -141,15 +141,15 @@ static bool raw_switch_pressed(const switch_mapping_t *mapping)
 
 static float normalize_axis(int16_t raw)
 {
-    int32_t centered = (int32_t)raw - MY_SYNTH_V1_ADS1115_AXIS_CENTER_RAW;
-    int32_t deadzone = MY_SYNTH_V1_ADS1115_DEADZONE_RAW;
+    int32_t centered = (int32_t)raw - ESP_POCKET_AUDIO_ADS1115_AXIS_CENTER_RAW;
+    int32_t deadzone = ESP_POCKET_AUDIO_ADS1115_DEADZONE_RAW;
 
     if (centered >= -deadzone && centered <= deadzone) {
         return 0.0f;
     }
 
     if (centered > 0) {
-        int32_t span = MY_SYNTH_V1_ADS1115_AXIS_MAX_RAW - MY_SYNTH_V1_ADS1115_AXIS_CENTER_RAW - deadzone;
+        int32_t span = ESP_POCKET_AUDIO_ADS1115_AXIS_MAX_RAW - ESP_POCKET_AUDIO_ADS1115_AXIS_CENTER_RAW - deadzone;
         if (span <= 0) {
             return 0.0f;
         }
@@ -157,7 +157,7 @@ static float normalize_axis(int16_t raw)
         return value > 1.0f ? 1.0f : value;
     }
 
-    int32_t span = MY_SYNTH_V1_ADS1115_AXIS_CENTER_RAW - MY_SYNTH_V1_ADS1115_AXIS_MIN_RAW - deadzone;
+    int32_t span = ESP_POCKET_AUDIO_ADS1115_AXIS_CENTER_RAW - ESP_POCKET_AUDIO_ADS1115_AXIS_MIN_RAW - deadzone;
     if (span <= 0) {
         return 0.0f;
     }
@@ -176,8 +176,8 @@ static esp_err_t update_switches(TickType_t now_ticks)
         }
     }
 
-    TickType_t debounce_ticks = pdMS_TO_TICKS(MY_SYNTH_V1_SWITCH_DEBOUNCE_MS);
-    for (size_t i = 0; i < MY_SYNTH_V1_SWITCH_COUNT; ++i) {
+    TickType_t debounce_ticks = pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS);
+    for (size_t i = 0; i < ESP_POCKET_AUDIO_SWITCH_COUNT; ++i) {
         bool pressed = raw_switch_pressed(&SWITCH_MAP[i]);
         switch_debounce_t *debounce = &s_switches[i];
 
@@ -189,7 +189,7 @@ static esp_err_t update_switches(TickType_t now_ticks)
 
         if (pressed != debounce->stable_pressed && (now_ticks - debounce->changed_at) >= debounce_ticks) {
             debounce->stable_pressed = pressed;
-            push_event((my_synth_v1_switch_t)i, pressed);
+            push_event((esp_pocket_audio_switch_t)i, pressed);
         }
     }
 
@@ -203,7 +203,7 @@ static esp_err_t update_joystick(void)
 
     esp_err_t err = ads1115_read_single_ended(
         &s_ads1115,
-        (ads1115_channel_t)MY_SYNTH_V1_ADS1115_JOYSTICK_X_CH,
+        (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_CH,
         &raw_x
     );
     if (err != ESP_OK) {
@@ -213,7 +213,7 @@ static esp_err_t update_joystick(void)
 
     err = ads1115_read_single_ended(
         &s_ads1115,
-        (ads1115_channel_t)MY_SYNTH_V1_ADS1115_JOYSTICK_Y_CH,
+        (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_CH,
         &raw_y
     );
     if (err != ESP_OK) {
@@ -229,7 +229,7 @@ static esp_err_t update_joystick(void)
     return ESP_OK;
 }
 
-esp_err_t my_synth_v1_input_init(void)
+esp_err_t esp_pocket_audio_input_init(void)
 {
     if (s_initialized) {
         return ESP_OK;
@@ -247,9 +247,9 @@ esp_err_t my_synth_v1_input_init(void)
 
     err = ads1115_init(
         &s_ads1115,
-        MY_SYNTH_V1_INPUT_I2C_PORT,
-        MY_SYNTH_V1_ADS1115_ADDR,
-        MY_SYNTH_V1_INPUT_I2C_TIMEOUT_MS
+        ESP_POCKET_AUDIO_INPUT_I2C_PORT,
+        ESP_POCKET_AUDIO_ADS1115_ADDR,
+        ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
     );
     if (err != ESP_OK) {
         return err;
@@ -259,9 +259,9 @@ esp_err_t my_synth_v1_input_init(void)
     for (size_t i = 0; i < expander_count; ++i) {
         err = pcf8574_init(
             &s_pcf8574[i],
-            MY_SYNTH_V1_INPUT_I2C_PORT,
+            ESP_POCKET_AUDIO_INPUT_I2C_PORT,
             PCF8574_ADDRS[i],
-            MY_SYNTH_V1_INPUT_I2C_TIMEOUT_MS
+            ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
         );
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "PCF8574 %u init failed: %s", (unsigned)i, esp_err_to_name(err));
@@ -270,7 +270,7 @@ esp_err_t my_synth_v1_input_init(void)
     }
 
     TickType_t now = xTaskGetTickCount();
-    for (size_t i = 0; i < MY_SYNTH_V1_SWITCH_COUNT; ++i) {
+    for (size_t i = 0; i < ESP_POCKET_AUDIO_SWITCH_COUNT; ++i) {
         s_switches[i].stable_pressed = false;
         s_switches[i].sampled_pressed = false;
         s_switches[i].changed_at = now;
@@ -280,10 +280,10 @@ esp_err_t my_synth_v1_input_init(void)
     s_event_tail = 0;
     s_initialized = true;
 
-    return my_synth_v1_input_update();
+    return esp_pocket_audio_input_update();
 }
 
-esp_err_t my_synth_v1_input_update(void)
+esp_err_t esp_pocket_audio_input_update(void)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -295,32 +295,32 @@ esp_err_t my_synth_v1_input_update(void)
     return switch_err != ESP_OK ? switch_err : joystick_err;
 }
 
-bool my_synth_v1_input_int_is_asserted(void)
+bool esp_pocket_audio_input_int_is_asserted(void)
 {
-    if (MY_SYNTH_V1_PCF8574_INT_GPIO == GPIO_NUM_NC) {
+    if (ESP_POCKET_AUDIO_PCF8574_INT_GPIO == GPIO_NUM_NC) {
         return false;
     }
 
-    return gpio_get_level(MY_SYNTH_V1_PCF8574_INT_GPIO) == 0;
+    return gpio_get_level(ESP_POCKET_AUDIO_PCF8574_INT_GPIO) == 0;
 }
 
-gpio_num_t my_synth_v1_input_int_gpio(void)
+gpio_num_t esp_pocket_audio_input_int_gpio(void)
 {
-    return MY_SYNTH_V1_PCF8574_INT_GPIO;
+    return ESP_POCKET_AUDIO_PCF8574_INT_GPIO;
 }
 
-bool my_synth_v1_switch_is_pressed(my_synth_v1_switch_t sw)
+bool esp_pocket_audio_switch_is_pressed(esp_pocket_audio_switch_t sw)
 {
-    if (sw >= MY_SYNTH_V1_SWITCH_COUNT) {
+    if (sw >= ESP_POCKET_AUDIO_SWITCH_COUNT) {
         return false;
     }
     return s_switches[sw].stable_pressed;
 }
 
-uint32_t my_synth_v1_switch_pressed_mask(void)
+uint32_t esp_pocket_audio_switch_pressed_mask(void)
 {
     uint32_t mask = 0;
-    for (size_t i = 0; i < MY_SYNTH_V1_SWITCH_COUNT; ++i) {
+    for (size_t i = 0; i < ESP_POCKET_AUDIO_SWITCH_COUNT; ++i) {
         if (s_switches[i].stable_pressed) {
             mask |= 1UL << i;
         }
@@ -328,7 +328,7 @@ uint32_t my_synth_v1_switch_pressed_mask(void)
     return mask;
 }
 
-esp_err_t my_synth_v1_input_pop_event(my_synth_v1_input_event_t *event)
+esp_err_t esp_pocket_audio_input_pop_event(esp_pocket_audio_input_event_t *event)
 {
     if (event == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -342,17 +342,17 @@ esp_err_t my_synth_v1_input_pop_event(my_synth_v1_input_event_t *event)
     return ESP_OK;
 }
 
-esp_err_t my_synth_v1_axis_read(my_synth_v1_axis_t axis, my_synth_v1_axis_state_t *state)
+esp_err_t esp_pocket_audio_axis_read(esp_pocket_audio_axis_t axis, esp_pocket_audio_axis_state_t *state)
 {
-    if (state == NULL || axis >= MY_SYNTH_V1_AXIS_COUNT) {
+    if (state == NULL || axis >= ESP_POCKET_AUDIO_AXIS_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    *state = axis == MY_SYNTH_V1_AXIS_X ? s_joystick.x : s_joystick.y;
+    *state = axis == ESP_POCKET_AUDIO_AXIS_X ? s_joystick.x : s_joystick.y;
     return ESP_OK;
 }
 
-esp_err_t my_synth_v1_joystick_read(my_synth_v1_joystick_state_t *state)
+esp_err_t esp_pocket_audio_joystick_read(esp_pocket_audio_joystick_state_t *state)
 {
     if (state == NULL) {
         return ESP_ERR_INVALID_ARG;

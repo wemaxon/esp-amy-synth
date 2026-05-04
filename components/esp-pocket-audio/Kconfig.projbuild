@@ -1,11 +1,11 @@
-menu "My Synth V1 Board"
+menu "ESP Pocket Audio Board"
 
-config AUDIO_BOARD_MY_SYNTH_V1
-    bool "Use my-synth-v1 board implementation"
+config AUDIO_BOARD_ESP_POCKET_AUDIO
+    bool "Use esp-pocket-audio board implementation"
     depends on AUDIO_BOARD_CUSTOM
     default y
     help
-        Use the custom my-synth-v1 board component. It keeps the
+        Use the custom esp-pocket-audio board component. It keeps the
         ESP32-A1S/ES8388 audio wiring from the AI Thinker board and adds a
         separate I2C input bus for ADS1115 analog inputs and PCF8574 switch
         expanders.

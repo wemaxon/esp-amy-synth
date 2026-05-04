@@ -1,6 +1,0 @@
-ifeq ($(CONFIG_AUDIO_BOARD_MY_SYNTH_V1),y)
-ifdef CONFIG_AUDIO_BOARD_CUSTOM
-COMPONENT_ADD_INCLUDEDIRS += ./my_synth_v1
-COMPONENT_SRCDIRS += ./my_synth_v1
-endif
-endif

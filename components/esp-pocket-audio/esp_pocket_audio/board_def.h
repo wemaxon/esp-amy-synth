@@ -1,16 +1,16 @@
-#ifndef MY_SYNTH_V1_BOARD_DEF_H
-#define MY_SYNTH_V1_BOARD_DEF_H
+#ifndef ESP_POCKET_AUDIO_BOARD_DEF_H
+#define ESP_POCKET_AUDIO_BOARD_DEF_H
 
 #include "audio_hal.h"
 #include "driver/gpio.h"
 #include "driver/i2s.h"
-#include "my_synth_v1_board_config.h"
-#include "my_synth_v1_input.h"
+#include "esp_pocket_audio_board_config.h"
+#include "esp_pocket_audio_input.h"
 
 /**
  * @brief SD card function definition
  *
- * my-synth-v1 keeps SD disabled by default. Enable and fill pins here if the
+ * esp-pocket-audio keeps SD disabled by default. Enable and fill pins here if the
  * hardware design later needs SD card support.
  */
 #define FUNC_SDCARD_EN            (0)
@@ -58,23 +58,23 @@ extern audio_hal_func_t AUDIO_CODEC_ES8388_DEFAULT_HANDLE;
 /**
  * @brief Button function definition
  *
- * These IDs intentionally use logical switch IDs from my_synth_v1_input.h.
+ * These IDs intentionally use logical switch IDs from esp_pocket_audio_input.h.
  * They are not ESP32 GPIO numbers.
  */
 #define FUNC_BUTTON_EN            (1)
 #define INPUT_KEY_NUM             11
 
-#define BUTTON_CHORD_1_ID         MY_SYNTH_V1_SWITCH_CHORD_1
-#define BUTTON_CHORD_2_ID         MY_SYNTH_V1_SWITCH_CHORD_2
-#define BUTTON_CHORD_3_ID         MY_SYNTH_V1_SWITCH_CHORD_3
-#define BUTTON_CHORD_4_ID         MY_SYNTH_V1_SWITCH_CHORD_4
-#define BUTTON_CHORD_5_ID         MY_SYNTH_V1_SWITCH_CHORD_5
-#define BUTTON_CHORD_6_ID         MY_SYNTH_V1_SWITCH_CHORD_6
-#define BUTTON_CHORD_7_ID         MY_SYNTH_V1_SWITCH_CHORD_7
-#define BUTTON_JOYSTICK_CLICK_ID  MY_SYNTH_V1_SWITCH_JOYSTICK_CLICK
-#define BUTTON_KEY_MENU_ID        MY_SYNTH_V1_SWITCH_KEY_MENU
-#define BUTTON_TEMPO_MENU_ID      MY_SYNTH_V1_SWITCH_TEMPO_MENU
-#define BUTTON_SOUND_MENU_ID      MY_SYNTH_V1_SWITCH_SOUND_MENU
+#define BUTTON_CHORD_1_ID         ESP_POCKET_AUDIO_SWITCH_CHORD_1
+#define BUTTON_CHORD_2_ID         ESP_POCKET_AUDIO_SWITCH_CHORD_2
+#define BUTTON_CHORD_3_ID         ESP_POCKET_AUDIO_SWITCH_CHORD_3
+#define BUTTON_CHORD_4_ID         ESP_POCKET_AUDIO_SWITCH_CHORD_4
+#define BUTTON_CHORD_5_ID         ESP_POCKET_AUDIO_SWITCH_CHORD_5
+#define BUTTON_CHORD_6_ID         ESP_POCKET_AUDIO_SWITCH_CHORD_6
+#define BUTTON_CHORD_7_ID         ESP_POCKET_AUDIO_SWITCH_CHORD_7
+#define BUTTON_JOYSTICK_CLICK_ID  ESP_POCKET_AUDIO_SWITCH_JOYSTICK_CLICK
+#define BUTTON_KEY_MENU_ID        ESP_POCKET_AUDIO_SWITCH_KEY_MENU
+#define BUTTON_TEMPO_MENU_ID      ESP_POCKET_AUDIO_SWITCH_TEMPO_MENU
+#define BUTTON_SOUND_MENU_ID      ESP_POCKET_AUDIO_SWITCH_SOUND_MENU
 
 /* Compatibility aliases for current app_synth.c while the app is still using
  * the ADF demo button names. Replace app code with logical names over time.

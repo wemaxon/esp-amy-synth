@@ -1,17 +1,17 @@
-# my-synth-v1 custom ESP-ADF audio board.
+# esp-pocket-audio custom ESP-ADF audio board.
 
 set(COMPONENT_REQUIRES)
 set(COMPONENT_PRIV_REQUIRES audio_sal audio_hal esp_dispatcher esp_peripherals display_service driver)
 
-if(CONFIG_AUDIO_BOARD_CUSTOM AND CONFIG_AUDIO_BOARD_MY_SYNTH_V1)
-message(STATUS "Current board name is my-synth-v1")
-list(APPEND COMPONENT_ADD_INCLUDEDIRS ./my_synth_v1)
+if(CONFIG_AUDIO_BOARD_CUSTOM AND CONFIG_AUDIO_BOARD_ESP_POCKET_AUDIO)
+message(STATUS "Current board name is esp-pocket-audio")
+list(APPEND COMPONENT_ADD_INCLUDEDIRS ./esp_pocket_audio)
 set(COMPONENT_SRCS
-    ./my_synth_v1/ads1115.c
-    ./my_synth_v1/board.c
-    ./my_synth_v1/board_pins_config.c
-    ./my_synth_v1/my_synth_v1_input.c
-    ./my_synth_v1/pcf8574.c
+    ./esp_pocket_audio/ads1115.c
+    ./esp_pocket_audio/board.c
+    ./esp_pocket_audio/board_pins_config.c
+    ./esp_pocket_audio/esp_pocket_audio_input.c
+    ./esp_pocket_audio/pcf8574.c
 )
 endif()
 

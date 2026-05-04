@@ -5,16 +5,16 @@
 #include "audio_error.h"
 #include "board.h"
 #include "esp_log.h"
-#include "my_synth_v1_board_config.h"
+#include "esp_pocket_audio_board_config.h"
 
-static const char *TAG = "MY_SYNTH_V1_PINS";
+static const char *TAG = "ESP_POCKET_AUDIO_PINS";
 
 esp_err_t get_i2c_pins(i2c_port_t port, i2c_config_t *i2c_config)
 {
     AUDIO_NULL_CHECK(TAG, i2c_config, return ESP_FAIL);
 
     if (port == I2C_NUM_0) {
-#if MY_SYNTH_V1_A1S_VARIANT == 7
+#if ESP_POCKET_AUDIO_A1S_VARIANT == 7
         i2c_config->sda_io_num = GPIO_NUM_18;
         i2c_config->scl_io_num = GPIO_NUM_23;
 #else
@@ -36,7 +36,7 @@ esp_err_t get_i2s_pins(int port, board_i2s_pin_t *i2s_config)
 
     if (port == 0) {
         i2s_config->mck_io_num = GPIO_NUM_0;
-#if MY_SYNTH_V1_A1S_VARIANT == 7
+#if ESP_POCKET_AUDIO_A1S_VARIANT == 7
         i2s_config->bck_io_num = GPIO_NUM_5;
 #else
         i2s_config->bck_io_num = GPIO_NUM_27;

@@ -1,12 +1,12 @@
-#ifndef MY_SYNTH_V1_AUDIO_BOARD_H
-#define MY_SYNTH_V1_AUDIO_BOARD_H
+#ifndef ESP_POCKET_AUDIO_AUDIO_BOARD_H
+#define ESP_POCKET_AUDIO_AUDIO_BOARD_H
 
 #include "audio_hal.h"
 #include "board_def.h"
 #include "board_pins_config.h"
 #include "display_service.h"
 #include "esp_peripherals.h"
-#include "my_synth_v1_input.h"
+#include "esp_pocket_audio_input.h"
 
 #ifdef __cplusplus
 extern "C" {

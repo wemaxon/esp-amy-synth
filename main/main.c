@@ -15,12 +15,16 @@
 #include "board.h"
 #include "audio_hal.h"
 #include "es8388.h"
+#include "app_beat.h"
 #include "app_synth.h"
 
 static const char *TAG = "main";
 static const uint32_t APP_TASK_STACK_SIZE = 12288;
 static const BaseType_t APP_TASK_CORE = 0;
 static const BaseType_t AUDIO_TASK_CORE = 1;
+static const float BEAT_DEFAULT_BPM = 120.0f;
+static const uint16_t BEAT_DEFAULT_PPQN = 24;
+static const uint8_t BEAT_DEFAULT_BEATS_PER_BAR = 4;
 
 static void log_setup(void)
 {
@@ -78,6 +82,8 @@ static void app_task(void *arg)
     configure_codec_outputs();
     dump_es8388_registers();
 
+    ESP_ERROR_CHECK(app_beat_init(BEAT_DEFAULT_BPM, BEAT_DEFAULT_PPQN, BEAT_DEFAULT_BEATS_PER_BAR));
+
     ESP_LOGI(TAG, "[2] Start AMY synthesizer");
     ESP_ERROR_CHECK(app_synth_init());
 
@@ -112,7 +118,9 @@ static void app_task(void *arg)
     ESP_LOGI(TAG, "[4] Pipeline running at %d Hz, 16-bit, %d channels", app_synth_sample_rate(), app_synth_channels());
 
     while (1) {
-        app_synth_update(xTaskGetTickCount());
+        TickType_t now_ticks = xTaskGetTickCount();
+        ESP_ERROR_CHECK(app_beat_update(now_ticks));
+        app_synth_update((uint32_t)now_ticks);
 
         audio_event_iface_msg_t msg = {0};
         esp_err_t ret = audio_event_iface_listen(button_evt, &msg, pdMS_TO_TICKS(20));

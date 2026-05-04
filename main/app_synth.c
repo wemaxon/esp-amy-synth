@@ -10,13 +10,14 @@
 #include "freertos/task.h"
 #include "periph_button.h"
 #include "board.h"
+#include "app_beat.h"
 #include "amy_esp_adf.h"
 
 static const char *TAG = "app_synth";
 
 static const uint8_t MELODY_SYNTH = 1;
 static const uint16_t MELODY_NOTE_DURATION_MS = 320;
-static const uint16_t MELODY_STEP_MS = 500;
+static const uint16_t MELODY_STEP_PULSES = 24;
 static const uint8_t PENTATONIC_BASE_NOTE = 60;
 static const uint8_t PENTATONIC_INTERVALS[] = {0, 2, 4, 7, 9, 12, 14, 16, 19, 21};
 static const float HELD_CHORD_VELOCITIES[] = {0.52f, 0.40f, 0.30f};
@@ -49,7 +50,7 @@ typedef struct {
 } button_chord_map_t;
 
 typedef struct {
-    uint32_t next_melody_tick;
+    uint64_t next_melody_pulse;
     TickType_t next_chord_motion_tick;
     TickType_t next_filter_tick;
     size_t melody_step;
@@ -59,7 +60,7 @@ typedef struct {
 } app_synth_state_t;
 
 static app_synth_state_t s_state = {
-    .next_melody_tick = 0,
+    .next_melody_pulse = 0,
     .next_chord_motion_tick = 0,
     .next_filter_tick = 0,
     .melody_step = 0,
@@ -282,14 +283,15 @@ esp_err_t app_synth_init(void)
 
     ESP_ERROR_CHECK(amy_esp_adf_set_fx(1.90f, 0.42f, 0.12f));
 
-    s_state.next_melody_tick = xTaskGetTickCount();
-    s_state.next_chord_motion_tick = s_state.next_melody_tick;
-    s_state.next_filter_tick = s_state.next_melody_tick;
+    TickType_t now_ticks = xTaskGetTickCount();
+    s_state.next_melody_pulse = app_beat_now_pulse();
+    s_state.next_chord_motion_tick = now_ticks;
+    s_state.next_filter_tick = now_ticks;
     s_state.melody_step = 0;
     s_state.phrase_index = 0;
     s_state.phrase_counter = 0;
     s_state.filter_phase = 0.0f;
-    ESP_ERROR_CHECK(update_melody_filter_motion(s_state.next_filter_tick));
+    ESP_ERROR_CHECK(update_melody_filter_motion(now_ticks));
 
     return ESP_OK;
 }
@@ -344,11 +346,12 @@ bool app_synth_handle_button_event(const audio_event_iface_msg_t *msg)
 void app_synth_update(uint32_t now_ticks)
 {
     size_t phrase_len = sizeof(MELODY_PHRASES[0]) / sizeof(MELODY_PHRASES[0][0]);
+    uint64_t now_pulse = app_beat_now_pulse();
 
     ESP_ERROR_CHECK(update_chord_motion((TickType_t)now_ticks));
     ESP_ERROR_CHECK(update_melody_filter_motion((TickType_t)now_ticks));
 
-    while ((int32_t)(now_ticks - s_state.next_melody_tick) >= 0) {
+    while (now_pulse >= s_state.next_melody_pulse) {
         uint8_t midi_note = melody_note_for_step(s_state.phrase_index, s_state.melody_step);
         ESP_ERROR_CHECK(amy_esp_adf_schedule_note(MELODY_SYNTH, midi_note, MELODY_VELOCITY, MELODY_NOTE_DURATION_MS, 10));
 
@@ -362,6 +365,6 @@ void app_synth_update(uint32_t now_ticks)
             }
         }
 
-        s_state.next_melody_tick += pdMS_TO_TICKS(MELODY_STEP_MS);
+        s_state.next_melody_pulse += MELODY_STEP_PULSES;
     }
 }

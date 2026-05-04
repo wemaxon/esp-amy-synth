@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS
+        "app_beat.c"
         "app_synth.c"
         "main.c"
 

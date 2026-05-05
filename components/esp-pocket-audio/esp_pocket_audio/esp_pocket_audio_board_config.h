@@ -42,6 +42,11 @@ extern "C" {
 #define ESP_POCKET_AUDIO_INPUT_I2C_CLK_HZ        100000
 #define ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS    50
 
+/* 128x64 I2C OLED on the shared control I2C bus. */
+#define ESP_POCKET_AUDIO_OLED_ENABLED            1
+#define ESP_POCKET_AUDIO_OLED_ADDR               0x3C
+#define ESP_POCKET_AUDIO_OLED_I2C_CLK_HZ         400000
+
 /* ADS1115 analog input configuration. */
 #define ESP_POCKET_AUDIO_ADS1115_ADDR            0x48
 #define ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_CH   0
@@ -51,7 +56,7 @@ extern "C" {
 #define ESP_POCKET_AUDIO_ADS1115_AXIS_CENTER_RAW 16384
 #define ESP_POCKET_AUDIO_ADS1115_AXIS_MAX_RAW    32767
 
-/* PCF8574A switch expander. Inputs are quasi-bidirectional and active-low. */
+/* PCF8574A switch expander on the shared control I2C bus. Inputs are quasi-bidirectional and active-low. */
 #define ESP_POCKET_AUDIO_PCF8574_COUNT           1
 #define ESP_POCKET_AUDIO_PCF8574_0_ADDR          0x38
 #define ESP_POCKET_AUDIO_SWITCH_ACTIVE_LOW       1

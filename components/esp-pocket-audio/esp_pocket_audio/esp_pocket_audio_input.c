@@ -65,25 +65,6 @@ static size_t configured_expander_count(void)
     return ESP_POCKET_AUDIO_PCF8574_COUNT;
 }
 
-static esp_err_t init_i2c_bus(void)
-{
-    i2c_master_bus_config_t i2c_cfg = {
-        .i2c_port = ESP_POCKET_AUDIO_INPUT_I2C_PORT,
-        .sda_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO,
-        .scl_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-
-    ESP_LOGI(TAG, "input I2C: port=%d SDA=%d SCL=%d",
-             ESP_POCKET_AUDIO_INPUT_I2C_PORT,
-             ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO,
-             ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO);
-
-    return i2c_new_master_bus(&i2c_cfg, &s_input_i2c_bus);
-}
-
 static esp_err_t probe_i2c_addr(uint8_t address)
 {
     return i2c_master_probe(
@@ -284,20 +265,19 @@ static esp_err_t update_joystick(void)
     return ESP_OK;
 }
 
-esp_err_t esp_pocket_audio_input_init(void)
+esp_err_t esp_pocket_audio_input_init(i2c_master_bus_handle_t bus)
 {
     if (s_initialized) {
         return ESP_OK;
     }
-
-    esp_err_t err = init_i2c_bus();
-    if (err != ESP_OK) {
-        return err;
+    if (bus == NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
 
+    s_input_i2c_bus = bus;
     scan_input_i2c_bus();
 
-    err = init_interrupt_pin();
+    esp_err_t err = init_interrupt_pin();
     if (err != ESP_OK) {
         return err;
     }

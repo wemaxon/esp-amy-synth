@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "hal/gpio_types.h"
 
@@ -52,7 +53,7 @@ typedef struct {
     esp_pocket_audio_switch_t sw;
 } esp_pocket_audio_input_event_t;
 
-esp_err_t esp_pocket_audio_input_init(void);
+esp_err_t esp_pocket_audio_input_init(i2c_master_bus_handle_t bus);
 esp_err_t esp_pocket_audio_input_update(void);
 bool esp_pocket_audio_input_int_is_asserted(void);
 gpio_num_t esp_pocket_audio_input_int_gpio(void);

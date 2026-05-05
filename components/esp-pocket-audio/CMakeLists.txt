@@ -12,5 +12,6 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_i2s
+        pocket-oled
         pcf8574
 )

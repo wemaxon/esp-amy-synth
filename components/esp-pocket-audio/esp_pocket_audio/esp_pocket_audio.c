@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
 #include "esp_pocket_audio_input.h"
+#include "pocket_oled.h"
 
 static const char *TAG = "ESP_POCKET_AUDIO";
 
@@ -69,6 +70,55 @@ static esp_err_t init_codec_i2c(void)
     }
 
     ESP_LOGI(TAG, "ES8388 acknowledged at 7-bit address 0x%02x", ESP_POCKET_AUDIO_ES8388_ADDR);
+    return ESP_OK;
+}
+
+static esp_err_t init_control_i2c(void)
+{
+    i2c_master_bus_config_t i2c_cfg = {
+        .i2c_port = ESP_POCKET_AUDIO_INPUT_I2C_PORT,
+        .sda_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO,
+        .scl_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+
+    ESP_LOGI(TAG, "control I2C: port=%d SDA=%d SCL=%d",
+             ESP_POCKET_AUDIO_INPUT_I2C_PORT,
+             ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO,
+             ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO);
+
+    return i2c_new_master_bus(&i2c_cfg, &s_hw.control_i2c_bus);
+}
+
+static esp_err_t init_display(void)
+{
+#if ESP_POCKET_AUDIO_OLED_ENABLED
+    esp_err_t probe = i2c_master_probe(
+        s_hw.control_i2c_bus,
+        ESP_POCKET_AUDIO_OLED_ADDR,
+        ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
+    );
+    if (probe != ESP_OK) {
+        ESP_LOGE(TAG, "OLED not detected at configured 7-bit address 0x%02x", ESP_POCKET_AUDIO_OLED_ADDR);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_RETURN_ON_ERROR(pocket_oled_init(
+        &s_hw.display,
+        s_hw.control_i2c_bus,
+        ESP_POCKET_AUDIO_OLED_ADDR,
+        ESP_POCKET_AUDIO_OLED_I2C_CLK_HZ
+    ), TAG, "OLED init failed");
+
+    pocket_oled_draw_text_row(&s_hw.display, 0, "ESP-POCKET AUDIO");
+    pocket_oled_draw_text_row(&s_hw.display, 2, "HARDWARE READY");
+    pocket_oled_draw_text_row(&s_hw.display, 4, "TONE 440HZ");
+    ESP_RETURN_ON_ERROR(pocket_oled_flush(&s_hw.display), TAG, "OLED ready screen failed");
+#else
+    ESP_LOGI(TAG, "OLED display is disabled");
+#endif
     return ESP_OK;
 }
 
@@ -151,7 +201,9 @@ esp_err_t esp_pocket_audio_init(void)
     ESP_RETURN_ON_ERROR(es8388_set_volume(&s_hw.codec, 100), TAG, "ES8388 volume failed");
     ESP_RETURN_ON_ERROR(init_pa_gpio(), TAG, "PA GPIO failed");
     ESP_RETURN_ON_ERROR(init_i2s_clocking(), TAG, "I2S failed");
-    ESP_RETURN_ON_ERROR(esp_pocket_audio_input_init(), TAG, "input init failed");
+    ESP_RETURN_ON_ERROR(init_control_i2c(), TAG, "control I2C failed");
+    ESP_RETURN_ON_ERROR(esp_pocket_audio_input_init(s_hw.control_i2c_bus), TAG, "input init failed");
+    ESP_RETURN_ON_ERROR(init_display(), TAG, "display init failed");
 
     s_initialized = true;
     ESP_LOGI(TAG, "hardware init complete");

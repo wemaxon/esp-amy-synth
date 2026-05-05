@@ -77,19 +77,19 @@ extern "C" {
 #define ESP_POCKET_AUDIO_SW_CHORD_6_PIN          5
 #define ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER     0
 #define ESP_POCKET_AUDIO_SW_CHORD_7_PIN          6
-#define ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER    0
-#define ESP_POCKET_AUDIO_SW_KEY_MENU_PIN         7
+#define ESP_POCKET_AUDIO_SW_KEY_TEMPO_EXPANDER    0
+#define ESP_POCKET_AUDIO_SW_KEY_TEMPO_PIN         7
 
 /* Direct GPIO switch mapping. */
-#define ESP_POCKET_AUDIO_SW_TEMPO_GPIO           GPIO_NUM_19
-#define ESP_POCKET_AUDIO_SW_SOUND_GPIO           GPIO_NUM_23
+#define ESP_POCKET_AUDIO_SW_KEY_MODE_GPIO            GPIO_NUM_23
+#define ESP_POCKET_AUDIO_SW_KEY_SOUND_GPIO           GPIO_NUM_18
 #define ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO  GPIO_NUM_0
 
 /*
  * Optional PCF8574 interrupt pin. The input API still polls for diagnostics,
  * but the level is logged so the hardware path can be verified.
  */
-#define ESP_POCKET_AUDIO_PCF8574_INT_GPIO        GPIO_NUM_18
+#define ESP_POCKET_AUDIO_PCF8574_INT_GPIO        GPIO_NUM_5
 
 #ifdef __cplusplus
 }

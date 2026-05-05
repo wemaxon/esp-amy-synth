@@ -42,11 +42,11 @@ static const char *switch_name(esp_pocket_audio_switch_t sw)
         return "KEY_CHORD_7";
     case ESP_POCKET_AUDIO_SWITCH_JOYSTICK_CLICK:
         return "JOYSTICK_SW";
-    case ESP_POCKET_AUDIO_SWITCH_KEY_MENU:
-        return "KEY_MENU";
-    case ESP_POCKET_AUDIO_SWITCH_TEMPO_MENU:
+    case ESP_POCKET_AUDIO_SWITCH_KEY_TEMPO:
         return "KEY_TEMPO";
-    case ESP_POCKET_AUDIO_SWITCH_SOUND_MENU:
+    case ESP_POCKET_AUDIO_SWITCH_KEY_MODE:
+        return "KEY_MODE";
+    case ESP_POCKET_AUDIO_SWITCH_KEY_SOUND:
         return "KEY_SOUND";
     default:
         return "UNKNOWN";

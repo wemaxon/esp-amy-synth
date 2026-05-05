@@ -5,10 +5,14 @@
 #include <string.h>
 
 #include "esp_check.h"
-#include "esp_lcd_io_i2c.h"
-#include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_ssd1306.h"
 #include "esp_log.h"
+
+#define SH1106_CONTROL_COMMAND 0x00
+#define SH1106_CONTROL_DATA    0x40
+#define SH1106_COLUMN_OFFSET   2
+#define SH1106_PAGE_COUNT      (POCKET_OLED_HEIGHT / 8)
+#define SH1106_TX_BUFFER_SIZE  (POCKET_OLED_WIDTH + 1)
+#define SH1106_TIMEOUT_MS      100
 
 typedef struct {
     char ch;
@@ -76,6 +80,52 @@ static const uint8_t *glyph_for_char(char ch)
     return UNKNOWN_GLYPH;
 }
 
+static esp_err_t sh1106_write_command(pocket_oled_t *display, uint8_t command)
+{
+    uint8_t tx[2] = {SH1106_CONTROL_COMMAND, command};
+    return i2c_master_transmit(display->dev, tx, sizeof(tx), display->timeout_ms);
+}
+
+static esp_err_t sh1106_write_commands(pocket_oled_t *display, const uint8_t *commands, size_t count)
+{
+    for (size_t i = 0; i < count; ++i) {
+        ESP_RETURN_ON_ERROR(sh1106_write_command(display, commands[i]), TAG, "SH1106 command 0x%02x failed", commands[i]);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t sh1106_set_page_address(pocket_oled_t *display, uint8_t page)
+{
+    uint8_t col = SH1106_COLUMN_OFFSET;
+    ESP_RETURN_ON_ERROR(sh1106_write_command(display, (uint8_t)(0xB0 | (page & 0x07))), TAG, "set page failed");
+    ESP_RETURN_ON_ERROR(sh1106_write_command(display, (uint8_t)(0x00 | (col & 0x0F))), TAG, "set lower column failed");
+    ESP_RETURN_ON_ERROR(sh1106_write_command(display, (uint8_t)(0x10 | (col >> 4))), TAG, "set upper column failed");
+    return ESP_OK;
+}
+
+static esp_err_t sh1106_init_sequence(pocket_oled_t *display)
+{
+    static const uint8_t init_commands[] = {
+        0xAE,
+        0xD5, 0x80,
+        0xA8, 0x3F,
+        0xD3, 0x00,
+        0x40,
+        0xAD, 0x8B,
+        0xA1,
+        0xC8,
+        0xDA, 0x12,
+        0x81, 0x80,
+        0xD9, 0x22,
+        0xDB, 0x35,
+        0xA4,
+        0xA6,
+        0xAF,
+    };
+
+    return sh1106_write_commands(display, init_commands, sizeof(init_commands));
+}
+
 esp_err_t pocket_oled_init(
     pocket_oled_t *display,
     i2c_master_bus_handle_t bus,
@@ -88,35 +138,21 @@ esp_err_t pocket_oled_init(
     }
 
     memset(display, 0, sizeof(*display));
+    display->timeout_ms = SH1106_TIMEOUT_MS;
 
-    esp_lcd_panel_io_i2c_config_t io_config = {
-        .dev_addr = address,
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = address,
         .scl_speed_hz = scl_speed_hz,
-        .control_phase_bytes = 1,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-        .dc_bit_offset = 6,
     };
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(bus, &io_config, &display->io), TAG, "panel IO init failed");
-
-    esp_lcd_panel_ssd1306_config_t ssd1306_config = {
-        .height = POCKET_OLED_HEIGHT,
-    };
-    esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = -1,
-        .bits_per_pixel = 1,
-        .vendor_config = &ssd1306_config,
-    };
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_ssd1306(display->io, &panel_config, &display->panel), TAG, "SSD1306 panel init failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(display->panel), TAG, "panel reset failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(display->panel), TAG, "panel init failed");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(display->panel, true), TAG, "panel display enable failed");
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &dev_cfg, &display->dev), TAG, "SH1106 I2C device init failed");
+    ESP_RETURN_ON_ERROR(sh1106_init_sequence(display), TAG, "SH1106 init sequence failed");
 
     display->initialized = true;
     pocket_oled_clear(display);
     ESP_RETURN_ON_ERROR(pocket_oled_flush(display), TAG, "initial flush failed");
 
-    ESP_LOGI(TAG, "OLED configured at 7-bit address 0x%02x", address);
+    ESP_LOGI(TAG, "SH1106 OLED configured at 7-bit address 0x%02x", address);
     return ESP_OK;
 }
 
@@ -178,12 +214,14 @@ esp_err_t pocket_oled_flush(pocket_oled_t *display)
         return ESP_ERR_INVALID_STATE;
     }
 
-    return esp_lcd_panel_draw_bitmap(
-        display->panel,
-        0,
-        0,
-        POCKET_OLED_WIDTH,
-        POCKET_OLED_HEIGHT,
-        display->framebuffer
-    );
+    uint8_t tx[SH1106_TX_BUFFER_SIZE] = {0};
+    tx[0] = SH1106_CONTROL_DATA;
+
+    for (uint8_t page = 0; page < SH1106_PAGE_COUNT; ++page) {
+        ESP_RETURN_ON_ERROR(sh1106_set_page_address(display, page), TAG, "set page %u failed", page);
+        memcpy(&tx[1], &display->framebuffer[(size_t)page * POCKET_OLED_WIDTH], POCKET_OLED_WIDTH);
+        ESP_RETURN_ON_ERROR(i2c_master_transmit(display->dev, tx, sizeof(tx), display->timeout_ms), TAG, "page %u flush failed", page);
+    }
+
+    return ESP_OK;
 }

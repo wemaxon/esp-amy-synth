@@ -6,7 +6,6 @@
 
 #include "driver/i2c_master.h"
 #include "esp_err.h"
-#include "esp_lcd_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,9 +16,9 @@ extern "C" {
 #define POCKET_OLED_FRAMEBUFFER_SIZE (POCKET_OLED_WIDTH * POCKET_OLED_HEIGHT / 8)
 
 typedef struct {
-    esp_lcd_panel_io_handle_t io;
-    esp_lcd_panel_handle_t panel;
+    i2c_master_dev_handle_t dev;
     uint8_t framebuffer[POCKET_OLED_FRAMEBUFFER_SIZE];
+    uint32_t timeout_ms;
     bool initialized;
 } pocket_oled_t;
 

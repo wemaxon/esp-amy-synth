@@ -15,8 +15,8 @@
 static const char *TAG = "diagnostics";
 
 static const TickType_t INPUT_POLL_TICKS = pdMS_TO_TICKS(20);
-static const TickType_t JOYSTICK_LOG_TICKS = pdMS_TO_TICKS(250);
-static const TickType_t SUMMARY_LOG_TICKS = pdMS_TO_TICKS(1000);
+static const TickType_t JOYSTICK_LOG_TICKS = pdMS_TO_TICKS(2000);
+static const TickType_t SUMMARY_LOG_TICKS = pdMS_TO_TICKS(10000);
 
 static const uint32_t AUDIO_TEST_SAMPLE_RATE_HZ = 48000;
 static const uint32_t AUDIO_TEST_TONE_HZ = 440;

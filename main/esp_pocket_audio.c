@@ -154,9 +154,6 @@ static esp_err_t init_i2s_clocking(void)
              ESP_POCKET_AUDIO_I2S_DOUT_GPIO,
              ESP_POCKET_AUDIO_I2S_DIN_GPIO,
              ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ);
-    if (ESP_POCKET_AUDIO_I2S_MCLK_GPIO == GPIO_NUM_NC) {
-        ESP_LOGW(TAG, "I2S MCLK is disabled because GPIO0 is assigned to joystick click on this board");
-    }
 
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_hw.i2s_tx, &std_cfg), TAG, "I2S std mode init failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_hw.i2s_tx), TAG, "I2S enable failed");
@@ -197,10 +194,10 @@ esp_err_t esp_pocket_audio_init(void)
         ESP_POCKET_AUDIO_CODEC_I2C_CLK_HZ,
         ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS
     ), TAG, "ES8388 init failed");
+    ESP_RETURN_ON_ERROR(init_i2s_clocking(), TAG, "I2S failed");
     ESP_RETURN_ON_ERROR(es8388_start(&s_hw.codec), TAG, "ES8388 start failed");
     ESP_RETURN_ON_ERROR(es8388_set_volume(&s_hw.codec, 100), TAG, "ES8388 volume failed");
     ESP_RETURN_ON_ERROR(init_pa_gpio(), TAG, "PA GPIO failed");
-    ESP_RETURN_ON_ERROR(init_i2s_clocking(), TAG, "I2S failed");
     ESP_RETURN_ON_ERROR(init_control_i2c(), TAG, "control I2C failed");
     ESP_RETURN_ON_ERROR(esp_pocket_audio_input_init(s_hw.control_i2c_bus), TAG, "input init failed");
     ESP_RETURN_ON_ERROR(init_display(), TAG, "display init failed");

@@ -20,11 +20,11 @@ extern "C" {
  */
 #define ESP_POCKET_AUDIO_ES8388_ADDR             0x10
 
-/* ES8388 I2S pins on the ESP32-A1S module. GPIO0 is used by joystick click on
- * this hardware revision, so MCLK is intentionally left unconnected for now.
+/* ES8388 I2S pins on the ESP32-A1S module. ES8388 slave-mode playback needs
+ * MCLK; this matches the ADF board layer that previously drove MCLK on GPIO0.
  */
 #define ESP_POCKET_AUDIO_I2S_PORT                I2S_NUM_0
-#define ESP_POCKET_AUDIO_I2S_MCLK_GPIO           GPIO_NUM_NC
+#define ESP_POCKET_AUDIO_I2S_MCLK_GPIO           GPIO_NUM_0
 #define ESP_POCKET_AUDIO_I2S_BCLK_GPIO           GPIO_NUM_27
 #define ESP_POCKET_AUDIO_I2S_WS_GPIO             GPIO_NUM_25
 #define ESP_POCKET_AUDIO_I2S_DOUT_GPIO           GPIO_NUM_26
@@ -77,19 +77,14 @@ extern "C" {
 #define ESP_POCKET_AUDIO_SW_CHORD_6_PIN          5
 #define ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER     0
 #define ESP_POCKET_AUDIO_SW_CHORD_7_PIN          6
-#define ESP_POCKET_AUDIO_SW_KEY_TEMPO_EXPANDER    0
-#define ESP_POCKET_AUDIO_SW_KEY_TEMPO_PIN         7
+#define ESP_POCKET_AUDIO_SW_KEY_TEMPO_EXPANDER   0
+#define ESP_POCKET_AUDIO_SW_KEY_TEMPO_PIN        7
 
 /* Direct GPIO switch mapping. */
-#define ESP_POCKET_AUDIO_SW_KEY_MODE_GPIO            GPIO_NUM_23
-#define ESP_POCKET_AUDIO_SW_KEY_SOUND_GPIO           GPIO_NUM_18
-#define ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO  GPIO_NUM_0
-
-/*
- * Optional PCF8574 interrupt pin. The input API still polls for diagnostics,
- * but the level is logged so the hardware path can be verified.
- */
-#define ESP_POCKET_AUDIO_PCF8574_INT_GPIO        GPIO_NUM_5
+#define ESP_POCKET_AUDIO_SW_KEY_MODE_GPIO           GPIO_NUM_23
+#define ESP_POCKET_AUDIO_SW_KEY_SOUND_GPIO          GPIO_NUM_18
+#define ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO     GPIO_NUM_19
+#define ESP_POCKET_AUDIO_PCF8574_INT_GPIO           GPIO_NUM_5
 
 #ifdef __cplusplus
 }

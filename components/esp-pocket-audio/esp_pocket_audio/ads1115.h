@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -18,12 +18,17 @@ typedef enum {
 } ads1115_channel_t;
 
 typedef struct {
-    i2c_port_t i2c_port;
-    uint8_t address;
+    i2c_master_dev_handle_t dev;
     uint32_t timeout_ms;
 } ads1115_t;
 
-esp_err_t ads1115_init(ads1115_t *dev, i2c_port_t i2c_port, uint8_t address, uint32_t timeout_ms);
+esp_err_t ads1115_init(
+    ads1115_t *dev,
+    i2c_master_bus_handle_t bus,
+    uint8_t address,
+    uint32_t scl_speed_hz,
+    uint32_t timeout_ms
+);
 esp_err_t ads1115_read_single_ended(const ads1115_t *dev, ads1115_channel_t channel, int16_t *raw);
 
 #ifdef __cplusplus

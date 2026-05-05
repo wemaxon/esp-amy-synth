@@ -1,6 +1,0 @@
-ifeq ($(CONFIG_AUDIO_BOARD_ESP_POCKET_AUDIO),y)
-ifdef CONFIG_AUDIO_BOARD_CUSTOM
-COMPONENT_ADD_INCLUDEDIRS += ./esp_pocket_audio
-COMPONENT_SRCDIRS += ./esp_pocket_audio
-endif
-endif

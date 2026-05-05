@@ -4,7 +4,7 @@
 
 #include "ads1115.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -14,8 +14,10 @@
 #define EVENT_QUEUE_LEN 16
 
 typedef struct {
+    bool is_gpio;
     uint8_t expander;
     uint8_t pin;
+    gpio_num_t gpio;
 } switch_mapping_t;
 
 typedef struct {
@@ -28,27 +30,27 @@ static const char *TAG = "ESP_POCKET_AUDIO_INPUT";
 
 static const uint8_t PCF8574_ADDRS[] = {
     ESP_POCKET_AUDIO_PCF8574_0_ADDR,
-    ESP_POCKET_AUDIO_PCF8574_1_ADDR,
 };
 
 static const switch_mapping_t SWITCH_MAP[ESP_POCKET_AUDIO_SWITCH_COUNT] = {
-    [ESP_POCKET_AUDIO_SWITCH_CHORD_1] = {ESP_POCKET_AUDIO_SW_CHORD_1_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_1_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_CHORD_2] = {ESP_POCKET_AUDIO_SW_CHORD_2_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_2_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_CHORD_3] = {ESP_POCKET_AUDIO_SW_CHORD_3_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_3_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_CHORD_4] = {ESP_POCKET_AUDIO_SW_CHORD_4_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_4_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_CHORD_5] = {ESP_POCKET_AUDIO_SW_CHORD_5_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_5_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_CHORD_6] = {ESP_POCKET_AUDIO_SW_CHORD_6_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_6_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_CHORD_7] = {ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_7_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_JOYSTICK_CLICK] = {ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_EXPANDER, ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_KEY_MENU] = {ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_MENU_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_TEMPO_MENU] = {ESP_POCKET_AUDIO_SW_TEMPO_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_TEMPO_MENU_PIN},
-    [ESP_POCKET_AUDIO_SWITCH_SOUND_MENU] = {ESP_POCKET_AUDIO_SW_SOUND_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_SOUND_MENU_PIN},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_1] = {false, ESP_POCKET_AUDIO_SW_CHORD_1_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_1_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_2] = {false, ESP_POCKET_AUDIO_SW_CHORD_2_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_2_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_3] = {false, ESP_POCKET_AUDIO_SW_CHORD_3_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_3_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_4] = {false, ESP_POCKET_AUDIO_SW_CHORD_4_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_4_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_5] = {false, ESP_POCKET_AUDIO_SW_CHORD_5_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_5_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_6] = {false, ESP_POCKET_AUDIO_SW_CHORD_6_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_6_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_CHORD_7] = {false, ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_7_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_JOYSTICK_CLICK] = {true, 0, 0, ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO},
+    [ESP_POCKET_AUDIO_SWITCH_KEY_MENU] = {false, ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_MENU_PIN, GPIO_NUM_NC},
+    [ESP_POCKET_AUDIO_SWITCH_TEMPO_MENU] = {true, 0, 0, ESP_POCKET_AUDIO_SW_TEMPO_GPIO},
+    [ESP_POCKET_AUDIO_SWITCH_SOUND_MENU] = {true, 0, 0, ESP_POCKET_AUDIO_SW_SOUND_GPIO},
 };
 
 static bool s_initialized;
+static i2c_master_bus_handle_t s_input_i2c_bus;
 static ads1115_t s_ads1115;
-static pcf8574_t s_pcf8574[2];
-static uint8_t s_pcf_port_state[2] = {0xFF, 0xFF};
+static pcf8574_t s_pcf8574[ESP_POCKET_AUDIO_PCF8574_COUNT];
+static uint8_t s_pcf_port_state[ESP_POCKET_AUDIO_PCF8574_COUNT];
 static switch_debounce_t s_switches[ESP_POCKET_AUDIO_SWITCH_COUNT];
 static esp_pocket_audio_input_event_t s_events[EVENT_QUEUE_LEN];
 static size_t s_event_head;
@@ -65,27 +67,16 @@ static size_t configured_expander_count(void)
 
 static esp_err_t init_i2c_bus(void)
 {
-    i2c_config_t i2c_cfg = {
-        .mode = I2C_MODE_MASTER,
+    i2c_master_bus_config_t i2c_cfg = {
+        .i2c_port = ESP_POCKET_AUDIO_INPUT_I2C_PORT,
         .sda_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO,
         .scl_io_num = ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = ESP_POCKET_AUDIO_INPUT_I2C_CLK_HZ,
-        .clk_flags = 0,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
 
-    esp_err_t err = i2c_param_config(ESP_POCKET_AUDIO_INPUT_I2C_PORT, &i2c_cfg);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = i2c_driver_install(ESP_POCKET_AUDIO_INPUT_I2C_PORT, I2C_MODE_MASTER, 0, 0, 0);
-    if (err == ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "Input I2C bus already installed");
-        return ESP_OK;
-    }
-    return err;
+    return i2c_new_master_bus(&i2c_cfg, &s_input_i2c_bus);
 }
 
 static esp_err_t init_interrupt_pin(void)
@@ -96,6 +87,30 @@ static esp_err_t init_interrupt_pin(void)
 
     gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << ESP_POCKET_AUDIO_PCF8574_INT_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    return gpio_config(&cfg);
+}
+
+static esp_err_t init_gpio_switches(void)
+{
+    uint64_t gpio_mask = 0;
+    for (size_t i = 0; i < ESP_POCKET_AUDIO_SWITCH_COUNT; ++i) {
+        if (SWITCH_MAP[i].is_gpio && SWITCH_MAP[i].gpio != GPIO_NUM_NC) {
+            gpio_mask |= 1ULL << SWITCH_MAP[i].gpio;
+        }
+    }
+
+    if (gpio_mask == 0) {
+        return ESP_OK;
+    }
+
+    gpio_config_t cfg = {
+        .pin_bit_mask = gpio_mask,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -122,6 +137,9 @@ static void push_event(esp_pocket_audio_switch_t sw, bool pressed)
 
 static bool mapping_is_available(const switch_mapping_t *mapping)
 {
+    if (mapping->is_gpio) {
+        return mapping->gpio != GPIO_NUM_NC;
+    }
     return mapping->expander < configured_expander_count() && mapping->pin < 8;
 }
 
@@ -131,7 +149,9 @@ static bool raw_switch_pressed(const switch_mapping_t *mapping)
         return false;
     }
 
-    bool level = ((s_pcf_port_state[mapping->expander] >> mapping->pin) & 0x01) != 0;
+    bool level = mapping->is_gpio ?
+        gpio_get_level(mapping->gpio) != 0 :
+        ((s_pcf_port_state[mapping->expander] >> mapping->pin) & 0x01) != 0;
 #if ESP_POCKET_AUDIO_SWITCH_ACTIVE_LOW
     return !level;
 #else
@@ -247,8 +267,9 @@ esp_err_t esp_pocket_audio_input_init(void)
 
     err = ads1115_init(
         &s_ads1115,
-        ESP_POCKET_AUDIO_INPUT_I2C_PORT,
+        s_input_i2c_bus,
         ESP_POCKET_AUDIO_ADS1115_ADDR,
+        ESP_POCKET_AUDIO_INPUT_I2C_CLK_HZ,
         ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
     );
     if (err != ESP_OK) {
@@ -259,14 +280,24 @@ esp_err_t esp_pocket_audio_input_init(void)
     for (size_t i = 0; i < expander_count; ++i) {
         err = pcf8574_init(
             &s_pcf8574[i],
-            ESP_POCKET_AUDIO_INPUT_I2C_PORT,
+            s_input_i2c_bus,
             PCF8574_ADDRS[i],
+            ESP_POCKET_AUDIO_INPUT_I2C_CLK_HZ,
             ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
         );
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "PCF8574 %u init failed: %s", (unsigned)i, esp_err_to_name(err));
             return err;
         }
+    }
+
+    err = init_gpio_switches();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    for (size_t i = 0; i < configured_expander_count(); ++i) {
+        s_pcf_port_state[i] = 0xFF;
     }
 
     TickType_t now = xTaskGetTickCount();

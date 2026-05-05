@@ -1,17 +1,30 @@
 #include "pcf8574.h"
 
-#include "freertos/FreeRTOS.h"
-
-esp_err_t pcf8574_init(pcf8574_t *dev, i2c_port_t i2c_port, uint8_t address, uint32_t timeout_ms)
+esp_err_t pcf8574_init(
+    pcf8574_t *dev,
+    i2c_master_bus_handle_t bus,
+    uint8_t address,
+    uint32_t scl_speed_hz,
+    uint32_t timeout_ms
+)
 {
-    if (dev == NULL) {
+    if (dev == NULL || bus == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    dev->i2c_port = i2c_port;
-    dev->address = address;
     dev->output_latch = 0xFF;
     dev->timeout_ms = timeout_ms;
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = address,
+        .scl_speed_hz = scl_speed_hz,
+    };
+
+    esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &dev->dev);
+    if (err != ESP_OK) {
+        return err;
+    }
 
     return pcf8574_write_port(dev, 0xFF);
 }
@@ -22,12 +35,11 @@ esp_err_t pcf8574_read_port(const pcf8574_t *dev, uint8_t *value)
         return ESP_ERR_INVALID_ARG;
     }
 
-    return i2c_master_read_from_device(
-        dev->i2c_port,
-        dev->address,
+    return i2c_master_receive(
+        dev->dev,
         value,
         1,
-        pdMS_TO_TICKS(dev->timeout_ms)
+        dev->timeout_ms
     );
 }
 
@@ -38,12 +50,11 @@ esp_err_t pcf8574_write_port(pcf8574_t *dev, uint8_t value)
     }
 
     dev->output_latch = value;
-    return i2c_master_write_to_device(
-        dev->i2c_port,
-        dev->address,
+    return i2c_master_transmit(
+        dev->dev,
         &value,
         1,
-        pdMS_TO_TICKS(dev->timeout_ms)
+        dev->timeout_ms
     );
 }
 

@@ -2,27 +2,40 @@
 #define ESP_POCKET_AUDIO_BOARD_CONFIG_H
 
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2s_types.h"
+#include "driver/i2c_types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*
- * Edit this file when the hardware wiring is finalized.
- *
- * The audio codec keeps the ESP32-A1S / ES8388 wiring. The ADS1115 joystick and
- * PCF8574 switches use a separate I2C controller so the controls do not share
- * the codec control bus.
- */
+/* ES8388 codec control bus on the ESP32-A1S module. */
+#define ESP_POCKET_AUDIO_CODEC_I2C_PORT          I2C_NUM_0
+#define ESP_POCKET_AUDIO_CODEC_I2C_SDA_GPIO      GPIO_NUM_33
+#define ESP_POCKET_AUDIO_CODEC_I2C_SCL_GPIO      GPIO_NUM_32
+#define ESP_POCKET_AUDIO_CODEC_I2C_CLK_HZ        100000
+#define ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS    50
+#define ESP_POCKET_AUDIO_ES8388_ADDR             0x20
 
-/* AI Thinker ESP32-A1S / ES8388 variant. Set to 5 or 7. */
-#define ESP_POCKET_AUDIO_A1S_VARIANT             5
+/* ES8388 I2S pins on the ESP32-A1S module. GPIO0 is used by joystick click on
+ * this hardware revision, so MCLK is intentionally left unconnected for now.
+ */
+#define ESP_POCKET_AUDIO_I2S_PORT                I2S_NUM_0
+#define ESP_POCKET_AUDIO_I2S_MCLK_GPIO           GPIO_NUM_NC
+#define ESP_POCKET_AUDIO_I2S_BCLK_GPIO           GPIO_NUM_27
+#define ESP_POCKET_AUDIO_I2S_WS_GPIO             GPIO_NUM_25
+#define ESP_POCKET_AUDIO_I2S_DOUT_GPIO           GPIO_NUM_26
+#define ESP_POCKET_AUDIO_I2S_DIN_GPIO            GPIO_NUM_35
+#define ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ      48000
+#define ESP_POCKET_AUDIO_I2S_BITS_PER_SAMPLE     16
+
+/* Optional external PA enable pin. Set once this signal is confirmed. */
+#define ESP_POCKET_AUDIO_PA_ENABLE_GPIO          GPIO_NUM_NC
 
 /* Dedicated control I2C bus for ADS1115 and PCF8574. */
 #define ESP_POCKET_AUDIO_INPUT_I2C_PORT          I2C_NUM_1
-#define ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO      GPIO_NUM_16
-#define ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO      GPIO_NUM_17
+#define ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO      GPIO_NUM_21
+#define ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO      GPIO_NUM_22
 #define ESP_POCKET_AUDIO_INPUT_I2C_CLK_HZ        100000
 #define ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS    50
 
@@ -35,16 +48,9 @@ extern "C" {
 #define ESP_POCKET_AUDIO_ADS1115_AXIS_CENTER_RAW 16384
 #define ESP_POCKET_AUDIO_ADS1115_AXIS_MAX_RAW    32767
 
-/*
- * PCF8574 switch expanders. PCF8574 inputs are quasi-bidirectional; the driver
- * writes 1s to all pins before reading them. Switches are active-low.
- *
- * One PCF8574 gives 8 switch inputs. Enable the second expander when more
- * inputs are wired.
- */
+/* PCF8574 switch expander. Inputs are quasi-bidirectional and active-low. */
 #define ESP_POCKET_AUDIO_PCF8574_COUNT           1
 #define ESP_POCKET_AUDIO_PCF8574_0_ADDR          0x20
-#define ESP_POCKET_AUDIO_PCF8574_1_ADDR          0x21
 #define ESP_POCKET_AUDIO_SWITCH_ACTIVE_LOW       1
 #define ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS      25
 
@@ -63,26 +69,19 @@ extern "C" {
 #define ESP_POCKET_AUDIO_SW_CHORD_6_PIN          5
 #define ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER     0
 #define ESP_POCKET_AUDIO_SW_CHORD_7_PIN          6
-#define ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_EXPANDER 0
-#define ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_PIN   7
+#define ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER    0
+#define ESP_POCKET_AUDIO_SW_KEY_MENU_PIN         7
 
-/* Defaults assume a second PCF8574 is added for menu buttons later. */
-#define ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER    1
-#define ESP_POCKET_AUDIO_SW_KEY_MENU_PIN         0
-#define ESP_POCKET_AUDIO_SW_TEMPO_MENU_EXPANDER  1
-#define ESP_POCKET_AUDIO_SW_TEMPO_MENU_PIN       1
-#define ESP_POCKET_AUDIO_SW_SOUND_MENU_EXPANDER  1
-#define ESP_POCKET_AUDIO_SW_SOUND_MENU_PIN       2
+/* Direct GPIO switch mapping. */
+#define ESP_POCKET_AUDIO_SW_TEMPO_GPIO           GPIO_NUM_19
+#define ESP_POCKET_AUDIO_SW_SOUND_GPIO           GPIO_NUM_23
+#define ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO  GPIO_NUM_0
 
 /*
- * Optional PCF8574 interrupt pin. Set to GPIO_NUM_NC if not connected.
- * The input API can poll without this pin, but wiring INT lets higher layers
- * avoid unnecessary reads later.
+ * Optional PCF8574 interrupt pin. The input API still polls for diagnostics,
+ * but the level is logged so the hardware path can be verified.
  */
-#ifndef GPIO_NUM_NC
-#define GPIO_NUM_NC ((gpio_num_t)-1)
-#endif
-#define ESP_POCKET_AUDIO_PCF8574_INT_GPIO        GPIO_NUM_34
+#define ESP_POCKET_AUDIO_PCF8574_INT_GPIO        GPIO_NUM_18
 
 #ifdef __cplusplus
 }

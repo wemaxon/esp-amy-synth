@@ -40,26 +40,24 @@ static esp_err_t ads1115_write_reg(const ads1115_t *dev, uint8_t reg, uint16_t v
         (uint8_t)(value & 0xFF),
     };
 
-    return i2c_master_write_to_device(
-        dev->i2c_port,
-        dev->address,
+    return i2c_master_transmit(
+        dev->dev,
         bytes,
         sizeof(bytes),
-        pdMS_TO_TICKS(dev->timeout_ms)
+        dev->timeout_ms
     );
 }
 
 static esp_err_t ads1115_read_reg(const ads1115_t *dev, uint8_t reg, uint16_t *value)
 {
     uint8_t data[2] = {0};
-    esp_err_t err = i2c_master_write_read_device(
-        dev->i2c_port,
-        dev->address,
+    esp_err_t err = i2c_master_transmit_receive(
+        dev->dev,
         &reg,
         1,
         data,
         sizeof(data),
-        pdMS_TO_TICKS(dev->timeout_ms)
+        dev->timeout_ms
     );
     if (err != ESP_OK) {
         return err;
@@ -69,17 +67,27 @@ static esp_err_t ads1115_read_reg(const ads1115_t *dev, uint8_t reg, uint16_t *v
     return ESP_OK;
 }
 
-esp_err_t ads1115_init(ads1115_t *dev, i2c_port_t i2c_port, uint8_t address, uint32_t timeout_ms)
+esp_err_t ads1115_init(
+    ads1115_t *dev,
+    i2c_master_bus_handle_t bus,
+    uint8_t address,
+    uint32_t scl_speed_hz,
+    uint32_t timeout_ms
+)
 {
-    if (dev == NULL) {
+    if (dev == NULL || bus == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    dev->i2c_port = i2c_port;
-    dev->address = address;
     dev->timeout_ms = timeout_ms;
 
-    return ESP_OK;
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = address,
+        .scl_speed_hz = scl_speed_hz,
+    };
+
+    return i2c_master_bus_add_device(bus, &dev_cfg, &dev->dev);
 }
 
 esp_err_t ads1115_read_single_ended(const ads1115_t *dev, ads1115_channel_t channel, int16_t *raw)

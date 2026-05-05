@@ -6,7 +6,11 @@
   "idf.currentSetup": "C:\\Users\\maxan\\esp\\v5.5.1\\esp-idf",
   "idf.espAdfPathWin": "C:\\Users\\maxan\\esp\\esp-adf",
   "idf.customExtraVars": {
-    "IDF_TARGET": "esp32"
+    "OPENOCD_SCRIPTS": "C:\\Users\\maxan\\.espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20230921/openocd-esp32/share/openocd/scripts",
+    "IDF_CCACHE_ENABLE": "1",
+    "ESP_ROM_ELF_DIR": "C:\\Users\\maxan\\.espressif\\tools\\esp-rom-elfs\\20230320/",
+    "IDF_TARGET": "esp32",
+    "ADF_PATH": "C:\\Users\\maxan\\esp\\esp-adf"
   },
   "clangd.path": "C:\\Users\\maxan\\.espressif\\tools\\esp-clang\\esp-19.1.2_20250312\\esp-clang\\bin\\clangd.exe",
   "clangd.arguments": [

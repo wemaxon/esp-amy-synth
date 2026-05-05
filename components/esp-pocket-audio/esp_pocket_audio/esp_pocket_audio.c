@@ -18,6 +18,28 @@ static uint64_t gpio_mask(gpio_num_t gpio)
     return gpio == GPIO_NUM_NC ? 0 : 1ULL << gpio;
 }
 
+static void scan_codec_i2c_bus(void)
+{
+    bool any_found = false;
+
+    ESP_LOGW(TAG, "scanning codec I2C bus for diagnostics");
+    for (uint8_t addr = 0x08; addr < 0x78; ++addr) {
+        esp_err_t err = i2c_master_probe(
+            s_hw.codec_i2c_bus,
+            addr,
+            ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS
+        );
+        if (err == ESP_OK) {
+            ESP_LOGW(TAG, "codec I2C device found at 7-bit address 0x%02x", addr);
+            any_found = true;
+        }
+    }
+
+    if (!any_found) {
+        ESP_LOGW(TAG, "codec I2C scan found no devices");
+    }
+}
+
 static esp_err_t init_codec_i2c(void)
 {
     i2c_master_bus_config_t bus_cfg = {
@@ -40,8 +62,13 @@ static esp_err_t init_codec_i2c(void)
         ESP_POCKET_AUDIO_ES8388_ADDR,
         ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS
     );
-    ESP_RETURN_ON_ERROR(probe, TAG, "ES8388 not detected at 0x%02x", ESP_POCKET_AUDIO_ES8388_ADDR);
-    ESP_LOGI(TAG, "ES8388 acknowledged at 0x%02x", ESP_POCKET_AUDIO_ES8388_ADDR);
+    if (probe != ESP_OK) {
+        ESP_LOGE(TAG, "ES8388 not detected at 7-bit address 0x%02x", ESP_POCKET_AUDIO_ES8388_ADDR);
+        scan_codec_i2c_bus();
+        return probe;
+    }
+
+    ESP_LOGI(TAG, "ES8388 acknowledged at 7-bit address 0x%02x", ESP_POCKET_AUDIO_ES8388_ADDR);
     return ESP_OK;
 }
 

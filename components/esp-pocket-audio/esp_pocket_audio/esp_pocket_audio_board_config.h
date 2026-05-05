@@ -15,7 +15,10 @@ extern "C" {
 #define ESP_POCKET_AUDIO_CODEC_I2C_SCL_GPIO      GPIO_NUM_32
 #define ESP_POCKET_AUDIO_CODEC_I2C_CLK_HZ        100000
 #define ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS    50
-#define ESP_POCKET_AUDIO_ES8388_ADDR             0x20
+/* ESP-ADF's ES8388_ADDR value is 0x20 because it uses the 8-bit wire address.
+ * ESP-IDF's i2c_master driver expects the 7-bit device address directly.
+ */
+#define ESP_POCKET_AUDIO_ES8388_ADDR             0x10
 
 /* ES8388 I2S pins on the ESP32-A1S module. GPIO0 is used by joystick click on
  * this hardware revision, so MCLK is intentionally left unconnected for now.
@@ -48,9 +51,9 @@ extern "C" {
 #define ESP_POCKET_AUDIO_ADS1115_AXIS_CENTER_RAW 16384
 #define ESP_POCKET_AUDIO_ADS1115_AXIS_MAX_RAW    32767
 
-/* PCF8574 switch expander. Inputs are quasi-bidirectional and active-low. */
+/* PCF8574A switch expander. Inputs are quasi-bidirectional and active-low. */
 #define ESP_POCKET_AUDIO_PCF8574_COUNT           1
-#define ESP_POCKET_AUDIO_PCF8574_0_ADDR          0x20
+#define ESP_POCKET_AUDIO_PCF8574_0_ADDR          0x38
 #define ESP_POCKET_AUDIO_SWITCH_ACTIVE_LOW       1
 #define ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS      25
 

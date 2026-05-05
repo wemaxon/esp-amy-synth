@@ -49,13 +49,16 @@ esp_err_t pcf8574_write_port(pcf8574_t *dev, uint8_t value)
         return ESP_ERR_INVALID_ARG;
     }
 
-    dev->output_latch = value;
-    return i2c_master_transmit(
+    esp_err_t err = i2c_master_transmit(
         dev->dev,
         &value,
         1,
         dev->timeout_ms
     );
+    if (err == ESP_OK) {
+        dev->output_latch = value;
+    }
+    return err;
 }
 
 esp_err_t pcf8574_read_pin(const pcf8574_t *dev, uint8_t pin, bool *level)

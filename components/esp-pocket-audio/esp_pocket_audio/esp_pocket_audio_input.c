@@ -76,7 +76,41 @@ static esp_err_t init_i2c_bus(void)
         .flags.enable_internal_pullup = true,
     };
 
+    ESP_LOGI(TAG, "input I2C: port=%d SDA=%d SCL=%d",
+             ESP_POCKET_AUDIO_INPUT_I2C_PORT,
+             ESP_POCKET_AUDIO_INPUT_I2C_SDA_GPIO,
+             ESP_POCKET_AUDIO_INPUT_I2C_SCL_GPIO);
+
     return i2c_new_master_bus(&i2c_cfg, &s_input_i2c_bus);
+}
+
+static esp_err_t probe_i2c_addr(uint8_t address)
+{
+    return i2c_master_probe(
+        s_input_i2c_bus,
+        address,
+        ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
+    );
+}
+
+static void scan_input_i2c_bus(void)
+{
+    bool any_found = false;
+    esp_log_level_t previous_i2c_log_level = esp_log_level_get("i2c.master");
+
+    ESP_LOGI(TAG, "scanning input I2C bus for ADS1115/PCF8574 diagnostics");
+    esp_log_level_set("i2c.master", ESP_LOG_NONE);
+    for (uint8_t addr = 0x08; addr < 0x78; ++addr) {
+        if (probe_i2c_addr(addr) == ESP_OK) {
+            ESP_LOGI(TAG, "input I2C device found at 7-bit address 0x%02x", addr);
+            any_found = true;
+        }
+    }
+    esp_log_level_set("i2c.master", previous_i2c_log_level);
+
+    if (!any_found) {
+        ESP_LOGW(TAG, "input I2C scan found no devices");
+    }
 }
 
 static esp_err_t init_interrupt_pin(void)
@@ -140,7 +174,8 @@ static bool mapping_is_available(const switch_mapping_t *mapping)
     if (mapping->is_gpio) {
         return mapping->gpio != GPIO_NUM_NC;
     }
-    return mapping->expander < configured_expander_count() && mapping->pin < 8;
+    return mapping->expander < configured_expander_count() &&
+           mapping->pin < 8;
 }
 
 static bool raw_switch_pressed(const switch_mapping_t *mapping)
@@ -260,9 +295,17 @@ esp_err_t esp_pocket_audio_input_init(void)
         return err;
     }
 
+    scan_input_i2c_bus();
+
     err = init_interrupt_pin();
     if (err != ESP_OK) {
         return err;
+    }
+
+    err = probe_i2c_addr(ESP_POCKET_AUDIO_ADS1115_ADDR);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ADS1115 not detected at configured 7-bit address 0x%02x", ESP_POCKET_AUDIO_ADS1115_ADDR);
+        return ESP_ERR_NOT_FOUND;
     }
 
     err = ads1115_init(
@@ -273,11 +316,23 @@ esp_err_t esp_pocket_audio_input_init(void)
         ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
     );
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ADS1115 device handle init failed at 0x%02x: %s",
+                 ESP_POCKET_AUDIO_ADS1115_ADDR,
+                 esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "ADS1115 configured at 7-bit address 0x%02x", ESP_POCKET_AUDIO_ADS1115_ADDR);
 
     size_t expander_count = configured_expander_count();
     for (size_t i = 0; i < expander_count; ++i) {
+        err = probe_i2c_addr(PCF8574_ADDRS[i]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "PCF8574 %u not detected at configured 7-bit address 0x%02x",
+                     (unsigned)i,
+                     PCF8574_ADDRS[i]);
+            return ESP_ERR_NOT_FOUND;
+        }
+
         err = pcf8574_init(
             &s_pcf8574[i],
             s_input_i2c_bus,
@@ -286,9 +341,15 @@ esp_err_t esp_pocket_audio_input_init(void)
             ESP_POCKET_AUDIO_INPUT_I2C_TIMEOUT_MS
         );
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "PCF8574 %u init failed: %s", (unsigned)i, esp_err_to_name(err));
+            ESP_LOGE(TAG, "PCF8574 %u init failed at 0x%02x: %s",
+                     (unsigned)i,
+                     PCF8574_ADDRS[i],
+                     esp_err_to_name(err));
             return err;
         }
+        ESP_LOGI(TAG, "PCF8574 %u configured at 7-bit address 0x%02x",
+                 (unsigned)i,
+                 PCF8574_ADDRS[i]);
     }
 
     err = init_gpio_switches();

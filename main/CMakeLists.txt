@@ -3,8 +3,9 @@ idf_component_register(
         "main.c"
 
     REQUIRES
-        nvs_flash
+        es8388
         esp-pocket-audio
+        nvs_flash
 
     INCLUDE_DIRS
         ""

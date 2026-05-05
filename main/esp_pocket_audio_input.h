@@ -6,6 +6,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "esp_pocket_audio_joystick.h"
 #include "hal/gpio_types.h"
 
 #ifdef __cplusplus
@@ -41,6 +42,7 @@ typedef struct {
 typedef struct {
     esp_pocket_audio_axis_state_t x;
     esp_pocket_audio_axis_state_t y;
+    esp_pocket_audio_joystick_direction_t direction;
 } esp_pocket_audio_joystick_state_t;
 
 typedef enum {

@@ -4,6 +4,7 @@ idf_component_register(
         "diagnostics.c"
         "esp_pocket_audio.c"
         "esp_pocket_audio_input.c"
+        "esp_pocket_audio_joystick.c"
 
     REQUIRES
         ads1115

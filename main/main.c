@@ -50,7 +50,8 @@ static void app_task(void *arg)
     ESP_ERROR_CHECK(es8388_dump_registers((es8388_t *)&hw->codec, TAG));
     ESP_ERROR_CHECK(diagnostics_start_audio_test(hw));
 
-    diagnostics_run(hw);
+    // diagnostics_run(hw);
+    vTaskDelete(NULL);
 }
 
 void app_main(void)

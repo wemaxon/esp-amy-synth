@@ -144,6 +144,9 @@ static void update_display(const esp_pocket_audio_hw_t *hw, uint32_t pressed_mas
     snprintf(line, sizeof(line), "RAW %05d %05d", joystick->x.raw, joystick->y.raw);
     pocket_oled_draw_text_row((pocket_oled_t *)&hw->display, 3, line);
 
+    snprintf(line, sizeof(line), "DIR %s", esp_pocket_audio_joystick_direction_name(joystick->direction));
+    pocket_oled_draw_text_row((pocket_oled_t *)&hw->display, 4, line);
+
     pocket_oled_draw_text_row((pocket_oled_t *)&hw->display, 5, "TONE 440HZ");
     pocket_oled_draw_text_row((pocket_oled_t *)&hw->display, 6,
                               esp_pocket_audio_input_int_is_asserted() ? "PCF INT ASSERT" : "PCF INT IDLE");
@@ -160,13 +163,6 @@ void diagnostics_run(const esp_pocket_audio_hw_t *hw)
     while (true) {
         TickType_t now = xTaskGetTickCount();
 
-        esp_err_t err = esp_pocket_audio_input_update();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "input update failed: %s", esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(200));
-            continue;
-        }
-
         esp_pocket_audio_input_event_t event = {0};
         while (esp_pocket_audio_input_pop_event(&event) == ESP_OK) {
             log_input_event(&event);
@@ -179,11 +175,12 @@ void diagnostics_run(const esp_pocket_audio_hw_t *hw)
         }
 
         if ((int32_t)(now - next_joystick_log) >= 0) {
-            err = esp_pocket_audio_joystick_read(&joystick);
+            esp_err_t err = esp_pocket_audio_joystick_read(&joystick);
             if (err == ESP_OK) {
                 ESP_LOGI(
                     TAG,
-                    "joystick x raw=%d norm=%.3f, y raw=%d norm=%.3f",
+                    "joystick dir=%s x raw=%d norm=%.3f, y raw=%d norm=%.3f",
+                    esp_pocket_audio_joystick_direction_name(joystick.direction),
                     joystick.x.raw,
                     joystick.x.value,
                     joystick.y.raw,

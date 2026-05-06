@@ -1,0 +1,574 @@
+#include "hmi/controls.h"
+
+#include <math.h>
+#include <stddef.h>
+#include <stdio.h>
+
+#include "ads1115.h"
+#include "driver/gpio.h"
+#include "esp_attr.h"
+#include "esp_check.h"
+#include "esp_log.h"
+#include "esp_pocket_audio_board_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "hmi/joystick_calibration.h"
+#include "pcf8574.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define EVENT_QUEUE_LEN 16
+#define CONTROLS_TASK_STACK_SIZE 4096
+
+typedef struct {
+    bool is_gpio;
+    uint8_t expander;
+    uint8_t pin;
+    gpio_num_t gpio;
+} switch_mapping_t;
+
+typedef struct {
+    bool stable_pressed;
+    bool sampled_pressed;
+    TickType_t changed_at;
+} switch_debounce_t;
+
+static const char *TAG = "CONTROLS";
+static const TickType_t SERVICE_PERIOD_TICKS = pdMS_TO_TICKS(20);
+static const TickType_t HELD_LOG_TICKS = pdMS_TO_TICKS(500);
+static const float DIRECTION_DEADZONE = 0.35f;
+
+static const uint8_t PCF8574_ADDRS[] = {
+    ESP_POCKET_AUDIO_PCF8574_0_ADDR,
+};
+
+static const switch_mapping_t SWITCH_MAP[CONTROL_SWITCH_COUNT] = {
+    [CONTROL_KEY_F] = {false, ESP_POCKET_AUDIO_SW_KEY_F_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_F_PIN, GPIO_NUM_NC},
+    [CONTROL_KEY_F_SHARP] = {false, ESP_POCKET_AUDIO_SW_KEY_F_SHARP_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_F_SHARP_PIN, GPIO_NUM_NC},
+    [CONTROL_KEY_G] = {false, ESP_POCKET_AUDIO_SW_KEY_G_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_G_PIN, GPIO_NUM_NC},
+    [CONTROL_KEY_G_SHARP] = {false, ESP_POCKET_AUDIO_SW_KEY_G_SHARP_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_G_SHARP_PIN, GPIO_NUM_NC},
+    [CONTROL_KEY_A] = {false, ESP_POCKET_AUDIO_SW_KEY_A_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_A_PIN, GPIO_NUM_NC},
+    [CONTROL_KEY_A_SHARP] = {false, ESP_POCKET_AUDIO_SW_KEY_A_SHARP_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_A_SHARP_PIN, GPIO_NUM_NC},
+    [CONTROL_KEY_H] = {false, ESP_POCKET_AUDIO_SW_KEY_H_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_H_PIN, GPIO_NUM_NC},
+    [CONTROL_JOYSTICK_CLICK] = {true, 0, 0, ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO},
+    [CONTROL_KEY_TEMPO] = {false, ESP_POCKET_AUDIO_SW_KEY_TEMPO_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_TEMPO_PIN, GPIO_NUM_NC},
+    [CONTROL_KEY_MODE] = {true, 0, 0, ESP_POCKET_AUDIO_SW_KEY_MODE_GPIO},
+    [CONTROL_KEY_SOUND] = {true, 0, 0, ESP_POCKET_AUDIO_SW_KEY_SOUND_GPIO},
+};
+
+static bool s_initialized;
+static i2c_master_bus_handle_t s_i2c_bus;
+static ads1115_t s_ads1115;
+static pcf8574_t s_pcf8574[ESP_POCKET_AUDIO_PCF8574_COUNT];
+static uint8_t s_pcf_port_state[ESP_POCKET_AUDIO_PCF8574_COUNT];
+static switch_debounce_t s_switches[CONTROL_SWITCH_COUNT];
+static control_event_t s_events[EVENT_QUEUE_LEN];
+static size_t s_event_head;
+static size_t s_event_tail;
+static control_joystick_state_t s_joystick;
+static volatile uint32_t s_gpio_irq_pending_mask;
+static uint32_t s_gpio_debounce_pending_mask;
+static portMUX_TYPE s_event_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_gpio_irq_mux = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t s_service_task;
+
+static size_t configured_expander_count(void)
+{
+    return ESP_POCKET_AUDIO_PCF8574_COUNT > 2 ? 2 : ESP_POCKET_AUDIO_PCF8574_COUNT;
+}
+
+const char *controls_switch_name(control_switch_t sw)
+{
+    switch (sw) {
+    case CONTROL_KEY_F:
+        return "KEY_F";
+    case CONTROL_KEY_F_SHARP:
+        return "KEY_F#";
+    case CONTROL_KEY_G:
+        return "KEY_G";
+    case CONTROL_KEY_G_SHARP:
+        return "KEY_G#";
+    case CONTROL_KEY_A:
+        return "KEY_A";
+    case CONTROL_KEY_A_SHARP:
+        return "KEY_A#";
+    case CONTROL_KEY_H:
+        return "KEY_H";
+    case CONTROL_JOYSTICK_CLICK:
+        return "JOY_CLICK";
+    case CONTROL_KEY_TEMPO:
+        return "KEY_TEMPO";
+    case CONTROL_KEY_MODE:
+        return "KEY_MODE";
+    case CONTROL_KEY_SOUND:
+        return "KEY_SOUND";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+const char *controls_switch_short_name(control_switch_t sw)
+{
+    switch (sw) {
+    case CONTROL_KEY_F:
+        return "F";
+    case CONTROL_KEY_F_SHARP:
+        return "F#";
+    case CONTROL_KEY_G:
+        return "G";
+    case CONTROL_KEY_G_SHARP:
+        return "G#";
+    case CONTROL_KEY_A:
+        return "A";
+    case CONTROL_KEY_A_SHARP:
+        return "A#";
+    case CONTROL_KEY_H:
+        return "H";
+    case CONTROL_JOYSTICK_CLICK:
+        return "J";
+    case CONTROL_KEY_TEMPO:
+        return "T";
+    case CONTROL_KEY_MODE:
+        return "M";
+    case CONTROL_KEY_SOUND:
+        return "S";
+    default:
+        return "?";
+    }
+}
+
+const char *controls_joystick_direction_name(control_joystick_direction_t direction)
+{
+    switch (direction) {
+    case CONTROL_JOYSTICK_CENTER:
+        return "CENTER";
+    case CONTROL_JOYSTICK_UP:
+        return "UP";
+    case CONTROL_JOYSTICK_UP_RIGHT:
+        return "UP_RIGHT";
+    case CONTROL_JOYSTICK_RIGHT:
+        return "RIGHT";
+    case CONTROL_JOYSTICK_DOWN_RIGHT:
+        return "DOWN_RIGHT";
+    case CONTROL_JOYSTICK_DOWN:
+        return "DOWN";
+    case CONTROL_JOYSTICK_DOWN_LEFT:
+        return "DOWN_LEFT";
+    case CONTROL_JOYSTICK_LEFT:
+        return "LEFT";
+    case CONTROL_JOYSTICK_UP_LEFT:
+        return "UP_LEFT";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+control_joystick_direction_t controls_joystick_direction_from_axes(float x, float y)
+{
+    float magnitude_squared = (x * x) + (y * y);
+    if (magnitude_squared < (DIRECTION_DEADZONE * DIRECTION_DEADZONE)) {
+        return CONTROL_JOYSTICK_CENTER;
+    }
+
+    float angle = atan2f(y, x);
+    int octant = (int)floorf(((angle + (float)M_PI) / ((float)M_PI / 4.0f)) + 0.5f) & 0x07;
+
+    switch (octant) {
+    case 0:
+        return CONTROL_JOYSTICK_LEFT;
+    case 1:
+        return CONTROL_JOYSTICK_DOWN_LEFT;
+    case 2:
+        return CONTROL_JOYSTICK_DOWN;
+    case 3:
+        return CONTROL_JOYSTICK_DOWN_RIGHT;
+    case 4:
+        return CONTROL_JOYSTICK_RIGHT;
+    case 5:
+        return CONTROL_JOYSTICK_UP_RIGHT;
+    case 6:
+        return CONTROL_JOYSTICK_UP;
+    case 7:
+    default:
+        return CONTROL_JOYSTICK_UP_LEFT;
+    }
+}
+
+static esp_err_t probe_i2c_addr(uint8_t address)
+{
+    return i2c_master_probe(s_i2c_bus, address, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS);
+}
+
+static esp_err_t init_interrupt_pin(void)
+{
+    if (ESP_POCKET_AUDIO_PCF8574_INT_GPIO == GPIO_NUM_NC) {
+        return ESP_OK;
+    }
+
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << ESP_POCKET_AUDIO_PCF8574_INT_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    return gpio_config(&cfg);
+}
+
+static esp_err_t init_gpio_switches(void)
+{
+    uint64_t gpio_mask = 0;
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
+        if (SWITCH_MAP[i].is_gpio && SWITCH_MAP[i].gpio != GPIO_NUM_NC) {
+            gpio_mask |= 1ULL << SWITCH_MAP[i].gpio;
+        }
+    }
+
+    if (gpio_mask == 0) {
+        return ESP_OK;
+    }
+
+    gpio_config_t cfg = {
+        .pin_bit_mask = gpio_mask,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
+    };
+    return gpio_config(&cfg);
+}
+
+static void IRAM_ATTR gpio_switch_isr(void *arg)
+{
+    uint32_t sw = (uint32_t)(uintptr_t)arg;
+    portENTER_CRITICAL_ISR(&s_gpio_irq_mux);
+    s_gpio_irq_pending_mask |= 1UL << sw;
+    portEXIT_CRITICAL_ISR(&s_gpio_irq_mux);
+}
+
+static esp_err_t init_gpio_interrupts(void)
+{
+    esp_err_t err = gpio_install_isr_service(0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        return err;
+    }
+
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
+        const switch_mapping_t *mapping = &SWITCH_MAP[i];
+        if (!mapping->is_gpio || mapping->gpio == GPIO_NUM_NC) {
+            continue;
+        }
+        err = gpio_isr_handler_add(mapping->gpio, gpio_switch_isr, (void *)(uintptr_t)i);
+        if (err != ESP_OK) {
+            return err;
+        }
+        ESP_LOGI(TAG, "GPIO%d interrupt enabled for %s", mapping->gpio, controls_switch_name((control_switch_t)i));
+    }
+
+    return ESP_OK;
+}
+
+static void push_event(control_switch_t sw, bool pressed)
+{
+    portENTER_CRITICAL(&s_event_mux);
+    size_t next_head = (s_event_head + 1) % EVENT_QUEUE_LEN;
+    if (next_head == s_event_tail) {
+        s_event_tail = (s_event_tail + 1) % EVENT_QUEUE_LEN;
+    }
+    s_events[s_event_head].sw = sw;
+    s_events[s_event_head].type = pressed ? CONTROL_EVENT_SWITCH_PRESSED : CONTROL_EVENT_SWITCH_RELEASED;
+    s_event_head = next_head;
+    portEXIT_CRITICAL(&s_event_mux);
+}
+
+static bool mapping_is_available(const switch_mapping_t *mapping)
+{
+    if (mapping->is_gpio) {
+        return mapping->gpio != GPIO_NUM_NC;
+    }
+    return mapping->expander < configured_expander_count() && mapping->pin < 8;
+}
+
+static bool raw_switch_pressed(const switch_mapping_t *mapping)
+{
+    if (!mapping_is_available(mapping)) {
+        return false;
+    }
+
+    bool level = mapping->is_gpio ?
+        gpio_get_level(mapping->gpio) != 0 :
+        ((s_pcf_port_state[mapping->expander] >> mapping->pin) & 0x01) != 0;
+
+#if ESP_POCKET_AUDIO_SWITCH_ACTIVE_LOW
+    return !level;
+#else
+    return level;
+#endif
+}
+
+static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ticks)
+{
+    switch_debounce_t *debounce = &s_switches[sw];
+    if (pressed != debounce->sampled_pressed) {
+        debounce->sampled_pressed = pressed;
+        debounce->changed_at = now_ticks;
+        if (SWITCH_MAP[sw].is_gpio) {
+            s_gpio_debounce_pending_mask |= 1UL << sw;
+        }
+        return;
+    }
+
+    TickType_t debounce_ticks = pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS);
+    if (pressed != debounce->stable_pressed && (now_ticks - debounce->changed_at) >= debounce_ticks) {
+        debounce->stable_pressed = pressed;
+        push_event(sw, pressed);
+        ESP_LOGV(TAG, "%s %s", controls_switch_name(sw), pressed ? "pressed" : "released");
+    }
+
+    if (pressed == debounce->stable_pressed && SWITCH_MAP[sw].is_gpio) {
+        s_gpio_debounce_pending_mask &= ~(1UL << sw);
+    }
+}
+
+static esp_err_t update_pcf_switches(TickType_t now_ticks)
+{
+    for (size_t i = 0; i < configured_expander_count(); ++i) {
+        esp_err_t err = pcf8574_read_port(&s_pcf8574[i], &s_pcf_port_state[i]);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
+        if (!SWITCH_MAP[i].is_gpio) {
+            debounce_switch((control_switch_t)i, raw_switch_pressed(&SWITCH_MAP[i]), now_ticks);
+        }
+    }
+    return ESP_OK;
+}
+
+static void update_gpio_switches(TickType_t now_ticks)
+{
+    portENTER_CRITICAL(&s_gpio_irq_mux);
+    uint32_t pending_mask = s_gpio_irq_pending_mask;
+    s_gpio_irq_pending_mask = 0;
+    portEXIT_CRITICAL(&s_gpio_irq_mux);
+
+    pending_mask |= s_gpio_debounce_pending_mask;
+    while (pending_mask != 0) {
+        uint32_t sw = __builtin_ctz(pending_mask);
+        pending_mask &= ~(1UL << sw);
+        if (sw < CONTROL_SWITCH_COUNT && SWITCH_MAP[sw].is_gpio) {
+            debounce_switch((control_switch_t)sw, raw_switch_pressed(&SWITCH_MAP[sw]), now_ticks);
+        }
+    }
+}
+
+static esp_err_t update_joystick(void)
+{
+    int16_t raw_x = 0;
+    int16_t raw_y = 0;
+
+    esp_err_t err = ads1115_read_single_ended(&s_ads1115, (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_CH, &raw_x);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = ads1115_read_single_ended(&s_ads1115, (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_CH, &raw_y);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    s_joystick.x.raw = raw_x;
+    s_joystick.x.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_X, raw_x);
+    s_joystick.y.raw = raw_y;
+    s_joystick.y.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_Y, raw_y);
+    s_joystick.direction = controls_joystick_direction_from_axes(s_joystick.x.value, s_joystick.y.value);
+    return ESP_OK;
+}
+
+static void log_pressed_switches(uint32_t pressed_mask)
+{
+    char line[128];
+    size_t used = snprintf(line, sizeof(line), "pressed:");
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT && used < sizeof(line); ++i) {
+        if ((pressed_mask & (1UL << i)) != 0) {
+            used += snprintf(line + used, sizeof(line) - used, " %s", controls_switch_name((control_switch_t)i));
+        }
+    }
+    ESP_LOGV(TAG, "%s", line);
+}
+
+static void service_task(void *arg)
+{
+    (void)arg;
+    TickType_t next_held_log = 0;
+    control_joystick_direction_t last_direction = CONTROL_JOYSTICK_CENTER;
+
+    while (true) {
+        TickType_t now = xTaskGetTickCount();
+        esp_err_t err = controls_update();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "update failed: %s", esp_err_to_name(err));
+        }
+
+        control_joystick_state_t joystick = {0};
+        if (controls_joystick_read(&joystick) == ESP_OK && joystick.direction != last_direction) {
+            ESP_LOGV(TAG, "joystick %s x=%d %.3f y=%d %.3f",
+                     controls_joystick_direction_name(joystick.direction),
+                     joystick.x.raw,
+                     joystick.x.value,
+                     joystick.y.raw,
+                     joystick.y.value);
+            last_direction = joystick.direction;
+        }
+
+        uint32_t pressed_mask = controls_pressed_mask();
+        if (pressed_mask != 0 && (int32_t)(now - next_held_log) >= 0) {
+            log_pressed_switches(pressed_mask);
+            next_held_log = now + HELD_LOG_TICKS;
+        }
+
+        vTaskDelay(SERVICE_PERIOD_TICKS);
+    }
+}
+
+static esp_err_t start_service_task(void)
+{
+    if (s_service_task != NULL) {
+        return ESP_OK;
+    }
+
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        service_task,
+        "controls",
+        CONTROLS_TASK_STACK_SIZE,
+        NULL,
+        4,
+        &s_service_task,
+        0
+    );
+    return task_created == pdPASS ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t controls_init(i2c_master_bus_handle_t bus)
+{
+    if (s_initialized) {
+        return ESP_OK;
+    }
+    if (bus == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_i2c_bus = bus;
+    ESP_RETURN_ON_ERROR(joystick_calibration_init(), TAG, "joystick calibration init failed");
+    ESP_RETURN_ON_ERROR(init_interrupt_pin(), TAG, "PCF interrupt pin failed");
+    ESP_RETURN_ON_ERROR(probe_i2c_addr(ESP_POCKET_AUDIO_ADS1115_ADDR), TAG, "ADS1115 not detected");
+    ESP_RETURN_ON_ERROR(ads1115_init(&s_ads1115, s_i2c_bus, ESP_POCKET_AUDIO_ADS1115_ADDR, ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "ADS1115 init failed");
+
+    for (size_t i = 0; i < configured_expander_count(); ++i) {
+        ESP_RETURN_ON_ERROR(probe_i2c_addr(PCF8574_ADDRS[i]), TAG, "PCF8574 not detected");
+        ESP_RETURN_ON_ERROR(pcf8574_init(&s_pcf8574[i], s_i2c_bus, PCF8574_ADDRS[i], ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "PCF8574 init failed");
+        s_pcf_port_state[i] = 0xFF;
+    }
+
+    ESP_RETURN_ON_ERROR(init_gpio_switches(), TAG, "GPIO switch init failed");
+
+    TickType_t now = xTaskGetTickCount();
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
+        bool pressed = SWITCH_MAP[i].is_gpio ? raw_switch_pressed(&SWITCH_MAP[i]) : false;
+        s_switches[i].stable_pressed = pressed;
+        s_switches[i].sampled_pressed = pressed;
+        s_switches[i].changed_at = now;
+    }
+
+    ESP_RETURN_ON_ERROR(init_gpio_interrupts(), TAG, "GPIO interrupt init failed");
+    s_event_head = 0;
+    s_event_tail = 0;
+    s_initialized = true;
+    ESP_RETURN_ON_ERROR(controls_update(), TAG, "initial controls update failed");
+    ESP_RETURN_ON_ERROR(start_service_task(), TAG, "controls task failed");
+
+    ESP_LOGI(TAG, "controls initialized");
+    return ESP_OK;
+}
+
+esp_err_t controls_update(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    esp_err_t switch_err = update_pcf_switches(now);
+    update_gpio_switches(now);
+    esp_err_t joystick_err = update_joystick();
+    return switch_err != ESP_OK ? switch_err : joystick_err;
+}
+
+bool controls_expander_interrupt_asserted(void)
+{
+    if (ESP_POCKET_AUDIO_PCF8574_INT_GPIO == GPIO_NUM_NC) {
+        return false;
+    }
+    return gpio_get_level(ESP_POCKET_AUDIO_PCF8574_INT_GPIO) == 0;
+}
+
+gpio_num_t controls_expander_interrupt_gpio(void)
+{
+    return ESP_POCKET_AUDIO_PCF8574_INT_GPIO;
+}
+
+bool controls_switch_is_pressed(control_switch_t sw)
+{
+    return sw < CONTROL_SWITCH_COUNT ? s_switches[sw].stable_pressed : false;
+}
+
+uint32_t controls_pressed_mask(void)
+{
+    uint32_t mask = 0;
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
+        if (s_switches[i].stable_pressed) {
+            mask |= 1UL << i;
+        }
+    }
+    return mask;
+}
+
+esp_err_t controls_pop_event(control_event_t *event)
+{
+    if (event == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_event_mux);
+    if (s_event_tail == s_event_head) {
+        portEXIT_CRITICAL(&s_event_mux);
+        return ESP_ERR_NOT_FOUND;
+    }
+    *event = s_events[s_event_tail];
+    s_event_tail = (s_event_tail + 1) % EVENT_QUEUE_LEN;
+    portEXIT_CRITICAL(&s_event_mux);
+    return ESP_OK;
+}
+
+esp_err_t controls_axis_read(control_axis_t axis, control_axis_state_t *state)
+{
+    if (state == NULL || axis >= CONTROL_AXIS_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *state = axis == CONTROL_AXIS_X ? s_joystick.x : s_joystick.y;
+    return ESP_OK;
+}
+
+esp_err_t controls_joystick_read(control_joystick_state_t *state)
+{
+    if (state == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *state = s_joystick;
+    return ESP_OK;
+}

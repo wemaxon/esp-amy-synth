@@ -5,9 +5,10 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-#include "diagnostics.h"
 #include "es8388.h"
 #include "esp_pocket_audio.h"
+#include "hmi/controls.h"
+#include "hmi/diagnostic_ui.h"
 #include "hichord_app.h"
 
 static const char *TAG = "main";
@@ -19,10 +20,11 @@ static void log_setup(void)
 {
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set("ESP_POCKET_AUDIO", ESP_LOG_VERBOSE);
-    esp_log_level_set("ESP_POCKET_AUDIO_INPUT", ESP_LOG_VERBOSE);
     esp_log_level_set("ES8388", ESP_LOG_VERBOSE);
     esp_log_level_set("POCKET_OLED", ESP_LOG_VERBOSE);
-    esp_log_level_set("diagnostics", ESP_LOG_VERBOSE);
+    esp_log_level_set("CONTROLS", ESP_LOG_VERBOSE);
+    esp_log_level_set("DIAG_UI", ESP_LOG_VERBOSE);
+    esp_log_level_set("JOYSTICK_CAL", ESP_LOG_VERBOSE);
     esp_log_level_set("HICHORD_APP", ESP_LOG_VERBOSE);
     esp_log_level_set("HICHORD_SYNTH", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG, ESP_LOG_VERBOSE);
@@ -51,6 +53,10 @@ static void app_task(void *arg)
     const esp_pocket_audio_hw_t *hw = esp_pocket_audio_hw();
     ESP_ERROR_CHECK(hw != NULL ? ESP_OK : ESP_ERR_INVALID_STATE);
     ESP_ERROR_CHECK(es8388_dump_registers((es8388_t *)&hw->codec, TAG));
+    if (controls_switch_is_pressed(CONTROL_KEY_MODE)) {
+        ESP_LOGI(TAG, "mode key held on boot, entering diagnostic UI");
+        diagnostic_ui_run(hw);
+    }
     ESP_ERROR_CHECK(hichord_app_start(hw));
     vTaskDelete(NULL);
 }

@@ -46,26 +46,26 @@ const char *hichord_quality_name(hichord_quality_t quality)
     }
 }
 
-hichord_quality_t hichord_quality_from_joystick(esp_pocket_audio_joystick_direction_t direction)
+hichord_quality_t hichord_quality_from_joystick(control_joystick_direction_t direction)
 {
     switch (direction) {
-    case ESP_POCKET_AUDIO_JOYSTICK_CENTER:
+    case CONTROL_JOYSTICK_CENTER:
         return HICHORD_QUALITY_DIATONIC;
-    case ESP_POCKET_AUDIO_JOYSTICK_UP:
+    case CONTROL_JOYSTICK_UP:
         return HICHORD_QUALITY_SEVENTH;
-    case ESP_POCKET_AUDIO_JOYSTICK_UP_RIGHT:
+    case CONTROL_JOYSTICK_UP_RIGHT:
         return HICHORD_QUALITY_NINTH;
-    case ESP_POCKET_AUDIO_JOYSTICK_RIGHT:
+    case CONTROL_JOYSTICK_RIGHT:
         return HICHORD_QUALITY_SUS4;
-    case ESP_POCKET_AUDIO_JOYSTICK_DOWN_RIGHT:
+    case CONTROL_JOYSTICK_DOWN_RIGHT:
         return HICHORD_QUALITY_AUGMENTED;
-    case ESP_POCKET_AUDIO_JOYSTICK_DOWN:
+    case CONTROL_JOYSTICK_DOWN:
         return HICHORD_QUALITY_SIXTH;
-    case ESP_POCKET_AUDIO_JOYSTICK_DOWN_LEFT:
+    case CONTROL_JOYSTICK_DOWN_LEFT:
         return HICHORD_QUALITY_DIMINISHED;
-    case ESP_POCKET_AUDIO_JOYSTICK_LEFT:
+    case CONTROL_JOYSTICK_LEFT:
         return HICHORD_QUALITY_SUS2;
-    case ESP_POCKET_AUDIO_JOYSTICK_UP_LEFT:
+    case CONTROL_JOYSTICK_UP_LEFT:
         return HICHORD_QUALITY_TOGGLE_MAJOR_MINOR;
     default:
         return HICHORD_QUALITY_DIATONIC;

@@ -5,9 +5,10 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
-#include "esp_pocket_audio_input.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hmi/controls.h"
+#include "hmi/keymap.h"
 #include "hichord_synth_amy.h"
 #include "hichord_theory.h"
 
@@ -32,39 +33,6 @@ static hichord_app_state_t s_app = {
     .active_quality = HICHORD_QUALITY_DIATONIC,
 };
 
-static bool switch_to_degree(esp_pocket_audio_switch_t sw, uint8_t *degree)
-{
-    if (degree == NULL) {
-        return false;
-    }
-
-    switch (sw) {
-    case ESP_POCKET_AUDIO_SWITCH_CHORD_1:
-        *degree = 1;
-        return true;
-    case ESP_POCKET_AUDIO_SWITCH_CHORD_2:
-        *degree = 2;
-        return true;
-    case ESP_POCKET_AUDIO_SWITCH_CHORD_3:
-        *degree = 3;
-        return true;
-    case ESP_POCKET_AUDIO_SWITCH_CHORD_4:
-        *degree = 4;
-        return true;
-    case ESP_POCKET_AUDIO_SWITCH_CHORD_5:
-        *degree = 5;
-        return true;
-    case ESP_POCKET_AUDIO_SWITCH_CHORD_6:
-        *degree = 6;
-        return true;
-    case ESP_POCKET_AUDIO_SWITCH_CHORD_7:
-        *degree = 7;
-        return true;
-    default:
-        return false;
-    }
-}
-
 static void play_degree(uint8_t degree, hichord_quality_t quality)
 {
     hichord_chord_t chord = {0};
@@ -87,14 +55,14 @@ static void play_degree(uint8_t degree, hichord_quality_t quality)
              chord.note_count);
 }
 
-static void handle_input_event(const esp_pocket_audio_input_event_t *event)
+static void handle_input_event(const control_event_t *event)
 {
     uint8_t degree = 0;
-    if (!switch_to_degree(event->sw, &degree)) {
+    if (!keymap_switch_to_chord_degree(event->sw, &degree)) {
         return;
     }
 
-    if (event->type == ESP_POCKET_AUDIO_INPUT_EVENT_SWITCH_PRESSED) {
+    if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
         /* PLAY mode uses chord replacement: the most recent chord button owns the active voices. */
         s_app.chord_held = true;
         s_app.held_degree = degree;
@@ -111,8 +79,8 @@ static void handle_input_event(const esp_pocket_audio_input_event_t *event)
 
 static void update_joystick_quality(void)
 {
-    esp_pocket_audio_joystick_state_t joystick = {0};
-    if (esp_pocket_audio_joystick_read(&joystick) != ESP_OK) {
+    control_joystick_state_t joystick = {0};
+    if (controls_joystick_read(&joystick) != ESP_OK) {
         return;
     }
 
@@ -135,8 +103,8 @@ static void app_task(void *arg)
     ESP_LOGI(TAG, "HiChord play app started");
 
     while (true) {
-        esp_pocket_audio_input_event_t event = {0};
-        while (esp_pocket_audio_input_pop_event(&event) == ESP_OK) {
+        control_event_t event = {0};
+        while (controls_pop_event(&event) == ESP_OK) {
             handle_input_event(&event);
         }
 

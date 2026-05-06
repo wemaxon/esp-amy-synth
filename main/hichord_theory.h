@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "esp_pocket_audio_joystick.h"
+#include "hmi/controls.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,7 +32,7 @@ typedef struct {
 } hichord_chord_t;
 
 const char *hichord_quality_name(hichord_quality_t quality);
-hichord_quality_t hichord_quality_from_joystick(esp_pocket_audio_joystick_direction_t direction);
+hichord_quality_t hichord_quality_from_joystick(control_joystick_direction_t direction);
 int hichord_chord_for_degree(uint8_t key_root_midi, uint8_t degree, hichord_quality_t quality, hichord_chord_t *chord);
 
 #ifdef __cplusplus

@@ -1,10 +1,11 @@
 idf_component_register(
     SRCS
         "main.c"
-        "diagnostics.c"
         "esp_pocket_audio.c"
-        "esp_pocket_audio_input.c"
-        "esp_pocket_audio_joystick.c"
+        "hmi/controls.c"
+        "hmi/diagnostic_ui.c"
+        "hmi/joystick_calibration.c"
+        "hmi/keymap.c"
         "hichord_app.c"
         "hichord_synth_amy.c"
         "hichord_theory.c"
@@ -21,5 +22,5 @@ idf_component_register(
         pocket-oled
 
     INCLUDE_DIRS
-        ""
+        "."
 )

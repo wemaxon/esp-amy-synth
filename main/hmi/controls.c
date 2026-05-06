@@ -46,13 +46,13 @@ static const uint8_t PCF8574_ADDRS[] = {
 };
 
 static const switch_mapping_t SWITCH_MAP[CONTROL_SWITCH_COUNT] = {
-    [CONTROL_KEY_F] = {false, ESP_POCKET_AUDIO_SW_KEY_F_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_F_PIN, GPIO_NUM_NC},
-    [CONTROL_KEY_F_SHARP] = {false, ESP_POCKET_AUDIO_SW_KEY_F_SHARP_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_F_SHARP_PIN, GPIO_NUM_NC},
-    [CONTROL_KEY_G] = {false, ESP_POCKET_AUDIO_SW_KEY_G_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_G_PIN, GPIO_NUM_NC},
-    [CONTROL_KEY_G_SHARP] = {false, ESP_POCKET_AUDIO_SW_KEY_G_SHARP_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_G_SHARP_PIN, GPIO_NUM_NC},
-    [CONTROL_KEY_A] = {false, ESP_POCKET_AUDIO_SW_KEY_A_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_A_PIN, GPIO_NUM_NC},
-    [CONTROL_KEY_A_SHARP] = {false, ESP_POCKET_AUDIO_SW_KEY_A_SHARP_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_A_SHARP_PIN, GPIO_NUM_NC},
-    [CONTROL_KEY_H] = {false, ESP_POCKET_AUDIO_SW_KEY_H_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_H_PIN, GPIO_NUM_NC},
+    [CONTROL_CHORD_1] = {false, ESP_POCKET_AUDIO_SW_CHORD_1_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_1_PIN, GPIO_NUM_NC},
+    [CONTROL_CHORD_2] = {false, ESP_POCKET_AUDIO_SW_CHORD_2_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_2_PIN, GPIO_NUM_NC},
+    [CONTROL_CHORD_3] = {false, ESP_POCKET_AUDIO_SW_CHORD_3_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_3_PIN, GPIO_NUM_NC},
+    [CONTROL_CHORD_4] = {false, ESP_POCKET_AUDIO_SW_CHORD_4_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_4_PIN, GPIO_NUM_NC},
+    [CONTROL_CHORD_5] = {false, ESP_POCKET_AUDIO_SW_CHORD_5_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_5_PIN, GPIO_NUM_NC},
+    [CONTROL_CHORD_6] = {false, ESP_POCKET_AUDIO_SW_CHORD_6_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_6_PIN, GPIO_NUM_NC},
+    [CONTROL_CHORD_7] = {false, ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_7_PIN, GPIO_NUM_NC},
     [CONTROL_JOYSTICK_CLICK] = {true, 0, 0, ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO},
     [CONTROL_KEY_TEMPO] = {false, ESP_POCKET_AUDIO_SW_KEY_TEMPO_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_TEMPO_PIN, GPIO_NUM_NC},
     [CONTROL_KEY_MODE] = {true, 0, 0, ESP_POCKET_AUDIO_SW_KEY_MODE_GPIO},
@@ -84,20 +84,20 @@ static size_t configured_expander_count(void)
 const char *controls_switch_name(control_switch_t sw)
 {
     switch (sw) {
-    case CONTROL_KEY_F:
-        return "KEY_F";
-    case CONTROL_KEY_F_SHARP:
-        return "KEY_F#";
-    case CONTROL_KEY_G:
-        return "KEY_G";
-    case CONTROL_KEY_G_SHARP:
-        return "KEY_G#";
-    case CONTROL_KEY_A:
-        return "KEY_A";
-    case CONTROL_KEY_A_SHARP:
-        return "KEY_A#";
-    case CONTROL_KEY_H:
-        return "KEY_H";
+    case CONTROL_CHORD_1:
+        return "CHORD_1_TONIC";
+    case CONTROL_CHORD_2:
+        return "CHORD_2_SUPERTONIC";
+    case CONTROL_CHORD_3:
+        return "CHORD_3_MEDIANT";
+    case CONTROL_CHORD_4:
+        return "CHORD_4_SUBDOMINANT";
+    case CONTROL_CHORD_5:
+        return "CHORD_5_DOMINANT";
+    case CONTROL_CHORD_6:
+        return "CHORD_6_SUBMEDIANT";
+    case CONTROL_CHORD_7:
+        return "CHORD_7_LEADING";
     case CONTROL_JOYSTICK_CLICK:
         return "JOY_CLICK";
     case CONTROL_KEY_TEMPO:
@@ -114,20 +114,20 @@ const char *controls_switch_name(control_switch_t sw)
 const char *controls_switch_short_name(control_switch_t sw)
 {
     switch (sw) {
-    case CONTROL_KEY_F:
-        return "F";
-    case CONTROL_KEY_F_SHARP:
-        return "F#";
-    case CONTROL_KEY_G:
-        return "G";
-    case CONTROL_KEY_G_SHARP:
-        return "G#";
-    case CONTROL_KEY_A:
-        return "A";
-    case CONTROL_KEY_A_SHARP:
-        return "A#";
-    case CONTROL_KEY_H:
-        return "H";
+    case CONTROL_CHORD_1:
+        return "1";
+    case CONTROL_CHORD_2:
+        return "2";
+    case CONTROL_CHORD_3:
+        return "3";
+    case CONTROL_CHORD_4:
+        return "4";
+    case CONTROL_CHORD_5:
+        return "5";
+    case CONTROL_CHORD_6:
+        return "6";
+    case CONTROL_CHORD_7:
+        return "7";
     case CONTROL_JOYSTICK_CLICK:
         return "J";
     case CONTROL_KEY_TEMPO:

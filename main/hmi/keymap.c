@@ -3,13 +3,13 @@
 #include <stddef.h>
 
 static const keymap_chord_key_t CHORD_KEYS[KEYMAP_CHORD_KEY_COUNT] = {
-    {.sw = CONTROL_KEY_F, .label = "F", .degree = 1},
-    {.sw = CONTROL_KEY_F_SHARP, .label = "F#", .degree = 2},
-    {.sw = CONTROL_KEY_G, .label = "G", .degree = 3},
-    {.sw = CONTROL_KEY_G_SHARP, .label = "G#", .degree = 4},
-    {.sw = CONTROL_KEY_A, .label = "A", .degree = 5},
-    {.sw = CONTROL_KEY_A_SHARP, .label = "A#", .degree = 6},
-    {.sw = CONTROL_KEY_H, .label = "H", .degree = 7},
+    {.sw = CONTROL_CHORD_1, .label = "1", .degree = 1},
+    {.sw = CONTROL_CHORD_2, .label = "2", .degree = 2},
+    {.sw = CONTROL_CHORD_3, .label = "3", .degree = 3},
+    {.sw = CONTROL_CHORD_4, .label = "4", .degree = 4},
+    {.sw = CONTROL_CHORD_5, .label = "5", .degree = 5},
+    {.sw = CONTROL_CHORD_6, .label = "6", .degree = 6},
+    {.sw = CONTROL_CHORD_7, .label = "7", .degree = 7},
 };
 
 const keymap_chord_key_t *keymap_chord_keys(void)

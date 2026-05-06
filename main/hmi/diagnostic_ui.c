@@ -61,13 +61,13 @@ static esp_err_t flush_display_cooperatively(pocket_oled_t *display)
 static void pressed_line(uint32_t mask, char *line, size_t line_size)
 {
     char chord[8];
-    chord[0] = (mask & (1UL << CONTROL_KEY_F)) ? '1' : '.';
-    chord[1] = (mask & (1UL << CONTROL_KEY_F_SHARP)) ? '2' : '.';
-    chord[2] = (mask & (1UL << CONTROL_KEY_G)) ? '3' : '.';
-    chord[3] = (mask & (1UL << CONTROL_KEY_G_SHARP)) ? '4' : '.';
-    chord[4] = (mask & (1UL << CONTROL_KEY_A)) ? '5' : '.';
-    chord[5] = (mask & (1UL << CONTROL_KEY_A_SHARP)) ? '6' : '.';
-    chord[6] = (mask & (1UL << CONTROL_KEY_H)) ? '7' : '.';
+    chord[0] = (mask & (1UL << CONTROL_CHORD_1)) ? '1' : '.';
+    chord[1] = (mask & (1UL << CONTROL_CHORD_2)) ? '2' : '.';
+    chord[2] = (mask & (1UL << CONTROL_CHORD_3)) ? '3' : '.';
+    chord[3] = (mask & (1UL << CONTROL_CHORD_4)) ? '4' : '.';
+    chord[4] = (mask & (1UL << CONTROL_CHORD_5)) ? '5' : '.';
+    chord[5] = (mask & (1UL << CONTROL_CHORD_6)) ? '6' : '.';
+    chord[6] = (mask & (1UL << CONTROL_CHORD_7)) ? '7' : '.';
     chord[7] = '\0';
 
     char tempo = (mask & (1UL << CONTROL_KEY_TEMPO)) ? 'T' : '.';

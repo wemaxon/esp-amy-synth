@@ -6,7 +6,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
-#include "hmi/control_bus.h"
+#include "hmi/control_i2c.h"
 #include "hmi/controls.h"
 #include "pocket_oled.h"
 
@@ -96,19 +96,12 @@ static esp_err_t init_control_i2c(void)
 static esp_err_t init_display(void)
 {
 #if ESP_POCKET_AUDIO_OLED_ENABLED
-    esp_err_t err = control_bus_lock(pdMS_TO_TICKS(500));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "OLED could not lock control I2C bus: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = i2c_master_probe(
+    esp_err_t err = i2c_master_probe(
         s_hw.control_i2c_bus,
         ESP_POCKET_AUDIO_OLED_ADDR,
         ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS
     );
     if (err != ESP_OK) {
-        control_bus_unlock();
         ESP_LOGE(TAG, "OLED not detected at configured 7-bit address 0x%02x", ESP_POCKET_AUDIO_OLED_ADDR);
         return ESP_ERR_NOT_FOUND;
     }
@@ -125,12 +118,17 @@ static esp_err_t init_display(void)
         pocket_oled_draw_text_row(&s_hw.display, 4, "CONTROLS READY");
         err = pocket_oled_flush(&s_hw.display);
     }
-    control_bus_unlock();
     ESP_RETURN_ON_ERROR(err, TAG, "OLED init failed");
 #else
     ESP_LOGI(TAG, "OLED display is disabled");
 #endif
     return ESP_OK;
+}
+
+static esp_err_t init_display_i2c(void *ctx)
+{
+    (void)ctx;
+    return init_display();
 }
 
 static esp_err_t init_i2s_clocking(void)
@@ -210,9 +208,14 @@ esp_err_t esp_pocket_audio_init(void)
     ESP_RETURN_ON_ERROR(es8388_set_volume(&s_hw.codec, 100), TAG, "ES8388 volume failed");
     ESP_RETURN_ON_ERROR(init_pa_gpio(), TAG, "PA GPIO failed");
     ESP_RETURN_ON_ERROR(init_control_i2c(), TAG, "control I2C failed");
-    ESP_RETURN_ON_ERROR(control_bus_lock_init(), TAG, "control bus lock init failed");
+    ESP_RETURN_ON_ERROR(control_i2c_service_start(s_hw.control_i2c_bus), TAG, "control I2C service failed");
     ESP_RETURN_ON_ERROR(controls_init(s_hw.control_i2c_bus), TAG, "controls init failed");
-    ESP_RETURN_ON_ERROR(init_display(), TAG, "display init failed");
+    ESP_RETURN_ON_ERROR(control_i2c_call_priority(
+        CONTROL_I2C_PRIORITY_LOW,
+        init_display_i2c,
+        NULL,
+        pdMS_TO_TICKS(500)
+    ), TAG, "display init failed");
 
     s_initialized = true;
     ESP_LOGI(TAG, "hardware init complete");

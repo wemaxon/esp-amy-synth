@@ -2,7 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "esp_pocket_audio.c"
-        "hmi/control_bus.c"
+        "hmi/control_i2c.c"
         "hmi/controls.c"
         "hmi/diagnostic_ui.c"
         "hmi/joystick_calibration.c"

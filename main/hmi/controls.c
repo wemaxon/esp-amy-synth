@@ -12,7 +12,7 @@
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "hmi/control_bus.h"
+#include "hmi/control_i2c.h"
 #include "hmi/joystick_calibration.h"
 #include "pcf8574.h"
 
@@ -321,6 +321,22 @@ static void log_control_io_error(const char *source, esp_err_t err)
     s_next_io_error_log = now + pdMS_TO_TICKS(1000);
 }
 
+static esp_err_t init_i2c_peripherals(void *ctx)
+{
+    (void)ctx;
+
+    ESP_RETURN_ON_ERROR(probe_i2c_addr(ESP_POCKET_AUDIO_ADS1115_ADDR), TAG, "ADS1115 not detected");
+    ESP_RETURN_ON_ERROR(ads1115_init(&s_ads1115, s_i2c_bus, ESP_POCKET_AUDIO_ADS1115_ADDR, ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "ADS1115 init failed");
+
+    for (size_t i = 0; i < configured_expander_count(); ++i) {
+        ESP_RETURN_ON_ERROR(probe_i2c_addr(PCF8574_ADDRS[i]), TAG, "PCF8574 not detected");
+        ESP_RETURN_ON_ERROR(pcf8574_init(&s_pcf8574[i], s_i2c_bus, PCF8574_ADDRS[i], ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "PCF8574 init failed");
+        s_pcf_port_state[i] = 0xFF;
+    }
+
+    return ESP_OK;
+}
+
 static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ticks)
 {
     switch_debounce_t *debounce = &s_switches[sw];
@@ -404,6 +420,24 @@ static esp_err_t update_joystick(void)
     return ESP_OK;
 }
 
+typedef struct {
+    TickType_t now;
+    esp_err_t switch_err;
+    esp_err_t joystick_err;
+} controls_i2c_update_t;
+
+static esp_err_t update_i2c_inputs(void *ctx)
+{
+    controls_i2c_update_t *update = (controls_i2c_update_t *)ctx;
+    if (update == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    update->switch_err = update_pcf_switches(update->now);
+    update->joystick_err = update_joystick();
+    return update->switch_err != ESP_OK ? update->switch_err : update->joystick_err;
+}
+
 static void log_pressed_switches(uint32_t pressed_mask)
 {
     char line[128];
@@ -477,14 +511,7 @@ esp_err_t controls_init(i2c_master_bus_handle_t bus)
     s_i2c_bus = bus;
     ESP_RETURN_ON_ERROR(joystick_calibration_init(), TAG, "joystick calibration init failed");
     ESP_RETURN_ON_ERROR(init_interrupt_pin(), TAG, "PCF interrupt pin failed");
-    ESP_RETURN_ON_ERROR(probe_i2c_addr(ESP_POCKET_AUDIO_ADS1115_ADDR), TAG, "ADS1115 not detected");
-    ESP_RETURN_ON_ERROR(ads1115_init(&s_ads1115, s_i2c_bus, ESP_POCKET_AUDIO_ADS1115_ADDR, ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "ADS1115 init failed");
-
-    for (size_t i = 0; i < configured_expander_count(); ++i) {
-        ESP_RETURN_ON_ERROR(probe_i2c_addr(PCF8574_ADDRS[i]), TAG, "PCF8574 not detected");
-        ESP_RETURN_ON_ERROR(pcf8574_init(&s_pcf8574[i], s_i2c_bus, PCF8574_ADDRS[i], ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "PCF8574 init failed");
-        s_pcf_port_state[i] = 0xFF;
-    }
+    ESP_RETURN_ON_ERROR(control_i2c_call(init_i2c_peripherals, NULL, pdMS_TO_TICKS(500)), TAG, "control I2C peripheral init failed");
 
     ESP_RETURN_ON_ERROR(init_gpio_switches(), TAG, "GPIO switch init failed");
 
@@ -514,18 +541,17 @@ esp_err_t controls_update(void)
     }
 
     TickType_t now = xTaskGetTickCount();
-    esp_err_t lock_err = control_bus_lock(pdMS_TO_TICKS(250));
-    if (lock_err != ESP_OK) {
-        log_control_io_error("control bus lock", lock_err);
-        update_gpio_switches(now);
-        return lock_err;
+    controls_i2c_update_t update = {
+        .now = now,
+        .switch_err = ESP_FAIL,
+        .joystick_err = ESP_FAIL,
+    };
+    esp_err_t i2c_err = control_i2c_call(update_i2c_inputs, &update, pdMS_TO_TICKS(10));
+    if (i2c_err == ESP_ERR_TIMEOUT) {
+        log_control_io_error("control I2C queue", i2c_err);
     }
-
-    esp_err_t switch_err = update_pcf_switches(now);
-    esp_err_t joystick_err = update_joystick();
-    control_bus_unlock();
     update_gpio_switches(now);
-    return switch_err != ESP_OK ? switch_err : joystick_err;
+    return i2c_err;
 }
 
 bool controls_expander_interrupt_asserted(void)

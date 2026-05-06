@@ -208,19 +208,31 @@ void pocket_oled_draw_text_row(pocket_oled_t *display, int row, const char *text
     pocket_oled_draw_text(display, 0, row * 8, text);
 }
 
+esp_err_t pocket_oled_flush_page(pocket_oled_t *display, uint8_t page)
+{
+    if (!pocket_oled_is_initialized(display)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (page >= SH1106_PAGE_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t tx[SH1106_TX_BUFFER_SIZE] = {0};
+    tx[0] = SH1106_CONTROL_DATA;
+
+    ESP_RETURN_ON_ERROR(sh1106_set_page_address(display, page), TAG, "set page %u failed", page);
+    memcpy(&tx[1], &display->framebuffer[(size_t)page * POCKET_OLED_WIDTH], POCKET_OLED_WIDTH);
+    return i2c_master_transmit(display->dev, tx, sizeof(tx), display->timeout_ms);
+}
+
 esp_err_t pocket_oled_flush(pocket_oled_t *display)
 {
     if (!pocket_oled_is_initialized(display)) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    uint8_t tx[SH1106_TX_BUFFER_SIZE] = {0};
-    tx[0] = SH1106_CONTROL_DATA;
-
     for (uint8_t page = 0; page < SH1106_PAGE_COUNT; ++page) {
-        ESP_RETURN_ON_ERROR(sh1106_set_page_address(display, page), TAG, "set page %u failed", page);
-        memcpy(&tx[1], &display->framebuffer[(size_t)page * POCKET_OLED_WIDTH], POCKET_OLED_WIDTH);
-        ESP_RETURN_ON_ERROR(i2c_master_transmit(display->dev, tx, sizeof(tx), display->timeout_ms), TAG, "page %u flush failed", page);
+        ESP_RETURN_ON_ERROR(pocket_oled_flush_page(display, page), TAG, "page %u flush failed", page);
     }
 
     return ESP_OK;

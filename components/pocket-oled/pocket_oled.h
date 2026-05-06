@@ -34,6 +34,7 @@ void pocket_oled_clear(pocket_oled_t *display);
 void pocket_oled_set_pixel(pocket_oled_t *display, int x, int y, bool on);
 void pocket_oled_draw_text(pocket_oled_t *display, int x, int y, const char *text);
 void pocket_oled_draw_text_row(pocket_oled_t *display, int row, const char *text);
+esp_err_t pocket_oled_flush_page(pocket_oled_t *display, uint8_t page);
 esp_err_t pocket_oled_flush(pocket_oled_t *display);
 
 #ifdef __cplusplus

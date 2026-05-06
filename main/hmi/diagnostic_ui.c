@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hmi/control_bus.h"
 #include "hmi/controls.h"
 #include "hmi/joystick_calibration.h"
 #include "pocket_oled.h"
@@ -91,7 +92,14 @@ static void draw_display(const esp_pocket_audio_hw_t *hw, cal_ui_state_t state)
     pocket_oled_draw_text_row(display, 5, line);
     pocket_oled_draw_text_row(display, 6, "J=center S=save");
     pocket_oled_draw_text_row(display, 7, "move stick T=reset");
-    ESP_ERROR_CHECK_WITHOUT_ABORT(pocket_oled_flush(display));
+
+    esp_err_t err = control_bus_lock(pdMS_TO_TICKS(250));
+    if (err == ESP_OK) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(pocket_oled_flush(display));
+        control_bus_unlock();
+    } else {
+        ESP_LOGW(TAG, "OLED flush skipped: %s", esp_err_to_name(err));
+    }
 }
 
 static void log_event(const control_event_t *event)

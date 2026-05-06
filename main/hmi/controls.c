@@ -12,6 +12,7 @@
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hmi/control_bus.h"
 #include "hmi/joystick_calibration.h"
 #include "pcf8574.h"
 
@@ -70,6 +71,7 @@ static size_t s_event_tail;
 static control_joystick_state_t s_joystick;
 static volatile uint32_t s_gpio_irq_pending_mask;
 static uint32_t s_gpio_debounce_pending_mask;
+static TickType_t s_next_io_error_log;
 static portMUX_TYPE s_event_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_gpio_irq_mux = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_service_task;
@@ -308,6 +310,17 @@ static bool raw_switch_pressed(const switch_mapping_t *mapping)
 #endif
 }
 
+static void log_control_io_error(const char *source, esp_err_t err)
+{
+    TickType_t now = xTaskGetTickCount();
+    if ((int32_t)(now - s_next_io_error_log) < 0) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "%s failed: %s", source, esp_err_to_name(err));
+    s_next_io_error_log = now + pdMS_TO_TICKS(1000);
+}
+
 static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ticks)
 {
     switch_debounce_t *debounce = &s_switches[sw];
@@ -337,6 +350,7 @@ static esp_err_t update_pcf_switches(TickType_t now_ticks)
     for (size_t i = 0; i < configured_expander_count(); ++i) {
         esp_err_t err = pcf8574_read_port(&s_pcf8574[i], &s_pcf_port_state[i]);
         if (err != ESP_OK) {
+            log_control_io_error("PCF8574 read", err);
             return err;
         }
     }
@@ -373,10 +387,12 @@ static esp_err_t update_joystick(void)
 
     esp_err_t err = ads1115_read_single_ended(&s_ads1115, (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_CH, &raw_x);
     if (err != ESP_OK) {
+        log_control_io_error("ADS1115 X read", err);
         return err;
     }
     err = ads1115_read_single_ended(&s_ads1115, (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_CH, &raw_y);
     if (err != ESP_OK) {
+        log_control_io_error("ADS1115 Y read", err);
         return err;
     }
 
@@ -408,10 +424,7 @@ static void service_task(void *arg)
 
     while (true) {
         TickType_t now = xTaskGetTickCount();
-        esp_err_t err = controls_update();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "update failed: %s", esp_err_to_name(err));
-        }
+        controls_update();
 
         control_joystick_state_t joystick = {0};
         if (controls_joystick_read(&joystick) == ESP_OK && joystick.direction != last_direction) {
@@ -501,9 +514,17 @@ esp_err_t controls_update(void)
     }
 
     TickType_t now = xTaskGetTickCount();
+    esp_err_t lock_err = control_bus_lock(pdMS_TO_TICKS(250));
+    if (lock_err != ESP_OK) {
+        log_control_io_error("control bus lock", lock_err);
+        update_gpio_switches(now);
+        return lock_err;
+    }
+
     esp_err_t switch_err = update_pcf_switches(now);
-    update_gpio_switches(now);
     esp_err_t joystick_err = update_joystick();
+    control_bus_unlock();
+    update_gpio_switches(now);
     return switch_err != ESP_OK ? switch_err : joystick_err;
 }
 

@@ -2,6 +2,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -9,8 +11,11 @@
 #include "freertos/task.h"
 #include "hmi/controls.h"
 #include "hmi/keymap.h"
+#include "hmi/play_ui.h"
 #include "synth/amy_engine.h"
 #include "synth/chord_engine.h"
+#include "synth/play_mode.h"
+#include "synth/sound.h"
 
 typedef struct {
     synth_key_t key;
@@ -18,9 +23,17 @@ typedef struct {
     int8_t global_octave_shift;
     int8_t button_octave_shift[SYNTH_CHORD_BUTTON_COUNT];
     synth_chord_modifier_t modifier;
+    synth_sound_t sound;
+    synth_play_mode_t mode;
+    uint16_t bpm;
+    uint8_t effect_index;
+    bool effects[PLAY_UI_EFFECT_COUNT];
     control_joystick_direction_t last_menu_direction;
+    control_joystick_direction_t joystick_direction;
     uint8_t held_mask;
     uint8_t focus_slot;
+    char chord_name[16];
+    char status[22];
     TaskHandle_t task;
 } synth_app_state_t;
 
@@ -34,15 +47,68 @@ static const int8_t GLOBAL_OCTAVE_MIN = -1;
 static const int8_t GLOBAL_OCTAVE_MAX = 2;
 static const int8_t BUTTON_OCTAVE_MIN = -2;
 static const int8_t BUTTON_OCTAVE_MAX = 1;
+static const uint16_t BPM_MIN = 40;
+static const uint16_t BPM_MAX = 300;
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
     .scale = SYNTH_SCALE_MAJOR,
     .global_octave_shift = 0,
     .modifier = SYNTH_CHORD_MOD_NONE,
+    .sound = SYNTH_SOUND_SAW,
+    .mode = SYNTH_PLAY_MODE_PLAY,
+    .bpm = 120,
+    .effect_index = PLAY_UI_EFFECT_REVERB,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
+    .joystick_direction = CONTROL_JOYSTICK_CENTER,
     .focus_slot = 0,
+    .chord_name = "---",
+    .status = "READY",
 };
+
+static play_ui_screen_t active_screen(void)
+{
+    if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
+        return PLAY_UI_SCREEN_KEY;
+    }
+    if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+        return PLAY_UI_SCREEN_SOUND;
+    }
+    if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+        return PLAY_UI_SCREEN_MODE;
+    }
+    return PLAY_UI_SCREEN_HOME;
+}
+
+static void set_status(const char *status)
+{
+    if (status != NULL) {
+        strlcpy(s_app.status, status, sizeof(s_app.status));
+    }
+}
+
+static void update_ui(void)
+{
+    play_ui_model_t model = {0};
+    play_ui_model_init(&model);
+    model.screen = active_screen();
+    model.key = s_app.key;
+    model.scale = s_app.scale;
+    model.global_octave_shift = s_app.global_octave_shift;
+    memcpy(model.button_octave_shift, s_app.button_octave_shift, sizeof(model.button_octave_shift));
+    model.modifier = s_app.modifier;
+    model.sound = s_app.sound;
+    model.mode = s_app.mode;
+    model.bpm = s_app.bpm;
+    model.held_mask = s_app.held_mask;
+    model.focus_slot = s_app.focus_slot;
+    model.effect_index = s_app.effect_index;
+    memcpy(model.effects, s_app.effects, sizeof(model.effects));
+    model.joystick_direction = s_app.joystick_direction;
+    strlcpy(model.chord_name, s_app.chord_name, sizeof(model.chord_name));
+    strlcpy(model.status, s_app.status, sizeof(model.status));
+    play_ui_update(&model);
+}
 
 static uint8_t slot_from_degree(uint8_t degree)
 {
@@ -84,6 +150,9 @@ static void play_degree(uint8_t degree)
              s_app.global_octave_shift,
              synth_chord_modifier_name(s_app.modifier),
              chord.note_count);
+    strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
+    set_status("PLAYING");
+    update_ui();
 }
 
 static void refresh_held_chords(void)
@@ -100,6 +169,10 @@ static void release_degree(uint8_t degree)
     uint8_t slot = slot_from_degree(degree);
     s_app.held_mask &= (uint8_t)~(1U << slot);
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(slot));
+    if (s_app.held_mask == 0) {
+        set_status("READY");
+    }
+    update_ui();
 }
 
 static void handle_chord_event(const control_event_t *event)
@@ -111,6 +184,15 @@ static void handle_chord_event(const control_event_t *event)
 
     uint8_t slot = slot_from_degree(degree);
     if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
+        if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+            s_app.sound = synth_sound_quick_select(degree);
+            ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
+            set_status("SOUND SELECTED");
+            refresh_held_chords();
+            update_ui();
+            return;
+        }
+
         s_app.held_mask |= 1U << slot;
         s_app.focus_slot = slot;
         play_degree(degree);
@@ -123,7 +205,9 @@ static void step_key(int8_t semitones)
 {
     s_app.key = synth_key_step(s_app.key, semitones);
     ESP_LOGI(TAG, "key=%s", synth_key_name(s_app.key));
+    set_status("KEY CHANGED");
     refresh_held_chords();
+    update_ui();
 }
 
 static void step_global_octave(int8_t octaves)
@@ -141,7 +225,9 @@ static void step_global_octave(int8_t octaves)
 
     s_app.global_octave_shift = next;
     ESP_LOGI(TAG, "global octave=%d", s_app.global_octave_shift);
+    set_status("OCTAVE CHANGED");
     refresh_held_chords();
+    update_ui();
 }
 
 static void step_focused_button_octave(int8_t octaves)
@@ -163,7 +249,9 @@ static void step_focused_button_octave(int8_t octaves)
 
     s_app.button_octave_shift[s_app.focus_slot] = next;
     ESP_LOGI(TAG, "chord %u octave=%d", (unsigned)(s_app.focus_slot + 1), next);
+    set_status("BUTTON OCTAVE");
     play_degree((uint8_t)(s_app.focus_slot + 1));
+    update_ui();
 }
 
 static void update_key_menu(control_joystick_direction_t direction)
@@ -200,15 +288,135 @@ static void update_key_menu(control_joystick_direction_t direction)
     }
 }
 
+static void step_sound(int8_t steps)
+{
+    s_app.sound = synth_sound_step(s_app.sound, steps);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
+    set_status("SOUND CHANGED");
+    refresh_held_chords();
+    update_ui();
+}
+
+static void step_effect(int8_t steps)
+{
+    int value = (int)s_app.effect_index + steps;
+    while (value < 0) {
+        value += PLAY_UI_EFFECT_COUNT;
+    }
+    s_app.effect_index = (uint8_t)(value % PLAY_UI_EFFECT_COUNT);
+    set_status("EFFECT SELECT");
+    update_ui();
+}
+
+static void toggle_current_effect(void)
+{
+    play_ui_effect_t effect = (play_ui_effect_t)(s_app.effect_index % PLAY_UI_EFFECT_COUNT);
+    s_app.effects[effect] = !s_app.effects[effect];
+    ESP_LOGI(TAG, "%s=%s", play_ui_effect_name(effect), s_app.effects[effect] ? "on" : "off");
+    set_status(s_app.effects[effect] ? "FX ON" : "FX OFF");
+    update_ui();
+}
+
+static void update_sound_menu(control_joystick_direction_t direction)
+{
+    if (direction == s_app.last_menu_direction) {
+        return;
+    }
+    s_app.last_menu_direction = direction;
+
+    switch (direction) {
+    case CONTROL_JOYSTICK_LEFT:
+        step_sound(-1);
+        break;
+    case CONTROL_JOYSTICK_RIGHT:
+        step_sound(1);
+        break;
+    case CONTROL_JOYSTICK_UP:
+        step_effect(-1);
+        break;
+    case CONTROL_JOYSTICK_DOWN:
+        step_effect(1);
+        break;
+    case CONTROL_JOYSTICK_CENTER:
+    default:
+        break;
+    }
+}
+
+static void step_bpm(int16_t delta)
+{
+    int next = (int)s_app.bpm + delta;
+    if (next < BPM_MIN) {
+        next = BPM_MIN;
+    } else if (next > BPM_MAX) {
+        next = BPM_MAX;
+    }
+
+    if (next == s_app.bpm) {
+        return;
+    }
+
+    s_app.bpm = (uint16_t)next;
+    ESP_LOGI(TAG, "bpm=%u", s_app.bpm);
+    set_status("BPM CHANGED");
+    update_ui();
+}
+
+static void step_mode(int8_t steps)
+{
+    s_app.mode = synth_play_mode_step(s_app.mode, steps);
+    ESP_LOGI(TAG, "mode=%s", synth_play_mode_name(s_app.mode));
+    set_status("MODE CHANGED");
+    update_ui();
+}
+
+static void update_mode_menu(control_joystick_direction_t direction)
+{
+    if (direction == s_app.last_menu_direction) {
+        return;
+    }
+    s_app.last_menu_direction = direction;
+
+    switch (direction) {
+    case CONTROL_JOYSTICK_LEFT:
+        step_bpm(-1);
+        break;
+    case CONTROL_JOYSTICK_RIGHT:
+        step_bpm(1);
+        break;
+    case CONTROL_JOYSTICK_UP:
+        step_mode(-1);
+        break;
+    case CONTROL_JOYSTICK_DOWN:
+        step_mode(1);
+        break;
+    case CONTROL_JOYSTICK_CENTER:
+    default:
+        break;
+    }
+}
+
 static void update_joystick(void)
 {
     control_joystick_state_t joystick = {0};
     if (controls_joystick_read(&joystick) != ESP_OK) {
         return;
     }
+    s_app.joystick_direction = joystick.direction;
 
     if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
         update_key_menu(joystick.direction);
+        update_ui();
+        return;
+    }
+    if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+        update_sound_menu(joystick.direction);
+        update_ui();
+        return;
+    }
+    if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+        update_mode_menu(joystick.direction);
+        update_ui();
         return;
     }
     s_app.last_menu_direction = CONTROL_JOYSTICK_CENTER;
@@ -221,6 +429,31 @@ static void update_joystick(void)
     s_app.modifier = modifier;
     ESP_LOGI(TAG, "joystick modifier=%s", synth_chord_modifier_name(modifier));
     refresh_held_chords();
+    update_ui();
+}
+
+static void handle_menu_event(const control_event_t *event)
+{
+    if (event->type != CONTROL_EVENT_SWITCH_PRESSED) {
+        update_ui();
+        return;
+    }
+
+    if (event->sw == CONTROL_JOYSTICK_CLICK) {
+        if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+            toggle_current_effect();
+        } else if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+            set_status("LOOPER WAITING");
+            update_ui();
+        } else if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
+            set_status("KEY MENU");
+            update_ui();
+        }
+    } else if (event->sw == CONTROL_KEY_MENU ||
+               event->sw == CONTROL_SOUND_MENU ||
+               event->sw == CONTROL_MODE_MENU) {
+        update_ui();
+    }
 }
 
 static void app_task(void *arg)
@@ -234,6 +467,7 @@ static void app_task(void *arg)
     while (true) {
         control_event_t event = {0};
         while (controls_pop_event(&event) == ESP_OK) {
+            handle_menu_event(&event);
             handle_chord_event(&event);
         }
 
@@ -249,6 +483,9 @@ esp_err_t synth_app_start(const esp_pocket_audio_hw_t *hw)
     }
 
     ESP_RETURN_ON_ERROR(synth_amy_init(hw), TAG, "AMY synth init failed");
+    ESP_RETURN_ON_ERROR(synth_amy_set_sound(s_app.sound), TAG, "AMY sound setup failed");
+    ESP_RETURN_ON_ERROR(play_ui_start(hw), TAG, "play UI start failed");
+    update_ui();
 
     BaseType_t task_created = xTaskCreatePinnedToCore(
         app_task,

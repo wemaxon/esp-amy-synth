@@ -11,6 +11,7 @@
 #include "hmi/control_i2c.h"
 #include "hmi/controls.h"
 #include "hmi/joystick_calibration.h"
+#include "hmi/oled_display.h"
 #include "pocket_oled.h"
 
 typedef enum {
@@ -23,40 +24,6 @@ typedef enum {
 
 static const char *TAG = "DIAG_UI";
 static const TickType_t UI_REFRESH_TICKS = pdMS_TO_TICKS(100);
-
-typedef struct {
-    pocket_oled_t *display;
-    uint8_t page;
-} oled_page_flush_t;
-
-static esp_err_t flush_oled_page(void *ctx)
-{
-    oled_page_flush_t *flush = (oled_page_flush_t *)ctx;
-    if (flush == NULL || flush->display == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    return pocket_oled_flush_page(flush->display, flush->page);
-}
-
-static esp_err_t flush_display_cooperatively(pocket_oled_t *display)
-{
-    for (uint8_t page = 0; page < POCKET_OLED_HEIGHT / 8; ++page) {
-        oled_page_flush_t flush = {
-            .display = display,
-            .page = page,
-        };
-        esp_err_t err = control_i2c_call_priority(
-            CONTROL_I2C_PRIORITY_LOW,
-            flush_oled_page,
-            &flush,
-            pdMS_TO_TICKS(25)
-        );
-        if (err != ESP_OK) {
-            return err;
-        }
-    }
-    return ESP_OK;
-}
 
 static void pressed_line(uint32_t mask, char *line, size_t line_size)
 {
@@ -127,7 +94,7 @@ static void draw_display(const esp_pocket_audio_hw_t *hw, cal_ui_state_t state)
     pocket_oled_draw_text_row(display, 6, "J=center S=save");
     pocket_oled_draw_text_row(display, 7, "move stick T=reset");
 
-    esp_err_t err = flush_display_cooperatively(display);
+    esp_err_t err = oled_display_flush_cooperatively(display, pdMS_TO_TICKS(25));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "OLED flush skipped: %s", esp_err_to_name(err));
     }

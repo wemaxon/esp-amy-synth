@@ -22,7 +22,7 @@ static void log_setup(void)
     esp_log_level_set("ESP_POCKET_AUDIO", ESP_LOG_VERBOSE);
     esp_log_level_set("ES8388", ESP_LOG_VERBOSE);
     esp_log_level_set("POCKET_OLED", ESP_LOG_VERBOSE);
-    esp_log_level_set("CONTROLS", ESP_LOG_VERBOSE);
+    esp_log_level_set("CONTROLS", ESP_LOG_INFO);
     esp_log_level_set("DIAG_UI", ESP_LOG_VERBOSE);
     esp_log_level_set("JOYSTICK_CAL", ESP_LOG_VERBOSE);
     esp_log_level_set("SYNTH_APP", ESP_LOG_VERBOSE);

@@ -32,12 +32,35 @@ static TaskHandle_t s_audio_task;
 static bool s_initialized;
 static amy_voice_t s_voices[AMY_VOICE_COUNT];
 static uint32_t s_voice_age;
+static synth_sound_t s_sound = SYNTH_SOUND_SAW;
+
+static uint8_t amy_wave_for_sound(synth_sound_t sound)
+{
+    switch (sound) {
+    case SYNTH_SOUND_SINE:
+    case SYNTH_SOUND_FM_EPIANO:
+        return SINE;
+    case SYNTH_SOUND_TRIANGLE:
+    case SYNTH_SOUND_FM_BELL:
+    case SYNTH_SOUND_CLARINET:
+        return TRIANGLE;
+    case SYNTH_SOUND_SQUARE:
+        return PULSE;
+    case SYNTH_SOUND_SAW:
+    case SYNTH_SOUND_FM_HX7:
+    case SYNTH_SOUND_STRINGS:
+    case SYNTH_SOUND_PIANO:
+    case SYNTH_SOUND_JUNO_POLY:
+    default:
+        return SAW_UP;
+    }
+}
 
 static void amy_note_on(uint8_t osc, uint8_t midi_note)
 {
     amy_event event = amy_default_event();
     event.osc = osc;
-    event.wave = TRIANGLE;
+    event.wave = amy_wave_for_sound(s_sound);
     event.midi_note = midi_note;
     event.velocity = NOTE_VELOCITY;
     event.amp_coefs[COEF_CONST] = 0.9f;
@@ -52,6 +75,17 @@ static void amy_note_on(uint8_t osc, uint8_t midi_note)
     event.eg0_times[2] = 900;
     event.eg0_values[2] = 0.0f;
     amy_add_event(&event);
+}
+
+esp_err_t synth_amy_set_sound(synth_sound_t sound)
+{
+    if (sound >= SYNTH_SOUND_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_sound = sound;
+    ESP_LOGI(TAG, "sound=%s engine=%s", synth_sound_name(sound), synth_sound_engine_name(sound));
+    return ESP_OK;
 }
 
 static void amy_note_off(uint8_t osc)

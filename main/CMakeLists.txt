@@ -5,9 +5,13 @@ idf_component_register(
         "esp_pocket_audio.c"
         "esp_pocket_audio_input.c"
         "esp_pocket_audio_joystick.c"
+        "hichord_app.c"
+        "hichord_synth_amy.c"
+        "hichord_theory.c"
 
     REQUIRES
         ads1115
+        amy
         es8388
         esp_driver_gpio
         esp_driver_i2c

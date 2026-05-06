@@ -29,7 +29,7 @@ extern "C" {
 #define ESP_POCKET_AUDIO_I2S_WS_GPIO             GPIO_NUM_25
 #define ESP_POCKET_AUDIO_I2S_DOUT_GPIO           GPIO_NUM_26
 #define ESP_POCKET_AUDIO_I2S_DIN_GPIO            GPIO_NUM_35
-#define ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ      48000
+#define ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ      44100
 #define ESP_POCKET_AUDIO_I2S_BITS_PER_SAMPLE     16
 
 /* Optional external PA enable pin. Set once this signal is confirmed. */

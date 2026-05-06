@@ -8,6 +8,7 @@
 #include "diagnostics.h"
 #include "es8388.h"
 #include "esp_pocket_audio.h"
+#include "hichord_app.h"
 
 static const char *TAG = "main";
 
@@ -22,6 +23,8 @@ static void log_setup(void)
     esp_log_level_set("ES8388", ESP_LOG_VERBOSE);
     esp_log_level_set("POCKET_OLED", ESP_LOG_VERBOSE);
     esp_log_level_set("diagnostics", ESP_LOG_VERBOSE);
+    esp_log_level_set("HICHORD_APP", ESP_LOG_VERBOSE);
+    esp_log_level_set("HICHORD_SYNTH", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG, ESP_LOG_VERBOSE);
 }
 
@@ -40,7 +43,7 @@ static void app_task(void *arg)
     (void)arg;
 
     log_setup();
-    ESP_LOGI(TAG, "esp-pocket-audio IDF-native hardware diagnostic starting");
+    ESP_LOGI(TAG, "esp-pocket-audio HiChord app starting");
 
     init_nvs();
     ESP_ERROR_CHECK(esp_pocket_audio_init());
@@ -48,9 +51,7 @@ static void app_task(void *arg)
     const esp_pocket_audio_hw_t *hw = esp_pocket_audio_hw();
     ESP_ERROR_CHECK(hw != NULL ? ESP_OK : ESP_ERR_INVALID_STATE);
     ESP_ERROR_CHECK(es8388_dump_registers((es8388_t *)&hw->codec, TAG));
-    ESP_ERROR_CHECK(diagnostics_start_audio_test(hw));
-
-    // diagnostics_run(hw);
+    ESP_ERROR_CHECK(hichord_app_start(hw));
     vTaskDelete(NULL);
 }
 

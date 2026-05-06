@@ -54,9 +54,9 @@ static const switch_mapping_t SWITCH_MAP[CONTROL_SWITCH_COUNT] = {
     [CONTROL_CHORD_6] = {false, ESP_POCKET_AUDIO_SW_CHORD_6_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_6_PIN, GPIO_NUM_NC},
     [CONTROL_CHORD_7] = {false, ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_7_PIN, GPIO_NUM_NC},
     [CONTROL_JOYSTICK_CLICK] = {true, 0, 0, ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO},
-    [CONTROL_KEY_TEMPO] = {false, ESP_POCKET_AUDIO_SW_KEY_TEMPO_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_TEMPO_PIN, GPIO_NUM_NC},
-    [CONTROL_KEY_MODE] = {true, 0, 0, ESP_POCKET_AUDIO_SW_KEY_MODE_GPIO},
-    [CONTROL_KEY_SOUND] = {true, 0, 0, ESP_POCKET_AUDIO_SW_KEY_SOUND_GPIO},
+    [CONTROL_KEY_MENU] = {false, ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_MENU_PIN, GPIO_NUM_NC},
+    [CONTROL_MODE_MENU] = {true, 0, 0, ESP_POCKET_AUDIO_SW_MODE_MENU_GPIO},
+    [CONTROL_SOUND_MENU] = {true, 0, 0, ESP_POCKET_AUDIO_SW_SOUND_MENU_GPIO},
 };
 
 static bool s_initialized;
@@ -100,12 +100,12 @@ const char *controls_switch_name(control_switch_t sw)
         return "CHORD_7_LEADING";
     case CONTROL_JOYSTICK_CLICK:
         return "JOY_CLICK";
-    case CONTROL_KEY_TEMPO:
-        return "KEY_TEMPO";
-    case CONTROL_KEY_MODE:
-        return "KEY_MODE";
-    case CONTROL_KEY_SOUND:
-        return "KEY_SOUND";
+    case CONTROL_KEY_MENU:
+        return "KEY_MENU";
+    case CONTROL_MODE_MENU:
+        return "MODE_MENU";
+    case CONTROL_SOUND_MENU:
+        return "SOUND_MENU";
     default:
         return "UNKNOWN";
     }
@@ -130,11 +130,11 @@ const char *controls_switch_short_name(control_switch_t sw)
         return "7";
     case CONTROL_JOYSTICK_CLICK:
         return "J";
-    case CONTROL_KEY_TEMPO:
-        return "T";
-    case CONTROL_KEY_MODE:
+    case CONTROL_KEY_MENU:
+        return "K";
+    case CONTROL_MODE_MENU:
         return "M";
-    case CONTROL_KEY_SOUND:
+    case CONTROL_SOUND_MENU:
         return "S";
     default:
         return "?";

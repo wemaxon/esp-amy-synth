@@ -7,9 +7,9 @@ idf_component_register(
         "hmi/diagnostic_ui.c"
         "hmi/joystick_calibration.c"
         "hmi/keymap.c"
-        "hichord_app.c"
-        "hichord_synth_amy.c"
-        "hichord_theory.c"
+        "synth/app.c"
+        "synth/amy_engine.c"
+        "synth/chord_engine.c"
 
     REQUIRES
         ads1115

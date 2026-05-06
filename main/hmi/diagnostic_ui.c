@@ -70,11 +70,11 @@ static void pressed_line(uint32_t mask, char *line, size_t line_size)
     chord[6] = (mask & (1UL << CONTROL_CHORD_7)) ? '7' : '.';
     chord[7] = '\0';
 
-    char tempo = (mask & (1UL << CONTROL_KEY_TEMPO)) ? 'T' : '.';
-    char mode = (mask & (1UL << CONTROL_KEY_MODE)) ? 'M' : '.';
-    char sound = (mask & (1UL << CONTROL_KEY_SOUND)) ? 'S' : '.';
+    char key = (mask & (1UL << CONTROL_KEY_MENU)) ? 'K' : '.';
+    char mode = (mask & (1UL << CONTROL_MODE_MENU)) ? 'M' : '.';
+    char sound = (mask & (1UL << CONTROL_SOUND_MENU)) ? 'S' : '.';
     char joy = (mask & (1UL << CONTROL_JOYSTICK_CLICK)) ? 'J' : '.';
-    snprintf(line, line_size, "SW %s %c%c%c%c", chord, tempo, mode, sound, joy);
+    snprintf(line, line_size, "SW %s %c%c%c%c", chord, key, mode, sound, joy);
 }
 
 static const char *cal_state_name(cal_ui_state_t state)
@@ -163,11 +163,11 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
                 joystick_calibration_capture_center(joystick.x.raw, joystick.y.raw);
                 joystick_calibration_begin_range_capture(joystick.x.raw, joystick.y.raw);
                 cal_state = CAL_UI_CAPTURE_RANGE;
-            } else if (event.sw == CONTROL_KEY_SOUND) {
+            } else if (event.sw == CONTROL_SOUND_MENU) {
                 esp_err_t err = joystick_calibration_save();
                 cal_state = err == ESP_OK ? CAL_UI_SAVED : CAL_UI_ERROR;
                 ESP_LOGI(TAG, "joystick calibration save: %s", esp_err_to_name(err));
-            } else if (event.sw == CONTROL_KEY_TEMPO) {
+            } else if (event.sw == CONTROL_KEY_MENU) {
                 esp_err_t err = joystick_calibration_reset();
                 cal_state = err == ESP_OK ? CAL_UI_RESET : CAL_UI_ERROR;
                 ESP_LOGI(TAG, "joystick calibration reset: %s", esp_err_to_name(err));

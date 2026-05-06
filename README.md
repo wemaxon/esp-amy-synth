@@ -8,14 +8,14 @@ IDF-native firmware for the esp-pocket-audio ESP32-A1S hardware.
 
 ### Diagnostic Mode
 
-Hold `KEY_MODE` while the device boots to enter diagnostic mode. Normal playback
+Hold `MODE_MENU` while the device boots to enter diagnostic mode. Normal playback
 does not start in this mode; the firmware keeps the input service running and
 shows live switch and joystick state on the OLED.
 
 The diagnostic screen shows:
 
-- `SW`: chord buttons as `1..7` or `.`, followed by `T`, `M`, `S`, and `J` for
-  tempo, mode, sound, and joystick click.
+- `SW`: chord buttons as `1..7` or `.`, followed by `K`, `M`, `S`, and `J` for
+  key, mode, sound, and joystick click.
 - Raw ADS1115 joystick X/Y readings.
 - Normalized joystick X/Y values, shown as roughly `-100..+100`.
 - Joystick direction: `CENTER`, `UP`, `UP_RIGHT`, `RIGHT`, `DOWN_RIGHT`,
@@ -28,8 +28,8 @@ Diagnostic controls:
   and start range capture.
 - Move the joystick through its full travel in all directions while the
   calibration state is `RANGE`.
-- Press `KEY_SOUND` to save the captured calibration to NVS.
-- Press `KEY_TEMPO` to erase saved calibration and return to board defaults.
+- Press `SOUND_MENU` to save the captured calibration to NVS.
+- Press `KEY_MENU` to erase saved calibration and return to board defaults.
 
 OLED updates are queued as low-priority page writes on the control-I2C service.
 PCF8574 key scans and ADS1115 joystick reads use high-priority I2C jobs, so

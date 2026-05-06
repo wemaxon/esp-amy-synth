@@ -1,563 +1,1439 @@
-# HiChord Feature Specification
-
-This document summarizes the behavior described in the HiChord manual and
-translates it into implementation guidance for future agents working on this
-firmware. The current reference source is the public HiChord Manual REV 2.8:
-https://hichord.shop/pages/manual
-
-The goal is to build a HiChord-like handheld chord workstation: seven musical
-buttons, a joystick, three menu buttons, a display, a volume/filter knob, audio
-output, optional MIDI output, rhythmic modes, sound design controls, randomizers,
-and a simple looper.
-
-## Product Model
-
-HiChord is a portable harmonic sketchpad. The player chooses a key, then uses
-seven chord buttons to trigger the diatonic chords of that key. The buttons are
-based on the Nashville Number System, so the physical chord layout remains the
-same while the selected key transposes the actual notes.
-
-The main design principle is that a beginner should be able to press any chord
-button and get musically compatible chords, while advanced users can modify
-quality, inversion, octave, rhythm, timbre, and effects in real time.
-
-## Hardware Controls
-
-Required controls:
-
-- 7 chord buttons.
-- 3 menu/action buttons.
-- 1 joystick with up, down, left, right, and click.
-- 1 analog knob used as master volume by default and filter cutoff when filter
-  editing is active.
-- OLED or equivalent display for current mode, key, tempo, selected effect, and
-  settings feedback.
-- Stereo 3.5 mm audio output.
-- USB-C power and USB MIDI/firmware update support.
-- Optional built-in speaker.
-
-The manual uses three colored function buttons. In this firmware, assign
-semantic names and map them to the actual board GPIOs in the board config:
-
-- `KEY_MENU` / gray: key, global octave, per-chord octave down, attack, battery,
-  factory reset, all-randomize, and some arp shortcuts.
-- `SOUND_MENU` / yellow: sound selection, effects, release, presets,
-  inversions, chord lock, and sound randomization.
-- `MODE_MENU` / red: mode selection, BPM, mode-specific parameters, per-chord
-  octave up, filter cutoff, tap tempo, and pattern randomization.
-
-If the actual hardware silkscreen is later known, map these semantic names to
-the real buttons in one board-specific header.
-
-## Global State
-
-Maintain a single application state object with at least:
-
-- Current key/root.
-- Global octave offset.
-- BPM.
-- Active mode: `PLAY`, `STRUM`, `LEAD`, `DRONE`, `ARP`, `REPEAT`, `DRUM`,
-  `DRUM_LOOP`, `AUTO_DRUM`, `MIC_SAMPLE`, `SEQUENCER`, `MIXER`, `CHORD_HIRO`,
-  `TUNER`, or `VOCODER`.
-- Selected chord button, if any is being held.
-- Per-chord inversion index.
-- Per-chord octave offset.
-- Per-chord chord-lock modifier, if implemented.
-- Current chord quality modifier from the joystick.
-- Current joystick modifier mode: default, extended, or chromatic.
-- Current scale/mode, at least major initially and eventually the manual's 10
-  scales.
-- Sound patch: waveform(s), oscillator count, envelopes, filter, effects, bass
-  layer, stereo/mono state.
-- Rhythm rate for arpeggio, repeat, auto-drum, delay, tremolo, and sequencer
-  timing.
-- Arpeggio pattern.
-- MIDI output enabled/disabled.
-- Looper state and recorded events.
-- Randomizer seed or last randomization metadata, if useful for debugging.
-
-Persist user settings in NVS when practical. Factory reset must restore all
-states to defaults.
-
-## Chord Button Mapping
-
-The seven chord buttons always represent scale degrees 1 through 7 in the
-current major key:
-
-| Button | Scale Degree | Function | Default Quality |
-| ------ | ------------ | -------- | --------------- |
-| 1 | I | Tonic | Major |
-| 2 | ii | Supertonic | Minor |
-| 3 | iii | Mediant | Minor |
-| 4 | IV | Subdominant | Major |
-| 5 | V | Dominant | Major |
-| 6 | vi | Submediant | Minor |
-| 7 | vii | Leading tone | Diminished |
-
-Implementation requirements:
-
-- Pressing a chord button triggers the chord for that degree in the selected
-  key.
-- Chords must transpose instantly when the global key changes.
-- Notes should be generated from theory, not hard-coded per key.
-- Default mode plays the full chord immediately.
-- Chord button events should feed both audio synthesis and MIDI output when MIDI
-  is enabled.
+# HiChord Synth Feature Specification
+
+Source: HiChord Manual & User Guide, Rev 2.8, https://hichord.shop/pages/manual
+Purpose: implementation-focused feature inventory for Codex or another coding agent.
+
+## 0. Implementation Scope
+
+Build an interactive software model of the HiChord synth workflow, including:
+
+- A 7-button chord performance surface.
+- Three menu/function buttons: Key/Settings, Sound/Effects, Mode/Tempo.
+- An 8-way joystick plus joystick-click action.
+- A volume wheel that controls master volume and context-specific parameters.
+- A small OLED-style display/state model.
+- A polyphonic synth engine with chord generation, voicing, effects, play modes, looper, drums, presets, samples, MIDI/USB abstractions, and companion-app-editable parameters.
+
+The implementation may initially be virtual/software-only, but should preserve the manual's state machine, feature names, ranges, and user interactions.
+
+## 1. Hardware / UI Model
+
+### 1.1 Physical controls
+
+Implement these input controls:
+
+- `chordButtons[1..7]`: seven primary musical buttons.
+- `joystick`: supports `up`, `down`, `left`, `right`, `upLeft`, `upRight`, `downLeft`, `downRight`, plus `click`.
+- `keyButton` / Gray button: opens Key & Settings menu.
+- `soundButton` / Yellow button: opens Sounds & Effects menu.
+- `modeButton` / Red button: opens Modes & Tempo menu.
+- `volumeWheel`: controls output volume by default; modifies parameters when used with function buttons.
+- `powerSwitch`: on/off.
+
+### 1.2 Display model
+
+Implement a 64×32 OLED-style display abstraction with enough states to show:
+
+- Current chord name.
+- Current key and scale.
+- Current sound/instrument.
+- Current mode.
+- Current BPM.
+- Effect names and effect states.
+- Looper track pages and track states.
+- Battery percentage/voltage where available.
+- Preset slots and save/load marks.
+- Tuner detected pitch and tuning offset.
+- Chord Hiro scrolling-note game UI.
+- Ear Trainer prompt/result UI.
+- Calibration prompts and results.
+- Error/status messages such as `WAITING`, `REC`, `PLAY`, `LOCKED`, `SYSTEM FULL`, `DONE! SAVED`, `ERROR BAD CAL`.
+
+### 1.3 Ports and hardware capabilities
+
+Represent these device capabilities, even if simulated:
+
+- Built-in mono speaker.
+- 3.5 mm stereo headphone/line out; plugging in headphones auto-mutes speaker.
+- USB-C charging.
+- USB audio: class-compliant 48 kHz stereo.
+- USB MIDI: channel 1, up to 12 simultaneous notes, fixed velocity 100.
+- TRS MIDI Type A output for Batch 4+.
+- Built-in microphone for Batch 4+ only.
+- Rechargeable Li-Po battery.
+
+### 1.4 Batch feature flags
+
+Support feature availability by hardware batch:
+
+| Feature | Batch 1 | Batch 2 | Batch 4+ |
+|---|---:|---:|---:|
+| Core synth, effects, modes | yes | yes | yes |
+| 6-track looper | yes | yes | yes |
+| USB Audio and USB MIDI | yes | yes | yes |
+| Battery level display | no | yes | yes |
+| Built-in microphone | no | no | yes |
+| Vocoder MIC mode | no | no | yes |
+| Tuner | no | no | yes |
+| Mic Sample recording | no | no | yes |
+| Slash chords | no | no | yes |
+| Mixer multi-mute | no | no | yes |
+| TRS MIDI output | no | no | yes |
+
+Expose this as configuration, e.g. `device.batch = 1 | 2 | 4`.
+
+## 2. Global State Model
+
+Suggested top-level state fields:
+
+```ts
+type HiChordState = {
+  power: 'off' | 'on' | 'sleep' | 'deepSleep' | 'dfu' | 'calibration';
+  batch: 1 | 2 | 4;
+  key: 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
+  scale: ScaleName;
+  globalOctaveShift: -1 | 0 | 1 | 2;
+  perButtonOctaveShift: Record<1|2|3|4|5|6|7, -2|-1|0|1>;
+  bpm: number; // 40..300
+  selectedSound: SoundName;
+  selectedMode: PlayMode;
+  joystickMode: 'DEFAULT' | 'EXTENDED' | 'CHROMATIC';
+  effects: EffectsState;
+  chordLocks: Record<1|2|3|4|5|6|7, ChordModification | null>;
+  inversions: Record<1|2|3|4|5|6|7, 0 | 1 | 2>;
+  bassMode: 'OFF' | 'ROOT' | 'SLASH';
+  looper: LooperState;
+  drums: DrumState;
+  sequencer: SequencerState;
+  presets: PresetSlot[]; // P1..P4
+  samples: SampleState;
+  midi: MidiState;
+  usbMode: 'AUDIO' | 'MIDI';
+  speakerEnabled: boolean;
+  battery: BatteryState;
+};
+```
 
-Reference progressions for demo/test mode:
+## 3. Chord Engine
 
-- `1 -> 5 -> 6 -> 4`
-- `1 -> 6 -> 4 -> 5`
-- `6 -> 4 -> 1 -> 5`
-- `2 -> 5 -> 1`
-- `1 -> 4 -> 5`
+### 3.1 Seven chord buttons
 
-## Chord Quality Joystick
+Each chord button maps to a scale degree. In the default key of C Major:
 
-When a chord button is held, joystick direction modifies chord quality in real
-time. Releasing the joystick returns to the base diatonic chord unless chord
-lock is active.
+| Button | Degree | Default chord quality | Default chord in C | Musical role |
+|---:|---|---|---|---|
+| 1 | I | Major | C | Home / tonic |
+| 2 | ii | Minor | Dm | Gentle forward motion |
+| 3 | iii | Minor | Em | Darker alternative to tonic |
+| 4 | IV | Major | F | Lift / openness |
+| 5 | V | Major | G | Tension / dominant |
+| 6 | vi | Minor | Am | Emotional / relative minor |
+| 7 | vii° | Diminished | Bdim | Suspense / leading-tone pull |
 
-Default joystick mode:
+Acceptance criteria:
 
-| Direction | Modifier |
-| --------- | -------- |
-| Center | Diatonic base chord |
-| Up-left | Augmented |
-| Up | Major/minor flip |
-| Up-right | Dominant 7 |
-| Left | Diminished for major chords / minor handling for minor chords |
-| Right | Major 7 on major chords / minor 7 on minor chords |
-| Down-left | 6th on major chords / sus2 behavior on minor chords |
-| Down | Sus4 |
-| Down-right | 9th/add9 |
+- Pressing a chord button plays a full chord in the current key and scale.
+- Any sequence of the seven buttons should be diatonic to the selected key/scale.
+- Display shows the chord name.
+- Multiple chord buttons can layer chords in Play mode.
 
-Extended and chromatic joystick modes should be part of the long-term design,
-even if the first implementation only supports default mode.
+### 3.2 Keys
 
-| Mode | Directions / chord types |
-| ---- | ------------------------ |
-| Extended | flat 5, Dom9, Add9, Add11, Min11, Sus4+7, half-dim7, plus related color chords |
-| Chromatic | Min(Maj7), Maj13, 6/9, Maj7#11, Dom13, Dom7b9, Dom7alt, and other outside-key colors |
-
-Recommended implementation:
+Implement all 12 chromatic keys:
 
-- Represent chord quality as interval sets relative to the chord root.
-- Keep diatonic defaults as the fallback when the joystick is centered.
-- Apply temporary modifiers while the chord is held.
-- Add chord lock later: chord button + joystick modifier + lock command toggles
-  a persistent modifier for that chord button. Locked chords should transpose
-  correctly when the global key changes.
-- Update currently sounding voices without stuck notes or double-triggered note
-  offs.
+`C, C#, D, D#, E, F, F#, G, G#, A, A#, B`
 
-## Chord Inversions
+Controls:
 
-Chord inversions rearrange chord notes for smoother movement.
+- Open key menu with Gray/Key button.
+- Joystick left/right changes key.
+- In Chromatic joystick mode, when no chord is held, joystick left/right shifts the entire key down/up by one semitone.
 
-Required behavior:
-
-- Holding a chord button and pressing the inversion command cycles through
-  available inversions for that chord.
-- Each chord button has its own inversion index.
-- Inversions should wrap around.
-- Inversion state should affect play, arp, repeat, and MIDI chord output.
-
-Suggested model:
-
-- Triads: root position, first inversion, second inversion.
-- Seventh/ninth chords: include additional inversions if practical, or at least
-  rotate the lowest note upward through the chord tones.
-
-## Key And Octave Controls
-
-Global key:
-
-- `KEY_MENU` + joystick left/right changes the key.
-- Support all 12 keys: `C`, `C#`, `D`, `D#`, `E`, `F`, `F#`, `G`, `G#`, `A`,
-  `A#`, `B`.
-- The change instantly transposes all seven chord buttons.
-- Display the selected key.
-
-Global octave:
-
-- `KEY_MENU` + joystick up/down raises or lowers the overall octave.
-- Match the manual range when practical: global octave `-1..+2`.
-
-Per-chord octave:
-
-- Holding a chord button plus the per-chord octave down/up commands adjusts only
-  that chord button's octave.
-- Match the manual range when practical: per-chord octave `-2..+1`.
-- Store a separate octave offset for each of the seven buttons.
-
-## Tempo And Rhythm Rates
-
-BPM:
-
-- `MODE_MENU` + joystick up enters the BPM submenu; joystick left/right changes
-  BPM.
-- Support a manual-compatible BPM range of `40..300`.
-- Tapping the mode button three or more times should set tap tempo.
-- BPM drives arp, repeat, autodrum, delays/tremolo rates where applicable, and
-  recorded loop playback.
-- Start with 120 BPM unless another project default is established.
-
-Rhythm rates:
-
-- Support at least `1/4`, `1/8`, `1/16`, `1/32`, swing variants, and triplet
-  variants.
-- The same rate system should be shared by arp, repeat, autodrum, delay, and
-  tremolo where musically useful.
-
-## Sound Engine
-
-The instrument should support multiple oscillator-based patches per chord.
-
-Required engines and sound families:
-
-- Analog engine: sine, saw, square, triangle, and blends.
-- FM engine: electric pianos, bells, organs, metallic textures.
-- Sample engine: piano, strings, vibraphone, harp, cello, and user-uploaded
-  samples where storage permits.
-- Noise engine: white, pink, filtered resonant, metallic, and hybrid texture
-  components.
-- Randomized generated tone.
-
-Sound behavior:
-
-- `SOUND_MENU` opens sounds. Pressing it again advances to the next sound;
-  joystick left/right browses sounds.
-- `SOUND_MENU` + chord button should eventually quick-select seven favorite
-  sounds.
-- Target a 12-oscillator architecture where feasible: six musical voices plus
-  six detuned stereo partners. The current ESP32/AMY implementation may choose
-  a smaller default voice count and expose `1`, `2`, `4`, and later `6` or `12`
-  oscillator settings as CPU budget allows.
-- Effects and filters shape the same active patch.
-- Randomized sound generation should change oscillator settings, envelope, and
-  effect-related parameters in a bounded musical range.
-
-For this repo, prefer AMY-native oscillator, patch, filter, delay, and envelope
-features rather than duplicating DSP code in application logic.
-
-## Effects
-
-`SOUND_MENU` opens the sounds/effects selection. Joystick up enters effects from
-the sound browser. In the effects list, joystick left/right selects the effect
-slot shown on the display, and joystick up toggles or cycles the selected
-effect's value.
-
-Implement these effect/state slots:
-
-| Slot | Values |
-| ---- | ------ |
-| ADSR | `LONG`, `SHORT`, `SWELL`, `PLUCK`, `TOUCH`, `SUSTAIN` |
-| Attack | `1..2000 ms`, preferably via function button + wheel |
-| Release | `1..5000 ms`, preferably via function button + wheel |
-| Glide | `ON`, `OFF` |
-| Reverb | `ON`, `OFF`, plus amount/type if the synth budget allows |
-| Delay | `1/4`, `1/8`, `1/16`, `1/16T`, `1/32`, `OFF` |
-| Chorus | `ON`, `OFF`, plus depth/rate if available |
-| Tremolo | `1/4`, `1/8`, `1/16`, `1/16T`, `1/32`, `OFF` |
-| Flanger | `ON`, `OFF` |
-| Filter | `ON`, `OFF`, cutoff `20 Hz..20 kHz` |
-| Stereo | `STEREO`, `MONO` |
-| Speaker | `ON`, `OFF` when the target hardware has a speaker |
-| Bass | `OFF`, `ROOT`, `SLASH` |
-| Voice leading | `ON`, `OFF` |
-| Voices | `1 OSC`, `2 OSC`, `4 OSC`, `6/12 OSC` depending on CPU budget |
-| Joystick mode | `DEFAULT`, `EXTENDED`, `CHROMATIC` |
-| Scale | `MAJOR`, `NATURAL_MINOR`, `HARMONIC_MINOR`, `MELODIC_MINOR`, `MAJOR_PENTATONIC`, `MINOR_PENTATONIC`, `BLUES`, `DORIAN`, `MIXOLYDIAN`, `LYDIAN` |
-| USB mode | `AUDIO`, `MIDI` |
-| MIDI | `ON`, `OFF` |
-| Vocoder / sampling | Optional Batch-4-inspired features if microphone hardware exists |
-
-Effect notes:
-
-- Filter on/off controls whether the knob edits cutoff. When filter is off, the
-  knob is master volume.
-- Bass `ROOT` adds a bass note two octaves below the chord root. Bass `SLASH`
-  uses one held chord button as the bass degree and another as the chord.
-- Voices controls oscillator density: mono/lead, light layer, thicker chord,
-  lush stack.
-- Voice leading should choose inversions that minimize movement between
-  successive chords.
-- Glide should smooth pitch transitions between chord changes.
-- Effects must be safe to change while notes are sounding.
-
-## Modes
-
-`MODE_MENU` opens the mode menu. Joystick left/right browses modes, pressing the
-mode button again closes the menu, and `MODE_MENU` + chord button should
-eventually quick-select the first seven common modes.
-
-Target modes from the manual:
+### 3.3 Scales
+
+Implement 10 selectable scales. Each scale changes which notes/chords the 7 chord buttons produce.
+
+| Scale | Character | Suggested use |
+|---|---|---|
+| Major | Bright, happy; default | Pop, rock, country |
+| Natural Minor | Dark, melancholy | Ballads, emo, metal |
+| Harmonic Minor | Dramatic | Classical, flamenco |
+| Melodic Minor | Sophisticated, jazzy | Jazz, film score |
+| Major Pentatonic | Simple, singable | Folk, country, gospel |
+| Minor Pentatonic | Gritty, raw | Blues, rock, hip-hop |
+| Blues | Adds blue note flavor | Blues, funk, soul |
+| Dorian | Minor with bright 6th | Funk, jazz fusion |
+| Mixolydian | Major with flat 7th | Rock, classic soul |
+| Lydian | Dreamy raised 4th | Film score, dreampop |
+
+Controls:
+
+- Scale is in Sounds/Effects menu after the effect list.
+- Joystick up cycles through the 10 scales.
+
+### 3.4 Octave shifting
+
+Global octave shift:
+
+- Range: `-1` to `+2` octaves.
+- Control: open key menu, joystick up/down.
+
+Per-button octave shift:
+
+- Down range: button-specific down to `-2`.
+- Up range: button-specific up to `+1`.
+- Control: hold a chord button and use the relevant octave shortcut.
+
+Acceptance criteria:
+
+- Global shift transposes all chord buttons.
+- Per-button shift affects only that button.
+- Per-button and global shifts combine when calculating final MIDI/audio pitch.
+
+### 3.5 BPM / tempo
+
+BPM controls tempo-synced features:
+
+- Delay.
+- Tremolo.
+- Arpeggiator.
+- Repeat mode.
+- Drum loops.
+- Sequencer.
+- Metronome and count-in.
+
+Range: `40..300 BPM`.
+
+Controls:
+
+- Red/Mode button opens mode menu.
+- Joystick up enters BPM menu.
+- Joystick left/right adjusts BPM.
+- Tap Tempo: tap Red/Mode button three or more times in rhythm.
+
+### 3.6 Chord inversions
+
+Implement three inversion states per chord button:
+
+- `0`: root position.
+- `1`: first inversion.
+- `2`: second inversion.
+
+Controls:
+
+- Hold chord button.
+- Press inversion shortcut; each press cycles `Root -> 1st -> 2nd -> Root`.
+
+Acceptance criteria:
+
+- Inversions reorder the same chord tones so a different note is lowest.
+- Inversions affect voice assignment and display/chord rendering.
+- Presets save inversion state.
+
+### 3.7 Voice leading
+
+Effect/setting: `Voice Leading` toggle.
+
+Behavior:
+
+- When off, use explicit button inversion state.
+- When on, automatically choose the inversion for the next chord that minimizes pitch movement from currently sounding chord tones.
+- This applies to chord button playback and should preserve smooth transitions.
+
+### 3.8 Chord Lock
+
+Behavior:
+
+- Normally joystick chord modifications are temporary while the chord button and joystick direction are held.
+- Chord Lock stores the current joystick modification on a chord button.
+- Locked modification persists when the chord button is pressed later.
+- Locked chords transfer when changing keys.
+
+Controls:
+
+- Hold chord button.
+- Push joystick to desired modification.
+- While holding both, press lock shortcut.
+- Display shows `LOCKED`.
+- Repeat same action to unlock.
+
+### 3.9 Bass and slash chords
+
+Effect/setting: `Bass`, cycles `OFF -> ROOT -> SLASH`.
+
+Modes:
+
+- `OFF`: no dedicated bass voice; all six voices are used for chord tones/fill.
+- `ROOT`: adds a bass note two octaves below the chord root.
+- `SLASH`: Batch 4+; hold one chord button for bass degree, press another for chord; display shows slash chord notation such as `Em/C`.
+
+Acceptance criteria:
+
+- Bass voice maps to voice/oscillator 4 (`osc 3` and paired `osc 9`) in the voice architecture.
+- ROOT bass follows the chord root.
+- SLASH bass follows the bass button's scale degree while the upper chord follows the chord button.
+- SLASH mode unavailable or disabled for batches before Batch 4.
+
+## 4. Joystick Chord Modification System
+
+### 4.1 General behavior
+
+- Holding a chord button and pushing the joystick in any of 8 directions modifies the chord character.
+- Releasing the joystick snaps back unless Chord Lock is active.
+- There are three joystick modes: `DEFAULT`, `EXTENDED`, `CHROMATIC`.
+- Joystick mode is selected in the effects/settings menu under `JOYSTICK`, cycling `DEFAULT -> EXTENDED -> CHROMATIC`.
+
+### 4.2 Default joystick mode
+
+| Direction | Name / result | Theory behavior | Example in C |
+|---|---|---|---|
+| Up | Major ↔ Minor flip | Flip the 3rd; major becomes minor, minor becomes major | C -> Cm |
+| Up-right | Dom7 | Add flat 7th to major chord | C -> C7 |
+| Right | Maj7 / min7 | Add natural 7th for major chords; minor 7th for minor chords | C -> CMaj7; Am -> Am7 |
+| Down-right | 9th | Add 9th / add9 color | C -> Cadd9 |
+| Down | Sus4 | Replace 3rd with 4th | C -> Csus4 |
+| Down-left | 6th / Sus2 | Major chords add 6th; minor chords become sus2 | C -> C6; Dm -> Dsus2 |
+| Left | Dim / Min | Major becomes minor; minor becomes diminished | C -> Cm; Dm -> Ddim |
+| Up-left | Aug | Raise 5th | C -> Caug |
+
+### 4.3 Extended joystick mode
+
+Extended mode provides richer jazz/R&B voicings.
+
+| Direction | Result | Chord change | Vibe |
+|---|---|---|---|
+| Up | Major ↔ Minor | Flip 3rd | Bright/dark flip |
+| Down | Dom7#9 | Add flat 7th and sharp 9th | Hendrix crunch |
+| Left | Sus4+7 | Replace 3rd with 4th and add flat 7th | Suspended tension |
+| Right | Add11 | Add 11th without replacing notes | Open, modern |
+| Up-left | Half-dim7 | Lower 3rd, lower 5th, add flat 7th | Bittersweet |
+| Up-right | Dom9 | Add flat 7th and 9th | Smooth funk |
+| Down-left | Add9 | Add 9th without 7th | Warm sparkle |
+| Down-right | Min11 | Minor chord + flat 7th + 11th | Modal, open |
+
+### 4.4 Chromatic joystick mode
+
+Chromatic mode has two behaviors:
+
+1. With a chord held: advanced voicings and altered dominants.
+2. Without a chord held: joystick left/right modulates the key by semitone.
+
+| Direction | Result | Chord change | Vibe |
+|---|---|---|---|
+| Up | Min(Maj7) | Minor chord with natural 7th | Film noir |
+| Down | Maj13 | Add 7th, 9th, and 13th | Full, warm |
+| Right | 6/9 | Add 6th and 9th | Smooth landing |
+| Up-left | Maj7#11 | Add natural 7th and raised 11th | Lydian, ethereal |
+| Up-right | Dom13 | Flat 7th + 9th + 13th | Rich tension |
+| Down-left | Dom7b9 | Flat 7th + flat 9th | Spanish, dark |
+| Down-right | Dom7alt | Flat 7th + altered 5th and 9th | Maximum spice |
+| Left | Not explicitly specified in manual table | Implement as no-op or reserved unless defined elsewhere | Reserved |
+
+### 4.5 Chord type inventory
+
+Support these chord types/modifications at minimum:
+
+1. Major
+2. Minor
+3. Diminished
+4. Flat 5 / b5
+5. Augmented
+6. Sus4
+7. Sus2
+8. Maj7
+9. Min7
+10. Dom7
+11. Maj6
+12. Min6
+13. Maj9
+14. Min9
+15. Dom7#9
+16. Half-dim7
+17. Dom9
+18. Add9
+19. Add11
+20. Min11
+21. Sus4+7
+22. Min(Maj7)
+23. Maj13
+24. 6/9
+25. Maj7#11
+26. Dom13
+27. Dom7b9
+28. Dom7alt
+
+Combined with keys, inversions, octave shifts, and slash chords, the implementation should support a large combinatorial voicing space.
+
+## 5. Sound Engines and Instruments
+
+### 5.1 Synthesis architecture
+
+Implement four synthesis engines:
+
+- `Analog`: classic waveforms `Sine`, `Saw`, `Square`, `Triangle`.
+- `FM`: modulation depth and ratio editable via app; suitable for electric pianos, bells, metallic tones.
+- `Sample`: real instrument samples with pitch-shifting up to ±24 semitones; stored permanently.
+- `Noise`: white, pink, filtered resonant, and metallic noise; used in hybrid presets.
+
+### 5.2 Voice architecture
+
+Implement 12 oscillators arranged as six stereo pairs.
+
+| Voice | Main oscillator | Musical role | Stereo pair |
+|---:|---|---|---|
+| 1 | osc 0 | Root note | osc 6 |
+| 2 | osc 1 | Third | osc 7 |
+| 3 | osc 2 | Fifth | osc 8 |
+| 4 | osc 3 | Bass: root minus 2 octaves or slash bass | osc 9 |
+| 5 | osc 4 | Extension: 6th, 7th, 9th, etc. | osc 10 |
+| 6 | osc 5 | Additional harmonics / fill | osc 11 |
+
+Stereo behavior:
+
+- Main oscillators pan across the stereo field.
+- Paired oscillators pan opposite with slight detuning for width.
+- When Stereo effect is off, sum to mono.
+
+Voice count setting:
+
+- Cycles `8 -> 4 -> 2 -> 1 oscillators`.
+- `8`: thick/full with doubled notes.
+- `4`: lighter chord.
+- `2`: root + one other note.
+- `1`: monophonic.
+
+### 5.3 Signal flow
+
+Process sound through this chain:
+
+```text
+Chord Logic -> 12 Voices -> ADSR -> Bass Osc -> Filter -> Chorus -> Flanger -> Delay -> Reverb -> Looper -> Output
+```
+
+This ordering should be used for audio processing or simulated state order.
+
+### 5.4 Sound selection
+
+Quick select:
+
+| Chord button | Sound | Engine |
+|---:|---|---|
+| 1 | Saw | Analog |
+| 2 | Sine | Analog |
+| 3 | FM E.Piano | FM |
+| 4 | FM HX7 | FM |
+| 5 | Strings | Sample |
+| 6 | Clarinet | Sample |
+| 7 | FM Bell | FM |
+
+Browse all sounds:
+
+- Press Yellow/Sound button, then joystick left/right scrolls through sounds.
+- Display shows sound name and animated icon.
+- Manual says there are 30+ instruments and new sounds may be added by firmware updates.
+
+### 5.5 Built-in sound list from manual
+
+Implement these named sounds at minimum:
+
+| Category | Sound | Description |
+|---|---|---|
+| Analog | Saw | Bright, buzzy, harmonically rich |
+| Analog | Sine | Pure, clean fundamental tone |
+| Analog | Triangle | Soft, mellow, flute-like |
+| Analog | Square | Hollow, retro, 8-bit character |
+| FM | FM E.Piano | DX7/Rhodes-style keys |
+| FM | FM Bell | Crystalline/glass bell tone |
+| FM | FM HX7 | FM synth tone available via quick select |
+| Sample | Piano | Upright piano |
+| Sample | Strings | Orchestral string ensemble |
+| Hybrid | Juno Poly | Juno-106-style polysynth pad |
+| Sample | Flute | Airy woodwind |
+| Sample | Brass | Horn section |
+| Hybrid | Ocean Pad | Ambient noise plus FM wash |
+| Sample | Clarinet | Warm woodwind |
+| Sample | Wurli | Wurlitzer electric piano |
+| Sample | Vox Ahh | Choir vocal pad |
+| Sample | Vibraphone | Bell-like mallet percussion |
+| Sample | Acoustic | Acoustic guitar |
+| Sample | Harp | Delicate plucked strings |
+| Sample | Humming | Soft human humming |
+| Sample | Robbo | Punchy synth bass |
+| Sample | Shutter | Percussive/clicky hit |
+| Hybrid | SawSquare | Layered saw and square wave |
+| Special | Mic Sample | Record from mic; Batch 4+ |
+| Special | User Sample | Uploaded via Companion App |
+
+## 6. Effects and Sound Settings
+
+### 6.1 Effects menu behavior
+
+Controls:
+
+- Press Yellow/Sound button to open Sounds menu.
+- Joystick up enters effects list.
+- Joystick left/right browses effects and settings.
+- Joystick up toggles or cycles current effect/setting.
+- Volume wheel adjusts effect intensity where applicable.
+- If a combination exceeds CPU, show `SYSTEM FULL`; user must turn off another effect first.
+
+### 6.2 Effects inventory
+
+| Effect / setting | Options | Behavior / parameters |
+|---|---|---|
+| Reverb | `OFF`, `ON` | Adds room/hall/cathedral-like space. No extra on-device controls. |
+| Delay | `OFF`, `1/4`, `1/8`, `1/16`, `1/16T` | BPM-synced echo intervals. |
+| Chorus | `OFF`, `ON` | Adds widened, shimmering detuned copy. |
+| Flanger | `OFF`, `ON` | Jet-plane sweeping effect. |
+| Tremolo | `OFF`, `1/4`, `1/8`, `1/16`, `1/16T`, `1/32` | BPM-synced volume pulsing/chopping. |
+| LFO / vibrato | `OFF`, `LOW`, `MED`, `HIGH` | Pitch wobble; LOW subtle, HIGH dramatic. |
+| Filter | `OFF`, `ON` | Low-pass filter. Volume wheel sweeps cutoff. Shortcut: Red/Mode + wheel works outside menu. |
+| Glide / portamento | `OFF`, `ON`; while on, speed fast to slow | Smooth pitch slides between notes; best in Lead mode. |
+| Stereo | `OFF`, `ON` | ON spreads chord notes left/right with slight detune; OFF centers/mono-sums. |
+| Voice Count | `8`, `4`, `2`, `1` oscillators | Controls how many notes/oscillators sound. |
+| ADSR | `LONG`, `SHORT`, `SWELL`, `PLUCK`, `TOUCH`, `SUSTAIN` | Envelope presets. Fine-tune Attack and Release with wheel combos. |
+| Bass | `OFF`, `ROOT`, `SLASH` | Root bass or slash bass. SLASH is Batch 4+. |
+| Voice Leading | `OFF`, `ON` | Auto-select smoothest inversion. |
+| Vocoder | `OFF`, `MIC`, `LOOP` | MIC uses microphone; LOOP uses Track 1 audio. |
+| Scale | 10 scales | Changes button chord set. |
+| Joystick Mode | `DEFAULT`, `EXTENDED`, `CHROMATIC` | Changes chord modification mapping. |
+| MIDI | `OFF`, `ON` | Sends MIDI over USB-C; channel 1, up to 12 simultaneous notes. |
+| USB Mode | `AUDIO`, `MIDI` | USB audio or MIDI output. Switching briefly reconnects. |
+| Speaker | `OFF`, `ON` | Built-in speaker toggle. Always starts ON after power-up; not saved across reboot. |
+
+### 6.3 ADSR presets
+
+| Preset | Attack | Decay | Sustain | Release | Best for |
+|---|---:|---:|---:|---:|---|
+| LONG | 800 ms | 1000 ms | 70% | 2000 ms | Pads, ambient |
+| SHORT | 100 ms | 100 ms | 100% | 120 ms | Rhythmic stabs |
+| SWELL | 800 ms | 300 ms | 80% | 2000 ms | Slow builds |
+| PLUCK | 5 ms | 80 ms | 0% | 180 ms | Plucked strings, keys |
+| TOUCH | 25 ms | 260 ms | 66% | 450 ms | Responsive playing |
+| SUSTAIN | 200 ms | 300 ms | 85% | 3000 ms | Organ-like sustain |
+
+Manual fine-tune ranges:
+
+- Attack: `1..2000 ms`.
+- Release: `1..5000 ms`.
+
+### 6.4 Volume wheel combos
+
+Implement function-button + wheel real-time parameter control:
+
+| Hold | Wheel controls | Range |
+|---|---|---|
+| Key/Gray | Attack time | 1–2000 ms |
+| Sound/Yellow | Release time | 1–5000 ms |
+| Mode/Red | Filter cutoff | 20 Hz – 20 kHz |
+
+## 7. Randomization
+
+Joystick click while in a menu randomizes context-specific data:
+
+| Menu | Randomization behavior |
+|---|---|
+| Sounds | Random waveform / sound; effects remain unchanged |
+| Key | Random everything: sound, effects, key, arp pattern |
+| Mode | Random arp and sequencer pattern; sound remains unchanged |
+
+Acceptance criteria:
+
+- Randomization must respect available hardware batch and CPU/effect constraints.
+- Randomized values must immediately update display and playback state.
+
+## 8. Vocoder and Sampling
+
+### 8.1 Vocoder
+
+Batch requirements:
+
+- `MIC` source requires Batch 4+.
+- `LOOP` source uses Track 1 audio and can be modeled even if no physical mic is available.
+
+Effect state:
+
+- `OFF`: disabled.
+- `MIC`: microphone input modulates the synth carrier.
+- `LOOP`: Track 1 audio modulates the synth carrier; Track 1 audio is muted and used only as source.
+
+Behavior:
+
+- The vocoder analyzes the input spectrum and applies it to the currently played synth sound.
+- Harmonic-rich carriers such as Saw, Square, and FM should produce stronger results than Sine.
+
+Adjustable vocoder parameters, exposed via Companion App or MIDI CC:
+
+| Parameter | Range | Default | Meaning |
+|---|---:|---:|---|
+| Formant Shift | -12..+12 semitones | 0 | Shifts vocal character up/down. |
+| Band Q | 0.5..2.0 | 1.0 | Lower = wider/smoother; higher = narrower/more robotic. |
+| Attack | 0.5..50 ms | 2 ms | Response speed to voice input. |
+| Release | 1..200 ms | 20 ms | Sustain after input stops. |
+| Noise Level | 0..100% | 15% | Adds consonant/noise articulation. |
+| Gate | on/off | on | Silences output when no voice input is detected. |
+
+### 8.2 Mic sampling
+
+Batch 4+ only.
+
+Behavior:
+
+- Select `Mic Sample` sound/mode.
+- Volume wheel controls mic gain before recording, range `0.5x..10x`.
+- Hold chord button 1 to record from built-in mic.
+- Maximum recording length is approximately 3 seconds.
+- Release button to stop recording.
+- Device auto-detects pitch and transposes sample to C.
+- Device switches to Lead mode after recording.
+- Chord buttons play the sample chromatically.
+- If pitch detection fails, raw sample is used without transposition.
+- Mic samples are temporary RAM data and are lost at power off unless saved to a preset.
+
+### 8.3 User samples
+
+Behavior:
+
+- User Sample is uploaded via Companion App.
+- User samples are stored permanently in flash and survive power cycles.
+- Auto-pitching/transposition to C applies.
+- Maximum length depends on flash capacity.
+
+### 8.4 User drum kit
+
+Behavior:
+
+- Companion App can upload one-shot drum samples as a User Kit.
+- User Kit appears when browsing drum kits only if samples are loaded.
+- If no User Kit samples exist, skip it automatically.
+
+## 9. Play Modes
+
+### 9.1 Mode selection
+
+Two selection methods:
+
+1. Quick select: hold Red/Mode and press chord button 1–7 for common modes.
+2. Browse: press Red/Mode, joystick left/right scrolls through all modes.
+
+Common quick-select mapping:
+
+| Chord button | Mode |
+|---:|---|
+| 1 | Play / Oneshot |
+| 2 | Strum |
+| 3 | Lead |
+| 4 | Drone |
+| 5 | Arpeggio |
+| 6 | Repeat |
+| 7 | Mic Sample, Batch 4+ |
+
+The manual states there are 15 modes. Implement these named modes from the manual:
+
+1. Play / Oneshot
+2. Strum
+3. Lead
+4. Drone
+5. Arpeggio
+6. Repeat
+7. Mic Sample
+8. Drum Mode
+9. Drum Loops
+10. Auto-Drum
+11. Sequencer
+12. Chord Hiro
+13. Ear Trainer
+14. Tuner
+15. Mixer
+
+Mode-specific settings are accessed by Red/Mode menu then joystick down.
+
+### 9.2 Play / Oneshot mode
+
+Behavior:
+
+- Default mode.
+- Polyphonic.
+- Press chord button: chord plays immediately.
+- Release chord button: chord fades out according to Release setting.
+- Press multiple chord buttons: all chords sound simultaneously.
+
+### 9.3 Strum mode
+
+Behavior:
+
+- Press chord button: chord notes roll one by one like guitar strumming.
+- Notes roll through active oscillators in order.
+
+Strum speed setting via joystick down:
+
+| Speed | Delay between notes | Feel |
+|---|---:|---|
+| Slow | 120 ms | Gentle / ballad |
+| Medium | 80 ms | Natural guitar feel; default |
+| Fast | 40 ms | Quick / energetic |
+
+### 9.4 Lead mode
+
+Behavior:
+
+- Monophonic.
+- Plays only root note of each chord.
+- Pressing a new chord button cuts off previous note and starts new note.
+- Best paired with Glide/Portamento and octave shifts.
+
+### 9.5 Drone mode
+
+Behavior:
+
+- Press chord button once to sustain chord indefinitely.
+- Press a different chord button to switch drone chord with crossfade.
+- Switching to another mode stops drone.
+- When switching away, drone may auto-bounce into looper if active per looper auto-bounce behavior.
+
+### 9.6 Arpeggio mode
+
+Behavior:
+
+- Chord notes play one at a time automatically, synced to BPM.
+- Supports six patterns, nine rates, and three chord layering modes.
+
+Pattern selection:
+
+- Hold Gray/Key + chord button 1–6 while in Arp mode.
+
+| Button | Pattern | Behavior |
+|---:|---|---|
+| 1 | UP | Low to high, repeat |
+| 2 | DOWN | High to low, repeat |
+| 3 | UP/DOWN | Bounce upward then back down |
+| 4 | DOWN/UP | Bounce downward then back up |
+| 5 | RANDOM | Random chord tones each beat |
+| 6 | FINGERPICK | Pairs of notes, guitar-like fingerpicking |
+
+Chord layering mode:
+
+- Hold Gray/Key + chord button 7 to cycle.
 
 | Mode | Behavior |
-| ---- | -------- |
-| `PLAY` / oneshot | Polyphonic full chords. Button down plays, release fades. Multiple chord buttons may layer. |
-| `STRUM` | Notes of the chord roll out one by one, like a guitar. Speeds: slow `120 ms`, medium `80 ms`, fast `40 ms` between notes. |
-| `LEAD` | Monophonic root-note mode. New chord button cuts the previous note. |
-| `DRONE` | Press once to sustain indefinitely. New chord switches drone with crossfade. Switching modes stops the drone. |
-| `ARP` | Chord notes play one at a time, synced to BPM. |
-| `REPEAT` | Full chord retriggers at a selected rhythmic rate. |
-| `DRUM` | Seven buttons trigger drum hits. |
-| `DRUM_LOOP` / beat | Pre-programmed drum patterns that can keep playing while returning to chord modes. |
-| `AUTO_DRUM` | In drum mode, hold a button and use joystick directions to auto-trigger at rhythmic rates. |
-| `MIC_SAMPLE` | Optional microphone sampling mode if hardware exists. |
-| `SEQUENCER` | Step/pattern mode; looper is disabled while sequencer owns looping. |
-| `MIXER` | Looper track mute/solo/level management. |
-| `CHORD_HIRO` | Guided chord progression learning mode. |
-| `TUNER` | Optional microphone/instrument tuner if hardware exists. |
-| `VOCODER` | Optional mic-driven synth mode if hardware exists. |
+|---|---|
+| ARP ONLY | Only arpeggiated notes; default |
+| CHORD+ARP | Full chord sustains in left channel, arp in right |
+| RHYTHM+ARP | Chord pulses rhythmically while arp plays on top |
 
-### Arpeggio Details
+Rate setting via joystick down:
 
-Arpeggio mode should support:
+| Rate | Speed | Feel |
+|---|---|---|
+| 1/1 | 1 note every 4 beats | One note per bar |
+| 1/2 | 1 note every 2 beats | Half notes |
+| 1/4 | 1 note per beat | Quarter notes |
+| 1/8 | 2 notes per beat | Eighth notes; default |
+| 1/16 | 4 notes per beat | Sixteenth notes |
+| 1/16T | 6 notes per beat | Triplets |
+| 1/32 | 8 notes per beat | Very fast |
+| Swing 8th | 2 uneven notes per beat | Shuffle feel |
+| Swing 16th | 4 uneven notes per beat | Funky syncopation |
 
-- Six patterns: `UP`, `DOWN`, `UP_DOWN`, `DOWN_UP`, `RANDOM`, `FINGERPICK`.
-- Nine rate values eventually, sharing the same musical rate enum as delay,
-  tremolo, repeat, and auto-drum.
-- Three chord modes: `ARP_ONLY`, `CHORD_PLUS_ARP`, `RHYTHM_PLUS_ARP`.
-- Pattern randomization from the mode menu click/randomize command.
-- MIDI output as individual note events in the generated order.
+Gate length follows Release time: short release = staccato; long release = legato/overlap.
 
-### Drum Details
+### 9.7 Repeat mode
 
-Drum button mapping:
+Behavior:
 
-| Button | Drum |
-| ------ | ---- |
+- Full chord pulses on/off rhythmically, synced to BPM.
+- Hold chord button to stutter/gate at selected rate.
+- Rate changes with joystick down and uses same rates as Arpeggio.
+- Release time is temporarily capped at 200 ms in Repeat mode for clean pulses.
+- Original saved release time is restored when leaving Repeat mode.
+
+### 9.8 Mic Sample mode
+
+Batch 4+ only.
+
+Behavior duplicates the sampling feature:
+
+- Hold chord button 1 to record up to approximately 3 seconds.
+- Pitch detect and transpose to C.
+- Auto-switch to Lead mode.
+- Chord buttons play sample chromatically.
+- Volume wheel adjusts mic gain `0.5x..10x` before recording.
+
+### 9.9 Drum Mode
+
+Behavior:
+
+- Each chord button triggers a drum sound.
+
+Button mapping:
+
+| Button | Drum sound |
+|---:|---|
 | 1 | Kick |
-| 2 | Kick alternate |
+| 2 | Kick, alternate |
 | 3 | Snare |
 | 4 | Closed hi-hat |
 | 5 | Tom |
-| 6 | Bell / ride |
-| 7 | Open hi-hat / cymbal |
+| 6 | Bell / Ride |
+| 7 | Open hi-hat / Cymbal |
 
-Drum kits should eventually be selectable with function button + chord button:
+### 9.10 Drum Loops mode
 
-| Button | Kit |
-| ------ | --- |
-| 1 | Tight Kit |
-| 2 | x0x / 808-style |
-| 3 | x9x / 909-style |
-| 4 | Lynn Kit |
-| 5 | KR-78 |
-| 6 | Trap Box |
-| 7 | Cycle/default |
+Behavior:
 
-Drum loops should eventually provide seven styles with eight variations each:
-rock, disco, reggae, funk, hip-hop, electro, and jazz. Variations include
-original, ghost notes, busy hi-hats, syncopated kicks, fills, half-time,
-double-time, and jazz.
+- Pre-programmed drum patterns.
+- Seven styles × eight variations = 56 beats.
+- Each chord button selects a style.
+- Drum loops persist across mode changes so user can switch to chord modes and jam.
+- Leaving Drum Loop mode while playing can auto-bounce pattern into next empty looper track.
 
-Auto-drum joystick rates:
+Style mapping:
+
+| Button | Style |
+|---:|---|
+| 1 | Rock |
+| 2 | Disco |
+| 3 | Reggae |
+| 4 | Funk |
+| 5 | Hip-Hop |
+| 6 | Electro |
+| 7 | Jazz |
+
+Variations:
+
+1. Original
+2. Ghost notes
+3. Busy hi-hats
+4. Syncopated kicks
+5. Fills
+6. Half-time
+7. Double-time
+8. Jazz
+
+Controls:
+
+- Hold style button + joystick up/down cycles variations.
+- Joystick left/right switches kits.
+
+### 9.11 Auto-Drum mode
+
+Behavior:
+
+- Enter from Drum Mode.
+- Hold a drum button and push joystick to auto-trigger that hit repeatedly at rhythmic rates.
+
+Direction mapping:
 
 | Direction | Rate |
-| --------- | ---- |
-| Up | `1/4` |
-| Right | `1/8` |
-| Down | `1/16` |
-| Left | `1/32` |
-| Up-right | Swing eighth |
-| Down-right | Swing sixteenth |
-| Down-left | Sixteenth triplet |
-| Up-left | Swing eighth or alternate swing pattern |
+|---|---|
+| Up | 1/4 note |
+| Right | 1/8 note |
+| Down | 1/16 note |
+| Left | 1/32 note |
+| Up-right | Swing 8th |
+| Down-right | Swing 16th |
+| Down-left | 1/16 triplet |
+| Up-left | Swing 8th |
 
-## MIDI Output
+### 9.12 Sequencer mode
 
-USB-C MIDI output can be toggled from the effects menu via the `MIDI` slot.
-USB audio and USB MIDI should be treated as mutually exclusive USB modes unless
-the target stack can prove both are reliable at once.
+Behavior:
 
-Required behavior:
+- Step sequencer for chord progressions.
+- Up to 16 steps.
+- One chord per step.
+- Loops automatically.
+- Leaving Sequencer while playing auto-bounces sequence to next empty looper track.
+- Looper is disabled while in Sequencer mode because the sequencer itself is the loop source.
 
-- Send on MIDI channel 1 by default.
-- Use a fixed default velocity such as 100 unless expressive velocity is later
-  available.
-- Support up to 12 simultaneous notes to match the manual's voice architecture,
-  but degrade gracefully if the local synth voice count is lower.
-- In `PLAY`, send the full chord as a group of MIDI note-on/note-off events.
-- In `ARP`, send individual notes in the arpeggio sequence.
-- In `REPEAT`, send repeated chord triggers at the selected rhythm rate.
-- In `DRUM`, send mapped drum notes.
-- If TRS MIDI hardware is ever added, treat it as Type A and mirror USB MIDI
-  when MIDI is enabled.
-- Prefer stable MIDI channels and note mappings documented in code.
-- MIDI must mirror the audio behavior closely enough that a DAW recording can
-  reconstruct the performance.
+Controls:
 
-## Looper
+| Action | Control |
+|---|---|
+| Add chord step | Press chord button |
+| Add joystick-modified chord | Hold chord button about 300 ms while choosing joystick modification |
+| Start/stop playback | Joystick click |
+| Navigate steps | Hold joystick left/right |
+| Replace current step | Navigate to step, press new chord button |
+| Add 4 steps | Joystick down, max 16 |
+| Remove 4 steps | Joystick up |
+| Trim to cursor | Hold joystick click + joystick up |
 
-The joystick click controls the loop recorder when the user is not inside a
-menu screen. Target the manual's six independent tracks, each around 20 seconds,
-as an aspirational design point. If RAM/flash is too tight, keep the same state
-model with fewer tracks or shorter duration.
+Step data must save:
 
-State cycle:
+- Chord root / button degree.
+- Chord type, including joystick modifications.
+- Bass mode.
 
-1. `OFF`: no active looper action.
-2. `WAIT`: armed; optional metronome/count-in or bar-length waiting.
-3. `REC`: recording the selected track.
-4. `LOOP`: playing recorded tracks.
-5. Click again from the final state returns to `OFF` or clears/stops according
-   to the UX decision documented in code.
+### 9.13 Chord Hiro mode
 
-Implementation requirements:
+Behavior:
 
-- Prefer timestamped musical events for early firmware. Rendered-audio looping
-  can be added later if memory allows.
-- Capture chord, arp, repeat, and drum triggers.
-- Support left/right track selection. In drum-oriented modes, up/down may be
-  used for track or variation selection.
-- In `WAIT`, left/right should eventually choose bar count: `0` for free length
-  or `1..8` fixed bars.
-- Joystick down pauses/resumes all tracks.
-- Playback should follow the tempo used at record time, or optionally time-scale
-  to the current BPM if that behavior is explicitly implemented.
-- Avoid menu clicks accidentally modifying the looper.
-- Drum loops, sequencer patterns, and drones should be able to auto-bounce into
-  the next empty looper track when leaving their mode, if the audio/event model
-  can support it cleanly.
+- Rhythm-game mode inspired by Guitar Hero.
+- Notes scroll across display.
+- Player presses correct chord button in time.
+- 16 songs/levels across 5 difficulty categories.
 
-## Randomizers
+Categories:
 
-Implement three randomizer actions:
+| Category | Levels | Complexity |
+|---|---|---|
+| Folk | 1–4 | Simple progressions, slower tempo |
+| Rock | 5–6 | Moderate tempo, familiar patterns |
+| Jazz | 7–10 | ii-V-I patterns, chord extensions |
+| Modern | 11–12 | Complex rhythms |
+| Fusion | 13–16 | Advanced patterns, fast changes |
 
-- Randomize sound: oscillator settings, waveform choices, effects, and
-  envelopes.
-- Randomize pattern: arpeggio note order, timing, and placement.
-- Randomize all: key, BPM, inversions, waveforms, effects, and arpeggio
-  patterns.
+Controls:
 
-Randomization rules:
+| Action | Control |
+|---|---|
+| Select song | Press mode/menu action to enter song list |
+| Browse levels | Joystick up/down |
+| Start playing | Press mode/start action |
 
-- Keep results musical and bounded.
-- Avoid settings that produce silence unless silence is an intentional effect.
-- Update the display after randomization.
-- Make randomization deterministic under a test seed if practical.
+Timing/scoring:
 
-## Factory Reset
+| Difficulty | Timing window |
+|---|---:|
+| Easy | ±200 ms |
+| Medium | ±150 ms |
+| Hard | ±100 ms |
+| Expert | ±50 ms |
 
-Holding the documented reset button combination for 5 seconds restores factory
-defaults and restarts the device.
+Score judgments: `PERFECT`, `GREAT`, `OK`, `MISS`.
 
-Required reset behavior:
+### 9.14 Ear Trainer mode
 
-- Clear persisted settings.
-- Restore default key, octave, BPM, mode, effects, chord mappings, inversions,
-  sound patch, MIDI state, and rhythm settings.
-- Restart or visibly reinitialize the app to confirm reset.
+Behavior:
 
-Suggested defaults:
+- HiChord plays a chord or progression.
+- User identifies it by pressing correct chord button.
+- Tracks streak and best streak.
+- In levels involving modifications, display arrows showing joystick direction to use.
 
-- Key: C major.
-- BPM: 120.
-- Mode: `PLAY`.
-- Global octave: middle register suitable for chords.
-- Effects: off except basic ADSR.
-- MIDI: off.
-- Filter: off.
-- Stereo: stereo.
-- Bass: off.
-- Voices: modest default such as `2 OSC` or `4 OSC`.
+Levels:
 
-## Firmware Update
+| Level | Challenge | Rounds |
+|---:|---|---:|
+| 1 | Identify single chord, basic triads only | 3 |
+| 2 | Identify 4-chord progression, triads only | 2 |
+| 3 | Single chord with modifications such as 7ths, sus, aug; requires joystick | 3 |
+| 4 | 4-chord progression with modifications | 2 |
 
-The source device enters DFU mode by holding a three-button combination for 5
-seconds, then updating over USB-C from a web programmer.
+Hint:
 
-For this project:
+- Replay root note with designated hint control.
 
-- Preserve a reliable bootloader/update path.
-- Document the board-specific update button combination once hardware controls
-  are finalized.
-- Ensure the firmware can recover from bad saved settings via factory reset.
+### 9.15 Tuner mode
 
-## Display Requirements
+Batch 4+ only.
 
-The display should provide immediate feedback for:
+Behavior:
 
-- Current mode.
-- Current key.
-- Current BPM.
-- Global octave or per-chord octave when edited.
-- Selected waveform/sound.
-- Selected effect slot and value.
-- MIDI on/off.
-- USB mode: audio or MIDI.
-- Looper state: off, wait, recording, looping, paused.
-- Looper selected track and occupied/empty/recording status.
-- Battery state if battery sensing exists.
-- Randomizer confirmation.
-- Factory reset confirmation.
+- Chromatic tuner using built-in microphone.
+- Display shows detected note and tuning offset.
+- Screen inverts colors when input is in tune.
 
-Keep display strings short and stable so embedded UI code remains simple.
+### 9.16 Mixer mode
 
-## Audio And Hardware Targets
+Behavior:
 
-Manual specs to match where practical:
+- Controls looper tracks.
+- Mute/unmute, volume, solo, pause/resume, metronome, multi-mute.
 
-- Stereo 3.5 mm output.
-- USB-C 5 V power.
-- Approximate device class: handheld, around 160 mm x 90 mm x 30 mm.
-- Target sample rate: 48 kHz if supported cleanly. This repo currently
-  configures the ESP audio codec and AMY stream separately, so align the actual
-  rate across codec, AMY, USB audio, and I2S.
-- Audio format target: 16-bit output with higher precision internal processing
-  when AMY/CPU budget allows.
-- Polyphony/oscillator target: the manual's architecture is 12 oscillators as
-  six stereo pairs. For ESP32, expose lower voice settings first and treat 12
-  oscillators as aspirational until measured safe under worst-case effects.
-- Suggested signal flow: chord logic -> voices -> ADSR -> bass oscillator ->
-  filter -> chorus -> flanger -> delay -> reverb -> looper -> output.
-- Latency target: keep control-to-audio response under a few milliseconds where
-  possible, and never allow OLED/control I2C to block the audio render path.
-- Controls: seven chord buttons, three menu buttons, joystick with click,
-  volume/filter knob, OLED.
+Controls:
 
-## Implementation Priorities
+| Action | Control |
+|---|---|
+| Mute/unmute track | Press chord button 1–6 |
+| Track volume | Hold chord button + volume wheel |
+| Metronome on/off | Press chord button 7 |
+| Solo track | Hold chord button + press |
+| Pause/resume all tracks | Joystick click |
+| Multi-mute | Press 2+ chord buttons at once; Batch 4+ |
 
-Recommended build order:
+## 10. Looper
 
-1. Create the app state model and event routing for buttons, joystick, knob, and
-   display updates.
-2. Implement Nashville chord generation for major keys.
-3. Implement `PLAY` mode with chord on/off, key, octave, and basic
-   waveform selection.
-4. Add joystick default chord modifiers and clean note replacement.
-5. Add inversions, per-chord octave, and chord lock.
-6. Add tempo clock and shared rhythm-rate utilities.
-7. Implement `STRUM`, `LEAD`, `DRONE`, `ARP`, and `REPEAT`.
-8. Add effect state slots and map them to AMY features.
-9. Add drum pads, drum loops, and auto-drum.
-10. Add MIDI mirroring and USB mode selection.
-11. Add looper, then mixer/track display.
-12. Add randomizers, persistence, factory reset, and update-mode documentation.
+### 10.1 Capacity and model
 
-## Testing Checklist
+- Six tracks.
+- Approximately 20 seconds per track.
+- Each track is a discrete layer.
+- No overdub.
+- No undo.
+- Metronome on by default.
+- Track 1 sets loop length; all other tracks sync to Track 1.
 
-Future agents should verify:
+Track states:
 
-- Each key produces correct diatonic chords on all seven buttons.
-- Key changes transpose existing chord mappings correctly.
-- Inversions rotate notes and persist per chord button.
-- Chord locks persist per chord button and transpose correctly with key changes.
-- Joystick chord-quality modifiers produce expected interval sets.
-- BPM changes affect arp, repeat, auto-drum, delay, tremolo, sequencer, and
-  metronome timing.
-- Tap tempo converges after three or more taps.
-- Mode changes do not leave stuck notes.
-- Layered chord behavior in `PLAY` is intentional and documented.
-- Effects can be toggled while notes are active.
-- Filter knob switches cleanly between volume and cutoff behavior.
-- MIDI output matches audio notes in play, arp, repeat, and drum modes.
-- USB audio and USB MIDI mode switching does not leave stale descriptors or
-  stuck MIDI notes.
-- Looper state cycle works, track selection works, and looper does not trigger
-  while in menus.
-- Randomizers stay within musical bounds.
-- Factory reset clears persisted state and restores defaults.
+- `OFF` / empty.
+- `WAITING`.
+- `RECORD` / recording.
+- `LOOP` / playing.
+- `PAUSED` may be modeled globally or per-track.
+
+### 10.2 Recording Track 1
+
+Flow:
+
+1. Joystick click opens looper; display shows `WAITING`.
+2. While waiting, joystick left/right selects bar count.
+3. Bar count `0`: free length, user stops manually.
+4. Bar count `1..8`: fixed length; auto-stops after selected bars.
+5. In bar mode, a 4-beat metronome count-in plays before recording.
+6. User plays.
+7. Joystick click stops recording.
+8. Loop starts playback immediately.
+
+### 10.3 Adding tracks 2–6
+
+Behavior:
+
+- User can change sound, mode, key/octave, etc. for a new layer.
+- Click sequence enters waiting/recording.
+- New track begins recording at Track 1's next loop point for sync.
+- On stop, track loops in sync.
+- After finishing a recording, auto-advance to next empty track.
+- Manual track navigation via joystick left/right, or up/down in drum modes.
+
+### 10.4 Looper display
+
+OLED shows two tracks at a time across three pages:
+
+| Page shape | Tracks |
+|---|---|
+| Circle | 1–2 |
+| Square | 3–4 |
+| Triangle | 5–6 |
+
+State symbols:
+
+- Filled / `PLAY`: track playing.
+- Outline / `—`: empty.
+- `R` / `REC`: recording now.
+
+### 10.5 Looper controls
+
+| Action | Control |
+|---|---|
+| Switch tracks | Joystick left/right; in drum modes up/down |
+| Cycle looper state | Joystick click: `OFF -> WAITING -> RECORD -> LOOP -> OFF` |
+| Set bar count | Joystick left/right while `WAITING`; `0` free, `1..8` fixed |
+| Pause/resume all | Joystick down |
+| Clear current track | Joystick click when selected track is `OFF` / stopped |
+| Clear all tracks | Stop Track 1 |
+| Toggle metronome | Button 7 in Mixer mode |
+
+### 10.6 Auto-bounce
+
+Behavior:
+
+- When leaving Sequencer or Drum Loop mode while a pattern is playing, record/bounce that pattern as audio into the next empty looper track.
+- Drone mode can also auto-bounce when switching away.
+- After bounce, user can switch modes and play on top.
+
+Acceptance criteria:
+
+- Bounced tracks obey the 6-track limit.
+- If no empty track exists, show a clear error/status.
+- Sequencer is disabled from using looper while active, then bounces on exit.
+- Drum loops persist across mode changes even without manual looper use.
+
+## 11. Drums and Beats
+
+### 11.1 Drum kits
+
+Hold designated modifier + chord button to switch drum kits.
+
+| Button | Kit | Style |
+|---:|---|---|
+| 1 | Tight Kit | Clean default PCM samples |
+| 2 | x0x Box | 808-style deep sub bass |
+| 3 | x9x Box | 909-style punchy techno |
+| 4 | Lynn Kit | LinnDrum-style warm vintage |
+| 5 | KR-78 | Lo-fi retro machine |
+| 6 | Trap Box | Modern sub-heavy trap |
+| 7 | Tight Kit | Cycles back to default |
+
+Additional kit:
+
+- `User Kit` appears if uploaded through Companion App.
+- Skipped if no user samples are loaded.
+
+### 11.2 Drum sound mapping
+
+Same as Drum Mode:
+
+| Button | Sound |
+|---:|---|
+| 1 | Kick |
+| 2 | Alternate kick |
+| 3 | Snare |
+| 4 | Closed hi-hat |
+| 5 | Tom |
+| 6 | Bell / Ride |
+| 7 | Open hi-hat / Cymbal |
+
+### 11.3 Drum loops
+
+Implement 7 styles × 8 variations = 56 loops:
+
+Styles: Rock, Disco, Reggae, Funk, Hip-Hop, Electro, Jazz.
+
+Variations: Original, Ghost notes, Busy hi-hats, Syncopated kicks, Fills, Half-time, Double-time, Jazz.
+
+Controls:
+
+- Chord button selects style.
+- Hold style button + joystick up/down cycles variation.
+- Joystick left/right switches kit.
+
+### 11.4 Auto-drum
+
+Auto-trigger drum hits by rhythmic rate while holding a drum button and joystick direction. Use the rate table in section 9.11.
+
+## 12. Connectivity and MIDI
+
+### 12.1 Audio outputs
+
+- Built-in mono speaker.
+- Speaker auto-mutes when headphones are connected.
+- Speaker can be toggled off in effects/settings.
+- Speaker always starts ON after power cycle.
+- 3.5 mm stereo headphone/line out.
+- USB Audio: 48 kHz stereo, class-compliant, no drivers.
+
+### 12.2 USB mode
+
+Only one USB mode is active at a time:
+
+- `AUDIO`: USB sends stereo audio to DAW/computer/device.
+- `MIDI`: USB sends MIDI notes, no audio over USB.
+
+Switching USB mode causes brief disconnect/reconnect.
+
+### 12.3 MIDI behavior
+
+- USB MIDI is class-compliant.
+- MIDI channel: 1.
+- Up to 12 simultaneous notes.
+- Fixed velocity: 100.
+- MIDI toggle must be ON.
+- TRS MIDI Type A output is available on Batch 4+.
+- TRS MIDI is always active when MIDI is enabled.
+
+Acceptance criteria:
+
+- Chord buttons emit appropriate MIDI note-on/note-off events for all currently generated chord tones.
+- Play modes transform MIDI output similarly to audio output: arps produce timed note sequences, Repeat gates notes, Lead is monophonic, Drum Mode sends drum notes or internal drum triggers.
+- USB Audio and USB MIDI cannot be simultaneously active.
+
+## 13. Companion App Features
+
+The Companion App is browser-based and communicates over Web MIDI. It should be represented as either a separate UI or extended settings editor.
+
+Features:
+
+### 13.1 Preset Designer
+
+- Visual editing of all parameters.
+- Effects, ADSR, filter, chorus depth, flanger rate, and more.
+- Save directly to 4 hardware preset slots.
+
+### 13.2 Sample Upload
+
+- Upload audio as `User Sample` playable instrument.
+- Upload one-shot drum hits as `User Kit`.
+- Stored permanently in flash.
+- Survives power cycles.
+
+### 13.3 Arp Pattern Editor
+
+- Design custom fingerpick patterns.
+- Supports note pairs and octave multipliers.
+- Allows patterns not available from device alone.
+
+### 13.4 Vocoder Controls
+
+Expose and edit:
+
+- Formant shift.
+- Band Q.
+- Attack.
+- Release.
+- Noise level.
+- Gate threshold / gate behavior.
+
+### 13.5 Hybrid Voice Editor
+
+Expose and edit:
+
+- Individual oscillator engines.
+- FM ratios.
+- Detune amounts.
+- Panning.
+- Gain.
+- Hybrid sound layering.
+
+## 14. User Presets
+
+### 14.1 Preset slots
+
+- Four user preset slots: `P1..P4`.
+- Presets survive power cycles and factory resets.
+- Saved slots are marked with `*` on display.
+
+Controls:
+
+- Open preset menu with designated button combo.
+- Joystick left/right selects slot.
+- Joystick up saves.
+- Joystick down loads.
+
+### 14.2 Data saved in preset
+
+Presets should save at least:
+
+- Selected sound.
+- All effect states and parameters.
+- Key.
+- Scale.
+- Mode.
+- BPM.
+- Arp pattern.
+- Arp rate.
+- Arp chord layering mode.
+- Global octave shift.
+- Per-button octave shifts.
+- Inversions.
+- Chord locks.
+- Filter cutoff.
+- Drum kit.
+- Drum loop style and variation.
+- Sequencer pattern.
+- Vocoder settings.
+- FM parameters.
+- User/mic samples where applicable.
+- Hybrid voice settings.
+
+Manual describes this as 100+ parameters.
+
+## 15. Battery and Power
+
+### 15.1 Power states
+
+- `off`: no interaction.
+- `on`: normal operation.
+- `sleep`: after inactivity; wake with any button.
+- `deepSleep`: low battery protective state.
+- `dfu`: firmware update mode.
+
+### 15.2 Charging
+
+- USB-C charging.
+- Full charge around 2 hours.
+- Device can play while charging.
+
+### 15.3 Battery life by batch
+
+| Batch | Battery life |
+|---|---|
+| Batch 1 | about 3–4 hours, varies by unit |
+| Batch 2 | about 4–5 hours |
+| Batch 4+ | about 8–10 hours |
+
+### 15.4 Battery meter
+
+- Batch 2+ can show battery percentage.
+- Batch 1 has no battery meter.
+- Battery status opened with button combo.
+
+### 15.5 Auto-sleep and low battery
+
+- Auto-sleep after 30 seconds of inactivity.
+- Wake instantly by pressing any button.
+- Settings are preserved across sleep.
+- At approximately 3% battery, enter deep sleep to protect Li-Po cell.
+
+## 16. Advanced Controls
+
+### 16.1 Button combos
+
+Implement combo actions as configurable input bindings:
+
+| Combo behavior | Action |
+|---|---|
+| Battery combo | Show battery voltage and percentage |
+| Factory reset combo | Factory reset; presets and looper recordings remain safe |
+| Hold firmware combo 5 seconds | Enter DFU / firmware update mode |
+| Preset combo | Open preset menu |
+| Chord + joystick + lock combo | Lock/unlock chord modification |
+| Hold chord + inversion shortcut | Cycle inversion root/1st/2nd |
+| Hold chord + octave down shortcut | Per-button octave down |
+| Hold chord + octave up shortcut | Per-button octave up |
+
+Because the web manual renders icon buttons without text labels in several rows, keep physical combo identifiers abstract/configurable rather than hard-coding unknown icon names.
+
+### 16.2 Factory reset
+
+Behavior:
+
+- Restore factory/default global settings.
+- Do not erase user presets.
+- Do not erase looper recordings.
+
+### 16.3 DFU / firmware mode
+
+Behavior:
+
+- Holding firmware combo for 5 seconds enters DFU mode.
+- Used by external updater.
+- Batch 1 should be fully charged before update.
+
+## 17. Calibration
+
+Batch 1–3 only.
+
+### 17.1 Calibration entry
+
+- Power off.
+- Hold Key + Sound while powering on.
+- Display shows `ENTERING CALIBRATE`.
+
+### 17.2 Button calibration
+
+For chord buttons 1–7:
+
+- Display prompts `HOLD N — PRESS+HOLD`.
+- User presses and holds button.
+- Device takes 20 samples and rejects outliers.
+- Display shows `BTN N OK` with a value.
+- If timeout occurs, retry automatically.
+
+### 17.3 Joystick calibration
+
+- Display shows `DONT TOUCH`; capture center for 2 seconds.
+- Prompt `PUSH LEFT`; user pushes/holds until confirmed.
+- Repeat for right, up, down.
+
+### 17.4 Completion
+
+- Validate calibration data.
+- On success: display `DONE! SAVED`, restart device.
+- On failure: display `ERROR BAD CAL`; user power cycles and retries.
+- Calibration is permanent and survives power cycles and firmware updates.
+- Batch 4+ uses digital I2C buttons and does not need calibration.
+
+## 18. Technical Specs to Model
+
+| Spec | Value |
+|---|---|
+| Processor | STM32H750, 400 MHz Cortex-M7 |
+| Sample rate | 48 kHz |
+| Bit depth | 16-bit output / 32-bit float internal |
+| Polyphony | 12 oscillators / 6 stereo pairs |
+| Display | 64×32 OLED |
+| Latency | <3 ms target |
+| Dynamic range | ~90 dB target |
+| Storage | QSPI Flash, non-volatile |
+| Looper storage | SDRAM, about 20 sec × 6 tracks |
+| MIDI | USB class-compliant channel 1; TRS Type A on Batch 4+ |
+| Power | USB-C / rechargeable Li-Po |
+| Battery model | Batch 1–2: LP503450 1000 mAh 3.7 V; Batch 4+: LP703478 2400 mAh 3.7 V |
+| Charger | TP4056 USB-C, about 2 hr charge |
+| Audio out | 3.5 mm stereo, USB, built-in speaker |
+
+## 19. Troubleshooting / Error States
+
+Implement diagnostic states and messages for:
+
+- No sound: check volume, battery, current mode, headphones, speaker toggle.
+- Buttons not responding: check battery, stuck function button, power cycle, calibration for Batch 1–3.
+- Looper problems: check selected track, bar count, mixer mutes, pause/resume state.
+- Display frozen: check battery, sleep state, power cycle.
+- USB audio silent: require `USB_MODE = AUDIO`, working cable, DAW restart.
+- MIDI not sending: require `USB_MODE = MIDI`, MIDI toggled ON, DAW listening on channel 1.
+- System Full: CPU cannot enable requested effect combination; user must disable another effect.
+- No empty looper track: cannot bounce/record until user clears a track.
+- Batch-incompatible feature: show clear unavailable message.
+
+## 20. Suggested Acceptance Test Matrix
+
+### 20.1 Chord generation
+
+- In C Major, buttons produce C, Dm, Em, F, G, Am, Bdim.
+- Changing key to G transposes the same degree relationships.
+- Changing scale alters available notes/chords while preserving seven-button workflow.
+- Global octave and per-button octave shifts combine correctly.
+- Inversions reorder chord tones without changing chord identity.
+- Voice Leading chooses smaller movements than fixed root-position playback.
+- Chord Lock persists joystick modifications through key changes.
+- Bass ROOT adds root two octaves below.
+- Bass SLASH on Batch 4+ supports independent bass/chord buttons.
+
+### 20.2 Joystick
+
+- Default mode directions produce all listed default chord modifications.
+- Extended mode directions produce listed extended voicings.
+- Chromatic mode with chord held produces listed advanced voicings.
+- Chromatic mode without chord held shifts key by semitone left/right.
+- Releasing joystick reverts modification unless locked.
+
+### 20.3 Effects
+
+- Effect menu cycles/toggles all effects.
+- Delay and Tremolo are BPM-synced.
+- Filter cutoff responds to wheel and shortcut.
+- ADSR presets apply exact parameter values.
+- Attack/Release wheel combos respect ranges.
+- Glide causes smooth pitch transitions in Lead mode.
+- Stereo toggle switches between wide paired oscillators and mono.
+- System Full prevents excessive effect combinations.
+
+### 20.4 Performance modes
+
+- Play mode supports simultaneous chords.
+- Strum mode rolls notes at 120/80/40 ms.
+- Lead mode is monophonic.
+- Drone sustains until mode switch.
+- Arp supports 6 patterns, 9 rates, and 3 layering modes.
+- Repeat gates full chords and caps release at 200 ms while active.
+- Sequencer records, edits, loops, trims, and bounces up to 16 steps.
+- Chord Hiro implements timing windows and score judgments.
+- Ear Trainer implements levels, rounds, hints, streaks.
+- Tuner unavailable before Batch 4 and functional for Batch 4+.
+- Mixer controls mutes, volumes, solo, pause, metronome, and Batch 4+ multi-mute.
+
+### 20.5 Looper/drums
+
+- Track 1 defines loop length.
+- Bar count 0 is free; 1–8 is fixed with 4-beat count-in.
+- Tracks 2–6 sync to Track 1.
+- Auto-advance after recording.
+- Display pages show two tracks each with page shapes.
+- Drum Mode button mapping is correct.
+- Seven kits are selectable, plus conditional User Kit.
+- Drum Loops implement 56 style/variation combinations.
+- Auto-Drum direction-rate mapping is correct.
+- Auto-bounce works for Sequencer, Drum Loops, and Drone.
+
+### 20.6 I/O, presets, power
+
+- USB Audio and USB MIDI are mutually exclusive.
+- MIDI note output is channel 1, velocity 100, up to 12 notes.
+- Speaker auto-mutes on headphone insert and resets ON after power-up.
+- Presets P1–P4 save and load 100+ parameter-equivalent state.
+- Battery display unavailable on Batch 1.
+- Auto-sleep after 30 seconds preserves state.
+- Deep sleep at about 3% battery.
+- Factory reset preserves presets and looper recordings.
+- Calibration only available for Batch 1–3.
+
+## 21. Non-Goals / Unknowns from Manual
+
+- Exact DSP algorithms, sample assets, factory preset data, and waveform tables are not included in the public manual.
+- Several button-combo icons were not text-rendered in the manual; expose those as configurable input bindings.
+- The manual says 30+ instruments, but the visible full sound list contains the named sounds above. Design sound registry to allow additional firmware sounds.
+- Chromatic joystick mode left-direction chord behavior was not visible in the provided table; treat it as reserved/no-op until verified.
+- CPU budget/effect compatibility rules are not exhaustively specified; implement a generic budget system and at least block known excessive combinations.

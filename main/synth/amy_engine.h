@@ -1,6 +1,7 @@
 #ifndef SYNTH_AMY_ENGINE_H
 #define SYNTH_AMY_ENGINE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -14,6 +15,9 @@ extern "C" {
 
 esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw);
 esp_err_t synth_amy_set_sound(synth_sound_t sound);
+esp_err_t synth_amy_set_volume(float normalized_volume);
+esp_err_t synth_amy_set_filter_enabled(bool enabled);
+esp_err_t synth_amy_set_filter_cutoff(float cutoff_hz);
 esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord);
 esp_err_t synth_amy_chord_off(uint8_t slot);
 esp_err_t synth_amy_all_off(void);

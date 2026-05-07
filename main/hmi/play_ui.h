@@ -45,6 +45,8 @@ typedef struct {
     uint8_t focus_slot;
     uint8_t effect_index;
     bool effects[PLAY_UI_EFFECT_COUNT];
+    bool wheel_present;
+    uint8_t wheel_percent;
     control_joystick_direction_t joystick_direction;
     char chord_name[16];
     char status[22];

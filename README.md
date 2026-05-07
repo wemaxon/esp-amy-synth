@@ -71,6 +71,29 @@ Normalization is center-relative:
 Saved calibration is accepted only when `min_raw < center_raw < max_raw` for
 both axes. Invalid saved data is ignored and board defaults are used.
 
+### Wheel Input
+
+The firmware has a logical wheel input used by playback code for volume and
+filter cutoff. It is disabled by default until the hardware is wired. Enable and
+map it in `main/esp_pocket_audio_board_config.h` with:
+
+- `ESP_POCKET_AUDIO_WHEEL_ENABLED`
+- `ESP_POCKET_AUDIO_ADS1115_WHEEL_CH`
+- `ESP_POCKET_AUDIO_WHEEL_MIN_RAW`
+- `ESP_POCKET_AUDIO_WHEEL_MAX_RAW`
+- `ESP_POCKET_AUDIO_WHEEL_INVERT`
+
+### Voice Architecture
+
+The AMY voice architecture is selected at compile time in
+`main/esp_pocket_audio_board_config.h`:
+
+- `ESP_POCKET_AUDIO_AMY_STEREO_PAIRS=0`: mono build, six musical voices and six
+  AMY oscillators total.
+- `ESP_POCKET_AUDIO_AMY_STEREO_PAIRS=1`: stereo-pair build, six musical voices
+  plus six opposite-panned companion oscillators for twelve AMY oscillators
+  total.
+
 ## Prereqisites
 
 #### ESP-IDF
@@ -95,3 +118,38 @@ git checkout tags/1.2.4
 pip install -r requirements.txt
 pip install -e .
 ```
+
+## ToDo
+- Check if the chord engine actually works correctly (dim/min and maj/min sometimes sound the same)
+- Check if the sound chain matches. amy has its own sound chain... Probably similar.
+  - Chord Logic → 12 Voices → ADSR → Bass Osc → Filter → Chorus → Flanger → Delay → Reverb → Looper → Output
+  - 4 synth engines
+  - LFO
+
+
+```
+C Key
+Chord Modifier Base
+Key 1 -> C, E, G
+Key 2 -> D, F, A
+Key 3 -> E, G B
+Key 4 -> F, A, C
+Key 5 -> G, B, D
+Key 6 -> A, C, E
+Key 7 -> B, D, F
+
+Chord Modifier Dreamy (Augmented)
+Key 1 -> C, E
+Key 2 -> D, F#, A#
+Key 3 -> E
+Key 4 ->
+Key 5 ->
+Key 6 ->
+Key 7 ->
+```
+
+- Implement different presets/instruments
+- Implement the hichord calibration flow
+- Wire and validate the ADS1115 wheel hardware (`ESP_POCKET_AUDIO_WHEEL_ENABLED`)
+- Add microphone feature
+- Simplify UI, or add two modes?

@@ -1,5 +1,6 @@
 #include "synth/app.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,6 +29,9 @@ typedef struct {
     uint16_t bpm;
     uint8_t effect_index;
     bool effects[PLAY_UI_EFFECT_COUNT];
+    bool wheel_present;
+    uint8_t wheel_percent;
+    uint8_t last_applied_wheel_percent;
     control_joystick_direction_t last_menu_direction;
     control_joystick_direction_t joystick_direction;
     uint8_t held_mask;
@@ -49,6 +53,7 @@ static const int8_t BUTTON_OCTAVE_MIN = -2;
 static const int8_t BUTTON_OCTAVE_MAX = 1;
 static const uint16_t BPM_MIN = 40;
 static const uint16_t BPM_MAX = 300;
+static const uint8_t WHEEL_CHANGE_THRESHOLD_PERCENT = 2;
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
@@ -59,6 +64,11 @@ static synth_app_state_t s_app = {
     .mode = SYNTH_PLAY_MODE_PLAY,
     .bpm = 120,
     .effect_index = PLAY_UI_EFFECT_REVERB,
+    .effects = {
+        [PLAY_UI_EFFECT_FILTER] = true,
+    },
+    .wheel_percent = 100,
+    .last_applied_wheel_percent = UINT8_MAX,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
     .focus_slot = 0,
@@ -104,6 +114,8 @@ static void update_ui(void)
     model.focus_slot = s_app.focus_slot;
     model.effect_index = s_app.effect_index;
     memcpy(model.effects, s_app.effects, sizeof(model.effects));
+    model.wheel_present = s_app.wheel_present;
+    model.wheel_percent = s_app.wheel_percent;
     model.joystick_direction = s_app.joystick_direction;
     strlcpy(model.chord_name, s_app.chord_name, sizeof(model.chord_name));
     strlcpy(model.status, s_app.status, sizeof(model.status));
@@ -312,6 +324,20 @@ static void toggle_current_effect(void)
 {
     play_ui_effect_t effect = (play_ui_effect_t)(s_app.effect_index % PLAY_UI_EFFECT_COUNT);
     s_app.effects[effect] = !s_app.effects[effect];
+    esp_err_t err = ESP_OK;
+    switch (effect) {
+    case PLAY_UI_EFFECT_FILTER:
+        err = synth_amy_set_filter_enabled(s_app.effects[effect]);
+        break;
+    case PLAY_UI_EFFECT_REVERB:
+    case PLAY_UI_EFFECT_DELAY:
+    case PLAY_UI_EFFECT_CHORUS:
+    default:
+        break;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to apply %s: %s", play_ui_effect_name(effect), esp_err_to_name(err));
+    }
     ESP_LOGI(TAG, "%s=%s", play_ui_effect_name(effect), s_app.effects[effect] ? "on" : "off");
     set_status(s_app.effects[effect] ? "FX ON" : "FX OFF");
     update_ui();
@@ -360,6 +386,60 @@ static void step_bpm(int16_t delta)
     ESP_LOGI(TAG, "bpm=%u", s_app.bpm);
     set_status("BPM CHANGED");
     update_ui();
+}
+
+static float wheel_to_filter_cutoff_hz(uint8_t percent)
+{
+    float t = (float)percent / 100.0f;
+    return 20.0f * powf(1000.0f, t);
+}
+
+static bool wheel_percent_changed(uint8_t percent)
+{
+    if (s_app.last_applied_wheel_percent == UINT8_MAX) {
+        return true;
+    }
+
+    uint8_t last = s_app.last_applied_wheel_percent;
+    uint8_t delta = percent > last ? (uint8_t)(percent - last) : (uint8_t)(last - percent);
+    return delta >= WHEEL_CHANGE_THRESHOLD_PERCENT;
+}
+
+static bool apply_wheel(const control_wheel_state_t *wheel)
+{
+    if (wheel == NULL || !wheel->present || !wheel_percent_changed(wheel->percent)) {
+        return false;
+    }
+
+    s_app.last_applied_wheel_percent = wheel->percent;
+    if (controls_switch_is_pressed(CONTROL_MODE_MENU) ||
+        (controls_switch_is_pressed(CONTROL_SOUND_MENU) &&
+         s_app.effect_index == PLAY_UI_EFFECT_FILTER)) {
+        float cutoff_hz = wheel_to_filter_cutoff_hz(wheel->percent);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_filter_cutoff(cutoff_hz));
+        set_status("FILTER");
+    } else {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(wheel->value));
+        set_status("VOLUME");
+    }
+    return true;
+}
+
+static void update_wheel(void)
+{
+    control_wheel_state_t wheel = {0};
+    if (controls_wheel_read(&wheel) != ESP_OK) {
+        return;
+    }
+
+    bool display_changed = s_app.wheel_present != wheel.present ||
+        s_app.wheel_percent != wheel.percent;
+    s_app.wheel_present = wheel.present;
+    s_app.wheel_percent = wheel.percent;
+    bool applied = apply_wheel(&wheel);
+    if (display_changed || applied) {
+        update_ui();
+    }
 }
 
 static void step_mode(int8_t steps)
@@ -472,6 +552,7 @@ static void app_task(void *arg)
         }
 
         update_joystick();
+        update_wheel();
         vTaskDelay(APP_UPDATE_TICKS);
     }
 }

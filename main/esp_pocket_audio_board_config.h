@@ -35,6 +35,12 @@ extern "C" {
 /* Optional external PA enable pin. Set once this signal is confirmed. */
 #define ESP_POCKET_AUDIO_PA_ENABLE_GPIO          GPIO_NUM_NC
 
+/* AMY voice architecture. Stereo pairs double the oscillator count by running
+ * six musical voices plus six opposite-panned companion oscillators. Keep this
+ * at 0 for a lighter mono build with six oscillators total.
+ */
+#define ESP_POCKET_AUDIO_AMY_STEREO_PAIRS        1
+
 /* Dedicated control I2C bus for ADS1115 and PCF8574. */
 #define ESP_POCKET_AUDIO_CONTROL_I2C_PORT        I2C_NUM_1
 #define ESP_POCKET_AUDIO_CONTROL_I2C_SDA_GPIO    GPIO_NUM_21
@@ -57,6 +63,16 @@ extern "C" {
 #define ESP_POCKET_AUDIO_ADS1115_AXIS_MAX_RAW    32767
 #define ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_INVERT 1
 #define ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_INVERT 1
+
+/* Optional analog wheel/pot on the ADS1115. Keep disabled until the hardware is wired
+ * so a floating ADC channel cannot drive volume/filter changes.
+ */
+#define ESP_POCKET_AUDIO_WHEEL_ENABLED            0
+#define ESP_POCKET_AUDIO_ADS1115_WHEEL_CH         2
+#define ESP_POCKET_AUDIO_WHEEL_MIN_RAW            0
+#define ESP_POCKET_AUDIO_WHEEL_MAX_RAW            32767
+#define ESP_POCKET_AUDIO_WHEEL_INVERT             0
+#define ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT    100
 
 /* PCF8574A switch expander on the shared control I2C bus. Inputs are quasi-bidirectional and active-low. */
 #define ESP_POCKET_AUDIO_PCF8574_COUNT           1

@@ -53,6 +53,7 @@ void play_ui_model_init(play_ui_model_t *model)
     model->sound = SYNTH_SOUND_SAW;
     model->mode = SYNTH_PLAY_MODE_PLAY;
     model->bpm = 120;
+    model->wheel_percent = 100;
     model->joystick_direction = CONTROL_JOYSTICK_CENTER;
     strlcpy(model->chord_name, "---", sizeof(model->chord_name));
     strlcpy(model->status, "READY", sizeof(model->status));
@@ -100,6 +101,15 @@ static char pressed_char(uint8_t held_mask, uint8_t slot)
     return (held_mask & (1U << slot)) != 0 ? (char)('1' + slot) : '.';
 }
 
+static void draw_status_row(pocket_oled_t *display, const play_ui_model_t *model)
+{
+    if (model->wheel_present) {
+        draw_rowf(display, 7, "WHL %3u%% %.11s", model->wheel_percent, model->status);
+    } else {
+        draw_rowf(display, 7, "WHL --- %.11s", model->status);
+    }
+}
+
 static void draw_header(pocket_oled_t *display, const char *title)
 {
     pocket_oled_draw_text_row(display, 0, title);
@@ -125,7 +135,7 @@ static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
               pressed_char(model->held_mask, 4),
               pressed_char(model->held_mask, 5),
               pressed_char(model->held_mask, 6));
-    draw_rowf(display, 7, "%.21s", model->status);
+    draw_status_row(display, model);
 }
 
 static void draw_key_menu(pocket_oled_t *display, const play_ui_model_t *model)
@@ -136,7 +146,7 @@ static void draw_key_menu(pocket_oled_t *display, const play_ui_model_t *model)
     draw_rowf(display, 4, "GLOBAL OCT %+d", model->global_octave_shift);
     draw_rowf(display, 5, "BTN%u OCT %+d", model->focus_slot + 1, model->button_octave_shift[model->focus_slot]);
     pocket_oled_draw_text_row(display, 6, "L/R KEY  U/D OCT");
-    draw_rowf(display, 7, "%.21s", model->status);
+    draw_status_row(display, model);
 }
 
 static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model)
@@ -150,7 +160,7 @@ static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model
               model->effects[effect] ? "ON" : "OFF");
     pocket_oled_draw_text_row(display, 5, "1-7 QUICK SELECT");
     pocket_oled_draw_text_row(display, 6, "L/R SND U/D FX");
-    draw_rowf(display, 7, "%.21s", model->status);
+    draw_status_row(display, model);
 }
 
 static void draw_mode_menu(pocket_oled_t *display, const play_ui_model_t *model)
@@ -161,7 +171,7 @@ static void draw_mode_menu(pocket_oled_t *display, const play_ui_model_t *model)
     pocket_oled_draw_text_row(display, 4, "LOOPER OFF");
     pocket_oled_draw_text_row(display, 5, "DRUMS  OFF");
     pocket_oled_draw_text_row(display, 6, "L/R BPM U/D MODE");
-    draw_rowf(display, 7, "%.21s", model->status);
+    draw_status_row(display, model);
 }
 
 static void draw_status(pocket_oled_t *display, const play_ui_model_t *model)

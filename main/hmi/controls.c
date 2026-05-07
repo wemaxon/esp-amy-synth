@@ -69,6 +69,7 @@ static control_event_t s_events[EVENT_QUEUE_LEN];
 static size_t s_event_head;
 static size_t s_event_tail;
 static control_joystick_state_t s_joystick;
+static control_wheel_state_t s_wheel;
 static volatile uint32_t s_gpio_irq_pending_mask;
 static uint32_t s_gpio_debounce_pending_mask;
 static TickType_t s_next_io_error_log;
@@ -420,10 +421,66 @@ static esp_err_t update_joystick(void)
     return ESP_OK;
 }
 
+static float clamp01(float value)
+{
+    if (value < 0.0f) {
+        return 0.0f;
+    }
+    if (value > 1.0f) {
+        return 1.0f;
+    }
+    return value;
+}
+
+#if ESP_POCKET_AUDIO_WHEEL_ENABLED
+static float normalize_wheel_raw(int16_t raw)
+{
+    int32_t min_raw = ESP_POCKET_AUDIO_WHEEL_MIN_RAW;
+    int32_t max_raw = ESP_POCKET_AUDIO_WHEEL_MAX_RAW;
+    if (max_raw <= min_raw) {
+        return 0.0f;
+    }
+
+    float value = ((float)raw - (float)min_raw) / (float)(max_raw - min_raw);
+    value = clamp01(value);
+#if ESP_POCKET_AUDIO_WHEEL_INVERT
+    value = 1.0f - value;
+#endif
+    return value;
+}
+#endif
+
+static void set_wheel_state(int16_t raw, float value, bool present)
+{
+    value = clamp01(value);
+    s_wheel.present = present;
+    s_wheel.raw = raw;
+    s_wheel.value = value;
+    s_wheel.percent = (uint8_t)((value * 100.0f) + 0.5f);
+}
+
+static esp_err_t update_wheel(void)
+{
+#if ESP_POCKET_AUDIO_WHEEL_ENABLED
+    int16_t raw = 0;
+    esp_err_t err = ads1115_read_single_ended(&s_ads1115, (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_WHEEL_CH, &raw);
+    if (err != ESP_OK) {
+        log_control_io_error("ADS1115 wheel read", err);
+        return err;
+    }
+
+    set_wheel_state(raw, normalize_wheel_raw(raw), true);
+#else
+    set_wheel_state(0, (float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f, false);
+#endif
+    return ESP_OK;
+}
+
 typedef struct {
     TickType_t now;
     esp_err_t switch_err;
     esp_err_t joystick_err;
+    esp_err_t wheel_err;
 } controls_i2c_update_t;
 
 static esp_err_t update_i2c_inputs(void *ctx)
@@ -435,7 +492,14 @@ static esp_err_t update_i2c_inputs(void *ctx)
 
     update->switch_err = update_pcf_switches(update->now);
     update->joystick_err = update_joystick();
-    return update->switch_err != ESP_OK ? update->switch_err : update->joystick_err;
+    update->wheel_err = update_wheel();
+    if (update->switch_err != ESP_OK) {
+        return update->switch_err;
+    }
+    if (update->joystick_err != ESP_OK) {
+        return update->joystick_err;
+    }
+    return update->wheel_err;
 }
 
 static void log_pressed_switches(uint32_t pressed_mask)
@@ -545,6 +609,7 @@ esp_err_t controls_update(void)
         .now = now,
         .switch_err = ESP_FAIL,
         .joystick_err = ESP_FAIL,
+        .wheel_err = ESP_FAIL,
     };
     esp_err_t i2c_err = control_i2c_call(update_i2c_inputs, &update, pdMS_TO_TICKS(10));
     if (i2c_err == ESP_ERR_TIMEOUT) {
@@ -617,5 +682,15 @@ esp_err_t controls_joystick_read(control_joystick_state_t *state)
     }
 
     *state = s_joystick;
+    return ESP_OK;
+}
+
+esp_err_t controls_wheel_read(control_wheel_state_t *state)
+{
+    if (state == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *state = s_wheel;
     return ESP_OK;
 }

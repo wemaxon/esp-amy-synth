@@ -70,6 +70,8 @@ static void draw_display(const esp_pocket_audio_hw_t *hw, cal_ui_state_t state)
 
     control_joystick_state_t joystick = {0};
     controls_joystick_read(&joystick);
+    control_wheel_state_t wheel = {0};
+    controls_wheel_read(&wheel);
 
     char line[24];
     pocket_oled_t *display = (pocket_oled_t *)&hw->display;
@@ -91,8 +93,13 @@ static void draw_display(const esp_pocket_audio_hw_t *hw, cal_ui_state_t state)
 
     snprintf(line, sizeof(line), "CAL %s", cal_state_name(state));
     pocket_oled_draw_text_row(display, 5, line);
-    pocket_oled_draw_text_row(display, 6, "J=center S=save");
-    pocket_oled_draw_text_row(display, 7, "move stick T=reset");
+    if (wheel.present) {
+        snprintf(line, sizeof(line), "WHL %05d %3u%%", wheel.raw, wheel.percent);
+    } else {
+        snprintf(line, sizeof(line), "WHL disabled");
+    }
+    pocket_oled_draw_text_row(display, 6, line);
+    pocket_oled_draw_text_row(display, 7, "J=ctr S=save K=rst");
 
     esp_err_t err = oled_display_flush_cooperatively(display, pdMS_TO_TICKS(25));
     if (err != ESP_OK) {

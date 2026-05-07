@@ -24,6 +24,7 @@ typedef struct {
     int8_t global_octave_shift;
     int8_t button_octave_shift[SYNTH_CHORD_BUTTON_COUNT];
     synth_chord_modifier_t modifier;
+    synth_joystick_mode_t joystick_mode;
     synth_sound_t sound;
     synth_play_mode_t mode;
     uint16_t bpm;
@@ -33,6 +34,7 @@ typedef struct {
     uint8_t wheel_percent;
     uint8_t last_applied_wheel_percent;
     control_joystick_direction_t last_menu_direction;
+    control_joystick_direction_t last_play_direction;
     control_joystick_direction_t joystick_direction;
     uint8_t held_mask;
     uint8_t focus_slot;
@@ -60,6 +62,7 @@ static synth_app_state_t s_app = {
     .scale = SYNTH_SCALE_MAJOR,
     .global_octave_shift = 0,
     .modifier = SYNTH_CHORD_MOD_NONE,
+    .joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT,
     .sound = SYNTH_SOUND_SAW,
     .mode = SYNTH_PLAY_MODE_PLAY,
     .bpm = 120,
@@ -70,6 +73,7 @@ static synth_app_state_t s_app = {
     .wheel_percent = 100,
     .last_applied_wheel_percent = UINT8_MAX,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
+    .last_play_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
     .focus_slot = 0,
     .chord_name = "---",
@@ -107,6 +111,7 @@ static void update_ui(void)
     model.global_octave_shift = s_app.global_octave_shift;
     memcpy(model.button_octave_shift, s_app.button_octave_shift, sizeof(model.button_octave_shift));
     model.modifier = s_app.modifier;
+    model.joystick_mode = s_app.joystick_mode;
     model.sound = s_app.sound;
     model.mode = s_app.mode;
     model.bpm = s_app.bpm;
@@ -141,6 +146,43 @@ static bool build_chord(uint8_t degree, synth_chord_t *chord)
     return synth_build_chord(&request, chord) == 0;
 }
 
+static int midi_note_octave(uint8_t midi_note)
+{
+    return ((int)midi_note / 12) - 1;
+}
+
+static void format_chord_notes(const synth_chord_t *chord, char *out, size_t out_size)
+{
+    if (out == NULL || out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (chord == NULL) {
+        return;
+    }
+
+    size_t used = 0;
+    for (uint8_t i = 0; i < chord->note_count && used < out_size; ++i) {
+        uint8_t midi_note = chord->notes[i];
+        int written = snprintf(out + used,
+                               out_size - used,
+                               "%s%s%d(%u)",
+                               i == 0 ? "" : " ",
+                               synth_key_name((synth_key_t)(midi_note % 12)),
+                               midi_note_octave(midi_note),
+                               midi_note);
+        if (written < 0) {
+            out[used] = '\0';
+            return;
+        }
+        if ((size_t)written >= out_size - used) {
+            out[out_size - 1] = '\0';
+            return;
+        }
+        used += (size_t)written;
+    }
+}
+
 static void play_degree(uint8_t degree)
 {
     synth_chord_t chord = {0};
@@ -156,12 +198,15 @@ static void play_degree(uint8_t degree)
         return;
     }
 
-    ESP_LOGI(TAG, "play %s key=%s octave=%d mod=%s notes=%u",
+    char note_names[96];
+    format_chord_notes(&chord, note_names, sizeof(note_names));
+    ESP_LOGI(TAG, "play %s key=%s octave=%d mod=%s notes=%u [%s]",
              chord.name,
              synth_key_name(s_app.key),
              s_app.global_octave_shift,
              synth_chord_modifier_name(s_app.modifier),
-             chord.note_count);
+             chord.note_count,
+             note_names);
     strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
     set_status("PLAYING");
     update_ui();
@@ -320,9 +365,24 @@ static void step_effect(int8_t steps)
     update_ui();
 }
 
+static void step_joystick_mode(void)
+{
+    s_app.joystick_mode = synth_joystick_mode_step(s_app.joystick_mode, 1);
+    s_app.modifier = synth_chord_modifier_from_joystick(s_app.joystick_mode, s_app.joystick_direction);
+    ESP_LOGI(TAG, "joystick mode=%s", synth_joystick_mode_name(s_app.joystick_mode));
+    set_status(synth_joystick_mode_name(s_app.joystick_mode));
+    refresh_held_chords();
+    update_ui();
+}
+
 static void toggle_current_effect(void)
 {
     play_ui_effect_t effect = (play_ui_effect_t)(s_app.effect_index % PLAY_UI_EFFECT_COUNT);
+    if (effect == PLAY_UI_EFFECT_JOYSTICK) {
+        step_joystick_mode();
+        return;
+    }
+
     s_app.effects[effect] = !s_app.effects[effect];
     esp_err_t err = ESP_OK;
     switch (effect) {
@@ -501,7 +561,23 @@ static void update_joystick(void)
     }
     s_app.last_menu_direction = CONTROL_JOYSTICK_CENTER;
 
-    synth_chord_modifier_t modifier = synth_chord_modifier_from_joystick(joystick.direction);
+    if (s_app.joystick_mode == SYNTH_JOYSTICK_MODE_CHROMATIC &&
+        s_app.held_mask == 0 &&
+        (joystick.direction == CONTROL_JOYSTICK_LEFT ||
+         joystick.direction == CONTROL_JOYSTICK_RIGHT)) {
+        if (joystick.direction != s_app.last_play_direction) {
+            step_key(joystick.direction == CONTROL_JOYSTICK_RIGHT ? 1 : -1);
+        }
+        s_app.last_play_direction = joystick.direction;
+        if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {
+            s_app.modifier = SYNTH_CHORD_MOD_NONE;
+            update_ui();
+        }
+        return;
+    }
+
+    s_app.last_play_direction = joystick.direction;
+    synth_chord_modifier_t modifier = synth_chord_modifier_from_joystick(s_app.joystick_mode, joystick.direction);
     if (modifier == s_app.modifier) {
         return;
     }

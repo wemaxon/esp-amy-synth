@@ -293,7 +293,7 @@ Acceptance criteria:
 | Down-right | 9th | Add 9th / add9 color | C -> Cadd9 |
 | Down | Sus4 | Replace 3rd with 4th | C -> Csus4 |
 | Down-left | 6th / Sus2 | Major chords add 6th; minor chords become sus2 | C -> C6; Dm -> Dsus2 |
-| Left | Dim / Min | Major becomes minor; minor becomes diminished | C -> Cm; Dm -> Ddim |
+| Left | Diminished | Build a diminished triad from the chord root | C -> Cdim; Dm -> Ddim |
 | Up-left | Aug | Raise 5th | C -> Caug |
 
 ### 4.3 Extended joystick mode
@@ -327,7 +327,7 @@ Chromatic mode has two behaviors:
 | Up-right | Dom13 | Flat 7th + 9th + 13th | Rich tension |
 | Down-left | Dom7b9 | Flat 7th + flat 9th | Spanish, dark |
 | Down-right | Dom7alt | Flat 7th + altered 5th and 9th | Maximum spice |
-| Left | Not explicitly specified in manual table | Implement as no-op or reserved unless defined elsewhere | Reserved |
+| Left | Half-dim7 | Lower 3rd, lower 5th, add flat 7th | Dark jazz |
 
 ### 4.5 Chord type inventory
 
@@ -1435,5 +1435,4 @@ Implement diagnostic states and messages for:
 - Exact DSP algorithms, sample assets, factory preset data, and waveform tables are not included in the public manual.
 - Several button-combo icons were not text-rendered in the manual; expose those as configurable input bindings.
 - The manual says 30+ instruments, but the visible full sound list contains the named sounds above. Design sound registry to allow additional firmware sounds.
-- Chromatic joystick mode left-direction chord behavior was not visible in the provided table; treat it as reserved/no-op until verified.
 - CPU budget/effect compatibility rules are not exhaustively specified; implement a generic budget system and at least block known excessive combinations.

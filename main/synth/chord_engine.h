@@ -35,6 +35,13 @@ typedef enum {
 } synth_scale_t;
 
 typedef enum {
+    SYNTH_JOYSTICK_MODE_DEFAULT = 0,
+    SYNTH_JOYSTICK_MODE_EXTENDED,
+    SYNTH_JOYSTICK_MODE_CHROMATIC,
+    SYNTH_JOYSTICK_MODE_COUNT,
+} synth_joystick_mode_t;
+
+typedef enum {
     SYNTH_CHORD_MOD_NONE = 0,
     SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR,
     SYNTH_CHORD_MOD_DOM7,
@@ -44,6 +51,20 @@ typedef enum {
     SYNTH_CHORD_MOD_SIXTH_OR_SUS2,
     SYNTH_CHORD_MOD_DIM_OR_MINOR,
     SYNTH_CHORD_MOD_AUGMENTED,
+    SYNTH_CHORD_MOD_DOM7_SHARP9,
+    SYNTH_CHORD_MOD_SUS4_FLAT7,
+    SYNTH_CHORD_MOD_ADD11,
+    SYNTH_CHORD_MOD_HALF_DIM7,
+    SYNTH_CHORD_MOD_DOM9,
+    SYNTH_CHORD_MOD_MIN11,
+    SYNTH_CHORD_MOD_MIN_MAJ7,
+    SYNTH_CHORD_MOD_MAJ13,
+    SYNTH_CHORD_MOD_SIX_NINE,
+    SYNTH_CHORD_MOD_MAJ7_SHARP11,
+    SYNTH_CHORD_MOD_DOM13,
+    SYNTH_CHORD_MOD_DOM7_FLAT9,
+    SYNTH_CHORD_MOD_DOM7_ALT,
+    SYNTH_CHORD_MOD_COUNT,
 } synth_chord_modifier_t;
 
 typedef struct {
@@ -68,9 +89,12 @@ typedef struct {
 
 const char *synth_key_name(synth_key_t key);
 const char *synth_scale_name(synth_scale_t scale);
+const char *synth_joystick_mode_name(synth_joystick_mode_t mode);
 const char *synth_chord_modifier_name(synth_chord_modifier_t modifier);
 synth_key_t synth_key_step(synth_key_t key, int8_t semitones);
-synth_chord_modifier_t synth_chord_modifier_from_joystick(control_joystick_direction_t direction);
+synth_joystick_mode_t synth_joystick_mode_step(synth_joystick_mode_t mode, int8_t steps);
+synth_chord_modifier_t synth_chord_modifier_from_joystick(synth_joystick_mode_t mode,
+                                                          control_joystick_direction_t direction);
 int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord);
 
 #ifdef __cplusplus

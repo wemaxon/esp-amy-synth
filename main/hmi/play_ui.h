@@ -28,6 +28,7 @@ typedef enum {
     PLAY_UI_EFFECT_DELAY,
     PLAY_UI_EFFECT_CHORUS,
     PLAY_UI_EFFECT_FILTER,
+    PLAY_UI_EFFECT_JOYSTICK,
     PLAY_UI_EFFECT_COUNT,
 } play_ui_effect_t;
 
@@ -38,6 +39,7 @@ typedef struct {
     int8_t global_octave_shift;
     int8_t button_octave_shift[SYNTH_CHORD_BUTTON_COUNT];
     synth_chord_modifier_t modifier;
+    synth_joystick_mode_t joystick_mode;
     synth_sound_t sound;
     synth_play_mode_t mode;
     uint16_t bpm;

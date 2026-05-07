@@ -26,6 +26,7 @@ static const char *EFFECT_NAMES[PLAY_UI_EFFECT_COUNT] = {
     [PLAY_UI_EFFECT_DELAY] = "DELAY",
     [PLAY_UI_EFFECT_CHORUS] = "CHORUS",
     [PLAY_UI_EFFECT_FILTER] = "FILTER",
+    [PLAY_UI_EFFECT_JOYSTICK] = "JOYSTICK",
 };
 
 static const esp_pocket_audio_hw_t *s_hw;
@@ -50,6 +51,7 @@ void play_ui_model_init(play_ui_model_t *model)
     model->key = SYNTH_KEY_C;
     model->scale = SYNTH_SCALE_MAJOR;
     model->modifier = SYNTH_CHORD_MOD_NONE;
+    model->joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT;
     model->sound = SYNTH_SOUND_SAW;
     model->mode = SYNTH_PLAY_MODE_PLAY;
     model->bpm = 120;
@@ -155,9 +157,13 @@ static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model
     draw_header(display, "SOUND FX");
     draw_rowf(display, 2, "SND %s", synth_sound_name(model->sound));
     draw_rowf(display, 3, "ENG %s", synth_sound_engine_name(model->sound));
-    draw_rowf(display, 4, "FX %s %s",
-              play_ui_effect_name(effect),
-              model->effects[effect] ? "ON" : "OFF");
+    if (effect == PLAY_UI_EFFECT_JOYSTICK) {
+        draw_rowf(display, 4, "JOY %s", synth_joystick_mode_name(model->joystick_mode));
+    } else {
+        draw_rowf(display, 4, "FX %s %s",
+                  play_ui_effect_name(effect),
+                  model->effects[effect] ? "ON" : "OFF");
+    }
     pocket_oled_draw_text_row(display, 5, "1-7 QUICK SELECT");
     pocket_oled_draw_text_row(display, 6, "L/R SND U/D FX");
     draw_status_row(display, model);

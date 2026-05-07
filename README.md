@@ -94,6 +94,21 @@ The AMY voice architecture is selected at compile time in
   plus six opposite-panned companion oscillators for twelve AMY oscillators
   total.
 
+### Joystick Chord Modes
+
+The chord engine supports the three HiChord joystick mode mappings:
+
+- `DEFAULT`: maj/min flip, dom7, maj7/min7, add9, sus4, 6/sus2,
+  diminished, and augmented.
+- `EXTENDED`: maj/min flip, dom7#9, 7sus4, add11, half-dim7, dom9,
+  add9, and min11.
+- `CHROMATIC`: minMaj7, maj13, half-dim7, 6/9, maj7#11, dom13,
+  dom7b9, and dom7alt. With no chord held, chromatic-mode joystick
+  left/right shifts the key by semitone.
+
+In the Sound/FX menu, select `JOYSTICK` and press joystick click to cycle
+`DEFAULT -> EXTENDED -> CHROMATIC`.
+
 ## Prereqisites
 
 #### ESP-IDF
@@ -120,33 +135,14 @@ pip install -e .
 ```
 
 ## ToDo
-- Check if the chord engine actually works correctly (dim/min and maj/min sometimes sound the same)
+- Validate remaining chord-engine edge cases against hardware/manual examples.
 - Check if the sound chain matches. amy has its own sound chain... Probably similar.
   - Chord Logic → 12 Voices → ADSR → Bass Osc → Filter → Chorus → Flanger → Delay → Reverb → Looper → Output
   - 4 synth engines
   - LFO
-
-
-```
-C Key
-Chord Modifier Base
-Key 1 -> C, E, G
-Key 2 -> D, F, A
-Key 3 -> E, G B
-Key 4 -> F, A, C
-Key 5 -> G, B, D
-Key 6 -> A, C, E
-Key 7 -> B, D, F
-
-Chord Modifier Dreamy (Augmented)
-Key 1 -> C, E
-Key 2 -> D, F#, A#
-Key 3 -> E
-Key 4 ->
-Key 5 ->
-Key 6 ->
-Key 7 ->
-```
+  - ARP
+  - Reverb
+  - 
 
 - Implement different presets/instruments
 - Implement the hichord calibration flow

@@ -26,7 +26,22 @@ static const char *EFFECT_NAMES[PLAY_UI_EFFECT_COUNT] = {
     [PLAY_UI_EFFECT_DELAY] = "DELAY",
     [PLAY_UI_EFFECT_CHORUS] = "CHORUS",
     [PLAY_UI_EFFECT_FILTER] = "FILTER",
+    [PLAY_UI_EFFECT_TREMOLO] = "TREMOLO",
+    [PLAY_UI_EFFECT_FLANGER] = "FLANGER",
+    [PLAY_UI_EFFECT_LFO] = "LFO",
     [PLAY_UI_EFFECT_JOYSTICK] = "JOYSTICK",
+};
+
+static const char *LFO_LEVEL_NAMES[] = {
+    "OFF", "LOW", "MED", "HIGH",
+};
+
+static const char *DELAY_LEVEL_NAMES[] = {
+    "OFF", "1/4", "1/8", "1/16", "1/16T",
+};
+
+static const char *TREMOLO_LEVEL_NAMES[] = {
+    "OFF", "1/4", "1/8", "1/16", "1/16T", "1/32",
 };
 
 static const esp_pocket_audio_hw_t *s_hw;
@@ -55,6 +70,7 @@ void play_ui_model_init(play_ui_model_t *model)
     model->sound = SYNTH_SOUND_SAW;
     model->mode = SYNTH_PLAY_MODE_PLAY;
     model->bpm = 120;
+    model->effect_index = PLAY_UI_EFFECT_JOYSTICK;
     model->wheel_percent = 100;
     model->joystick_direction = CONTROL_JOYSTICK_CENTER;
     strlcpy(model->chord_name, "---", sizeof(model->chord_name));
@@ -159,6 +175,24 @@ static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model
     draw_rowf(display, 3, "ENG %s", synth_sound_engine_name(model->sound));
     if (effect == PLAY_UI_EFFECT_JOYSTICK) {
         draw_rowf(display, 4, "JOY %s", synth_joystick_mode_name(model->joystick_mode));
+    } else if (effect == PLAY_UI_EFFECT_DELAY) {
+        uint8_t delay_level = model->delay_level;
+        if (delay_level >= sizeof(DELAY_LEVEL_NAMES) / sizeof(DELAY_LEVEL_NAMES[0])) {
+            delay_level = 0;
+        }
+        draw_rowf(display, 4, "FX DELAY %s", DELAY_LEVEL_NAMES[delay_level]);
+    } else if (effect == PLAY_UI_EFFECT_TREMOLO) {
+        uint8_t tremolo_level = model->tremolo_level;
+        if (tremolo_level >= sizeof(TREMOLO_LEVEL_NAMES) / sizeof(TREMOLO_LEVEL_NAMES[0])) {
+            tremolo_level = 0;
+        }
+        draw_rowf(display, 4, "FX TREM %s", TREMOLO_LEVEL_NAMES[tremolo_level]);
+    } else if (effect == PLAY_UI_EFFECT_LFO) {
+        uint8_t lfo_level = model->lfo_level;
+        if (lfo_level >= sizeof(LFO_LEVEL_NAMES) / sizeof(LFO_LEVEL_NAMES[0])) {
+            lfo_level = 0;
+        }
+        draw_rowf(display, 4, "FX LFO %s", LFO_LEVEL_NAMES[lfo_level]);
     } else {
         draw_rowf(display, 4, "FX %s %s",
                   play_ui_effect_name(effect),

@@ -30,6 +30,13 @@ typedef struct {
     uint16_t bpm;
     uint8_t effect_index;
     bool effects[PLAY_UI_EFFECT_COUNT];
+    uint8_t lfo_level;
+    uint8_t delay_level;
+    uint8_t tremolo_level;
+    float lfo_phase;
+    TickType_t lfo_last_tick;
+    float tremolo_phase;
+    TickType_t tremolo_last_tick;
     bool wheel_present;
     uint8_t wheel_percent;
     uint8_t last_applied_wheel_percent;
@@ -38,6 +45,11 @@ typedef struct {
     control_joystick_direction_t joystick_direction;
     uint8_t held_mask;
     uint8_t focus_slot;
+    synth_chord_t arp_chords[SYNTH_CHORD_BUTTON_COUNT];
+    bool arp_chord_valid[SYNTH_CHORD_BUTTON_COUNT];
+    uint8_t arp_note_index;
+    uint8_t arp_last_slot;
+    TickType_t arp_next_tick;
     char chord_name[16];
     char status[22];
     TaskHandle_t task;
@@ -49,13 +61,32 @@ static const uint32_t APP_TASK_STACK_SIZE = 4096;
 static const UBaseType_t APP_TASK_PRIORITY = 5;
 static const BaseType_t APP_TASK_CORE = 0;
 static const TickType_t APP_UPDATE_TICKS = pdMS_TO_TICKS(20);
-static const int8_t GLOBAL_OCTAVE_MIN = -1;
+static const int8_t GLOBAL_OCTAVE_MIN = -2;
 static const int8_t GLOBAL_OCTAVE_MAX = 2;
 static const int8_t BUTTON_OCTAVE_MIN = -2;
 static const int8_t BUTTON_OCTAVE_MAX = 1;
 static const uint16_t BPM_MIN = 40;
 static const uint16_t BPM_MAX = 300;
 static const uint8_t WHEEL_CHANGE_THRESHOLD_PERCENT = 2;
+static const float LFO_RATE_HZ = 5.0f;
+static const float LFO_TWO_PI = 6.283185307f;
+static const float LFO_DEPTH_SEMITONES[] = {
+    0.0f, 0.12f, 0.35f, 0.75f,
+};
+static const char *DELAY_LEVEL_NAMES[] = {
+    "OFF", "1/4", "1/8", "1/16", "1/16T",
+};
+static const float DELAY_LEVEL_DIVISORS[] = {
+    0.0f, 1.0f, 2.0f, 4.0f, 6.0f,
+};
+static const char *TREMOLO_LEVEL_NAMES[] = {
+    "OFF", "1/4", "1/8", "1/16", "1/16T", "1/32",
+};
+static const float TREMOLO_LEVEL_DIVISORS[] = {
+    0.0f, 1.0f, 2.0f, 4.0f, 6.0f, 8.0f,
+};
+static const float TREMOLO_DEPTH = 0.78f;
+static const uint8_t ARP_NO_SLOT = UINT8_MAX;
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
@@ -66,7 +97,7 @@ static synth_app_state_t s_app = {
     .sound = SYNTH_SOUND_SAW,
     .mode = SYNTH_PLAY_MODE_PLAY,
     .bpm = 120,
-    .effect_index = PLAY_UI_EFFECT_REVERB,
+    .effect_index = PLAY_UI_EFFECT_JOYSTICK,
     .effects = {
         [PLAY_UI_EFFECT_FILTER] = true,
     },
@@ -76,6 +107,7 @@ static synth_app_state_t s_app = {
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
     .focus_slot = 0,
+    .arp_last_slot = UINT8_MAX,
     .chord_name = "---",
     .status = "READY",
 };
@@ -119,6 +151,9 @@ static void update_ui(void)
     model.focus_slot = s_app.focus_slot;
     model.effect_index = s_app.effect_index;
     memcpy(model.effects, s_app.effects, sizeof(model.effects));
+    model.lfo_level = s_app.lfo_level;
+    model.delay_level = s_app.delay_level;
+    model.tremolo_level = s_app.tremolo_level;
     model.wheel_present = s_app.wheel_present;
     model.wheel_percent = s_app.wheel_percent;
     model.joystick_direction = s_app.joystick_direction;
@@ -183,6 +218,166 @@ static void format_chord_notes(const synth_chord_t *chord, char *out, size_t out
     }
 }
 
+static TickType_t arp_step_ticks(void)
+{
+    uint32_t step_ms = 30000UL / s_app.bpm; /* Default 1/8 rate: two notes per beat. */
+    if (step_ms < 20) {
+        step_ms = 20;
+    }
+    return pdMS_TO_TICKS(step_ms);
+}
+
+static uint8_t first_held_slot(void)
+{
+    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
+        if ((s_app.held_mask & (1U << slot)) != 0 && s_app.arp_chord_valid[slot]) {
+            return slot;
+        }
+    }
+    return ARP_NO_SLOT;
+}
+
+static uint8_t active_arp_slot(void)
+{
+    if ((s_app.held_mask & (1U << s_app.focus_slot)) != 0 &&
+        s_app.arp_chord_valid[s_app.focus_slot]) {
+        return s_app.focus_slot;
+    }
+    return first_held_slot();
+}
+
+static void stop_arp(void)
+{
+    if (s_app.arp_last_slot != ARP_NO_SLOT) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.arp_last_slot));
+    }
+    s_app.arp_last_slot = ARP_NO_SLOT;
+    s_app.arp_note_index = 0;
+}
+
+static void clear_arp_sources(void)
+{
+    memset(s_app.arp_chord_valid, 0, sizeof(s_app.arp_chord_valid));
+    s_app.arp_note_index = 0;
+    s_app.arp_next_tick = xTaskGetTickCount();
+}
+
+static void update_arp(void)
+{
+    if (s_app.mode != SYNTH_PLAY_MODE_ARP) {
+        return;
+    }
+
+    uint8_t slot = active_arp_slot();
+    if (slot == ARP_NO_SLOT) {
+        stop_arp();
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if ((int32_t)(now - s_app.arp_next_tick) < 0) {
+        return;
+    }
+
+    const synth_chord_t *source = &s_app.arp_chords[slot];
+    if (source->note_count == 0) {
+        return;
+    }
+
+    if (s_app.arp_last_slot != ARP_NO_SLOT && s_app.arp_last_slot != slot) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.arp_last_slot));
+    }
+    if (s_app.arp_note_index >= source->note_count) {
+        s_app.arp_note_index = 0;
+    }
+
+    synth_chord_t note = *source;
+    note.notes[0] = source->notes[s_app.arp_note_index];
+    note.note_count = 1;
+    ++s_app.arp_note_index;
+
+    esp_err_t err = synth_amy_chord_on(slot, &note);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to play arp note: %s", esp_err_to_name(err));
+        return;
+    }
+
+    s_app.arp_last_slot = slot;
+    s_app.arp_next_tick = now + arp_step_ticks();
+
+    char note_name[24];
+    format_chord_notes(&note, note_name, sizeof(note_name));
+    ESP_LOGD(TAG, "arp %s slot=%u note=%s", source->name, (unsigned)(slot + 1), note_name);
+}
+
+static void update_lfo(void)
+{
+    size_t level_count = sizeof(LFO_DEPTH_SEMITONES) / sizeof(LFO_DEPTH_SEMITONES[0]);
+    if (s_app.lfo_level == 0 || s_app.lfo_level >= level_count) {
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if (s_app.lfo_last_tick == 0) {
+        s_app.lfo_last_tick = now;
+        return;
+    }
+
+    TickType_t elapsed_ticks = now - s_app.lfo_last_tick;
+    s_app.lfo_last_tick = now;
+    if (elapsed_ticks == 0) {
+        return;
+    }
+
+    float elapsed_seconds = ((float)elapsed_ticks * (float)portTICK_PERIOD_MS) / 1000.0f;
+    s_app.lfo_phase += LFO_TWO_PI * LFO_RATE_HZ * elapsed_seconds;
+    while (s_app.lfo_phase >= LFO_TWO_PI) {
+        s_app.lfo_phase -= LFO_TWO_PI;
+    }
+
+    float pitch_semitones = sinf(s_app.lfo_phase) * LFO_DEPTH_SEMITONES[s_app.lfo_level];
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_lfo_pitch(pitch_semitones));
+}
+
+static float tremolo_rate_hz_for_level(uint8_t level)
+{
+    size_t level_count = sizeof(TREMOLO_LEVEL_DIVISORS) / sizeof(TREMOLO_LEVEL_DIVISORS[0]);
+    if (level == 0 || level >= level_count) {
+        return 0.0f;
+    }
+
+    return ((float)s_app.bpm / 60.0f) * TREMOLO_LEVEL_DIVISORS[level];
+}
+
+static void update_tremolo(void)
+{
+    size_t level_count = sizeof(TREMOLO_LEVEL_DIVISORS) / sizeof(TREMOLO_LEVEL_DIVISORS[0]);
+    if (s_app.tremolo_level == 0 || s_app.tremolo_level >= level_count) {
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if (s_app.tremolo_last_tick == 0) {
+        s_app.tremolo_last_tick = now;
+        return;
+    }
+
+    TickType_t elapsed_ticks = now - s_app.tremolo_last_tick;
+    s_app.tremolo_last_tick = now;
+    if (elapsed_ticks == 0) {
+        return;
+    }
+
+    float elapsed_seconds = ((float)elapsed_ticks * (float)portTICK_PERIOD_MS) / 1000.0f;
+    s_app.tremolo_phase += LFO_TWO_PI * tremolo_rate_hz_for_level(s_app.tremolo_level) * elapsed_seconds;
+    while (s_app.tremolo_phase >= LFO_TWO_PI) {
+        s_app.tremolo_phase -= LFO_TWO_PI;
+    }
+
+    float amount = TREMOLO_DEPTH * (0.5f + 0.5f * sinf(s_app.tremolo_phase));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_tremolo_amount(amount));
+}
+
 static void play_degree(uint8_t degree)
 {
     synth_chord_t chord = {0};
@@ -192,6 +387,26 @@ static void play_degree(uint8_t degree)
     }
 
     uint8_t slot = slot_from_degree(degree);
+    if (s_app.mode == SYNTH_PLAY_MODE_ARP) {
+        s_app.arp_chords[slot] = chord;
+        s_app.arp_chord_valid[slot] = true;
+        s_app.arp_note_index = 0;
+        s_app.arp_next_tick = xTaskGetTickCount();
+        strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
+        set_status("ARP");
+        char note_names[96];
+        format_chord_notes(&chord, note_names, sizeof(note_names));
+        ESP_LOGI(TAG, "arp source %s key=%s octave=%d mod=%s notes=%u [%s]",
+                 chord.name,
+                 synth_key_name(s_app.key),
+                 s_app.global_octave_shift,
+                 synth_chord_modifier_name(s_app.modifier),
+                 chord.note_count,
+                 note_names);
+        update_ui();
+        return;
+    }
+
     esp_err_t err = synth_amy_chord_on(slot, &chord);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to play chord: %s", esp_err_to_name(err));
@@ -225,8 +440,10 @@ static void release_degree(uint8_t degree)
 {
     uint8_t slot = slot_from_degree(degree);
     s_app.held_mask &= (uint8_t)~(1U << slot);
+    s_app.arp_chord_valid[slot] = false;
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(slot));
     if (s_app.held_mask == 0) {
+        stop_arp();
         set_status("READY");
     }
     update_ui();
@@ -375,6 +592,89 @@ static void step_joystick_mode(void)
     update_ui();
 }
 
+static void step_lfo_level(void)
+{
+    size_t level_count = sizeof(LFO_DEPTH_SEMITONES) / sizeof(LFO_DEPTH_SEMITONES[0]);
+    s_app.lfo_level = (uint8_t)((s_app.lfo_level + 1U) % level_count);
+    s_app.effects[PLAY_UI_EFFECT_LFO] = s_app.lfo_level > 0;
+    s_app.lfo_phase = 0.0f;
+    s_app.lfo_last_tick = xTaskGetTickCount();
+
+    esp_err_t err = synth_amy_set_lfo_enabled(s_app.effects[PLAY_UI_EFFECT_LFO]);
+    if (err == ESP_OK) {
+        err = synth_amy_set_lfo_pitch(0.0f);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to apply LFO: %s", esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG,
+             "lfo=%s level=%u depth=%.2f semitones",
+             s_app.effects[PLAY_UI_EFFECT_LFO] ? "on" : "off",
+             s_app.lfo_level,
+             LFO_DEPTH_SEMITONES[s_app.lfo_level]);
+    set_status(s_app.effects[PLAY_UI_EFFECT_LFO] ? "LFO ON" : "LFO OFF");
+    update_ui();
+}
+
+static float delay_ms_for_level(uint8_t level)
+{
+    size_t level_count = sizeof(DELAY_LEVEL_DIVISORS) / sizeof(DELAY_LEVEL_DIVISORS[0]);
+    if (level == 0 || level >= level_count) {
+        return 0.0f;
+    }
+
+    return (60000.0f / (float)s_app.bpm) / DELAY_LEVEL_DIVISORS[level];
+}
+
+static void apply_delay_level(void)
+{
+    float delay_ms = delay_ms_for_level(s_app.delay_level);
+    bool enabled = s_app.delay_level > 0;
+    s_app.effects[PLAY_UI_EFFECT_DELAY] = enabled;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_delay_enabled(enabled, delay_ms));
+}
+
+static void step_delay_level(void)
+{
+    size_t level_count = sizeof(DELAY_LEVEL_DIVISORS) / sizeof(DELAY_LEVEL_DIVISORS[0]);
+    s_app.delay_level = (uint8_t)((s_app.delay_level + 1U) % level_count);
+    apply_delay_level();
+
+    ESP_LOGI(TAG,
+             "delay=%s level=%s time=%.1f ms",
+             s_app.effects[PLAY_UI_EFFECT_DELAY] ? "on" : "off",
+             DELAY_LEVEL_NAMES[s_app.delay_level],
+             delay_ms_for_level(s_app.delay_level));
+    set_status(s_app.effects[PLAY_UI_EFFECT_DELAY] ? "DELAY ON" : "DELAY OFF");
+    update_ui();
+}
+
+static void step_tremolo_level(void)
+{
+    size_t level_count = sizeof(TREMOLO_LEVEL_DIVISORS) / sizeof(TREMOLO_LEVEL_DIVISORS[0]);
+    s_app.tremolo_level = (uint8_t)((s_app.tremolo_level + 1U) % level_count);
+    s_app.effects[PLAY_UI_EFFECT_TREMOLO] = s_app.tremolo_level > 0;
+    s_app.tremolo_phase = 0.0f;
+    s_app.tremolo_last_tick = xTaskGetTickCount();
+
+    esp_err_t err = synth_amy_set_tremolo_enabled(s_app.effects[PLAY_UI_EFFECT_TREMOLO]);
+    if (err == ESP_OK) {
+        err = synth_amy_set_tremolo_amount(0.0f);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to apply tremolo: %s", esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG,
+             "tremolo=%s level=%s rate=%.2f Hz",
+             s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "on" : "off",
+             TREMOLO_LEVEL_NAMES[s_app.tremolo_level],
+             tremolo_rate_hz_for_level(s_app.tremolo_level));
+    set_status(s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "TREM ON" : "TREM OFF");
+    update_ui();
+}
+
 static void toggle_current_effect(void)
 {
     play_ui_effect_t effect = (play_ui_effect_t)(s_app.effect_index % PLAY_UI_EFFECT_COUNT);
@@ -382,16 +682,34 @@ static void toggle_current_effect(void)
         step_joystick_mode();
         return;
     }
+    if (effect == PLAY_UI_EFFECT_LFO) {
+        step_lfo_level();
+        return;
+    }
+    if (effect == PLAY_UI_EFFECT_DELAY) {
+        step_delay_level();
+        return;
+    }
+    if (effect == PLAY_UI_EFFECT_TREMOLO) {
+        step_tremolo_level();
+        return;
+    }
 
     s_app.effects[effect] = !s_app.effects[effect];
     esp_err_t err = ESP_OK;
     switch (effect) {
+    case PLAY_UI_EFFECT_REVERB:
+        err = synth_amy_set_reverb_enabled(s_app.effects[effect]);
+        break;
+    case PLAY_UI_EFFECT_CHORUS:
+        err = synth_amy_set_chorus_enabled(s_app.effects[effect]);
+        break;
     case PLAY_UI_EFFECT_FILTER:
         err = synth_amy_set_filter_enabled(s_app.effects[effect]);
         break;
-    case PLAY_UI_EFFECT_REVERB:
-    case PLAY_UI_EFFECT_DELAY:
-    case PLAY_UI_EFFECT_CHORUS:
+    case PLAY_UI_EFFECT_FLANGER:
+        err = synth_amy_set_flanger_enabled(s_app.effects[effect]);
+        break;
     default:
         break;
     }
@@ -444,6 +762,9 @@ static void step_bpm(int16_t delta)
 
     s_app.bpm = (uint16_t)next;
     ESP_LOGI(TAG, "bpm=%u", s_app.bpm);
+    if (s_app.effects[PLAY_UI_EFFECT_DELAY]) {
+        apply_delay_level();
+    }
     set_status("BPM CHANGED");
     update_ui();
 }
@@ -504,7 +825,26 @@ static void update_wheel(void)
 
 static void step_mode(int8_t steps)
 {
-    s_app.mode = synth_play_mode_step(s_app.mode, steps);
+    synth_play_mode_t previous = s_app.mode;
+    synth_play_mode_t next = synth_play_mode_step(s_app.mode, steps);
+    if (previous == next) {
+        return;
+    }
+
+    if (previous == SYNTH_PLAY_MODE_ARP) {
+        stop_arp();
+        clear_arp_sources();
+    }
+
+    s_app.mode = next;
+    if (s_app.mode == SYNTH_PLAY_MODE_ARP) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        clear_arp_sources();
+        refresh_held_chords();
+    } else if (previous == SYNTH_PLAY_MODE_ARP && s_app.held_mask != 0) {
+        refresh_held_chords();
+    }
+
     ESP_LOGI(TAG, "mode=%s", synth_play_mode_name(s_app.mode));
     set_status("MODE CHANGED");
     update_ui();
@@ -628,6 +968,9 @@ static void app_task(void *arg)
         }
 
         update_joystick();
+        update_arp();
+        update_lfo();
+        update_tremolo();
         update_wheel();
         vTaskDelay(APP_UPDATE_TICKS);
     }

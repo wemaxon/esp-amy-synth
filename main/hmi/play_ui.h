@@ -28,6 +28,9 @@ typedef enum {
     PLAY_UI_EFFECT_DELAY,
     PLAY_UI_EFFECT_CHORUS,
     PLAY_UI_EFFECT_FILTER,
+    PLAY_UI_EFFECT_TREMOLO,
+    PLAY_UI_EFFECT_FLANGER,
+    PLAY_UI_EFFECT_LFO,
     PLAY_UI_EFFECT_JOYSTICK,
     PLAY_UI_EFFECT_COUNT,
 } play_ui_effect_t;
@@ -47,6 +50,9 @@ typedef struct {
     uint8_t focus_slot;
     uint8_t effect_index;
     bool effects[PLAY_UI_EFFECT_COUNT];
+    uint8_t lfo_level;
+    uint8_t delay_level;
+    uint8_t tremolo_level;
     bool wheel_present;
     uint8_t wheel_percent;
     control_joystick_direction_t joystick_direction;

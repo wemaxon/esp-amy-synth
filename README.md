@@ -139,10 +139,7 @@ pip install -e .
 - Check if the sound chain matches. amy has its own sound chain... Probably similar.
   - Chord Logic → 12 Voices → ADSR → Bass Osc → Filter → Chorus → Flanger → Delay → Reverb → Looper → Output
   - 4 synth engines
-  - LFO
-  - ARP
-  - Reverb
-  - 
+  - ARP Modes
 
 - Implement different presets/instruments
 - Implement the hichord calibration flow

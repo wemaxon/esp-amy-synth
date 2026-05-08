@@ -340,7 +340,7 @@ static uint8_t active_valid_held_slot(const bool valid[SYNTH_CHORD_BUTTON_COUNT]
 
 static void stop_strum(void)
 {
-    if (s_app.strum_active && s_app.strum_slot != ARP_NO_SLOT) {
+    if (s_app.strum_slot != ARP_NO_SLOT) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.strum_slot));
     }
     s_app.strum_active = false;

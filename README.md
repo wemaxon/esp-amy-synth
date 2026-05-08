@@ -136,10 +136,12 @@ pip install -e .
 
 ## ToDo
 - Validate remaining chord-engine edge cases against hardware/manual examples.
-- Check if the sound chain matches. amy has its own sound chain... Probably similar.
-  - Chord Logic → 12 Voices → ADSR → Bass Osc → Filter → Chorus → Flanger → Delay → Reverb → Looper → Output
-  - 4 synth engines
-  - ARP Modes
+- All modes
+  - ARP
+- Looper
+- Instruments
+- Sample Engine
+
 
 - Implement different presets/instruments
 - Implement the hichord calibration flow

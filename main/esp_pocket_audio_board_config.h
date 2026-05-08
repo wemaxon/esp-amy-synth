@@ -35,12 +35,41 @@ extern "C" {
 /* Optional external PA enable pin. Set once this signal is confirmed. */
 #define ESP_POCKET_AUDIO_PA_ENABLE_GPIO          GPIO_NUM_NC
 
-/* AMY voice architecture. Stereo pairs double the oscillator count by running
- * six musical voices plus six opposite-panned companion oscillators. Keep this
- * at 0 for a lighter mono build with six oscillators total.
+/* AMY voice architecture. Keep stereo pairs disabled on the ESP32-A1S target:
+ * AMY still outputs two I2S channels, but the synth engine does not duplicate
+ * notes into left/right oscillator pairs.
  */
-#define ESP_POCKET_AUDIO_AMY_STEREO_PAIRS        1
-
+#ifndef ESP_POCKET_AUDIO_AMY_STEREO_PAIRS
+#define ESP_POCKET_AUDIO_AMY_STEREO_PAIRS        0
+#endif
+/* AMY patch engines allocate multiple oscillators per note. Defaults are
+ * intentionally conservative for the ESP32: Juno=5 oscs/voice, DX7=8,
+ * built-in piano=25.
+ */
+#ifndef ESP_POCKET_AUDIO_AMY_MAX_OSCS
+#define ESP_POCKET_AUDIO_AMY_MAX_OSCS            128
+#endif
+#ifndef ESP_POCKET_AUDIO_AMY_JUNO_VOICES
+#define ESP_POCKET_AUDIO_AMY_JUNO_VOICES         4
+#endif
+#ifndef ESP_POCKET_AUDIO_AMY_DX7_VOICES
+#define ESP_POCKET_AUDIO_AMY_DX7_VOICES          3
+#endif
+#ifndef ESP_POCKET_AUDIO_AMY_PIANO_VOICES
+#define ESP_POCKET_AUDIO_AMY_PIANO_VOICES        3
+#endif
+#ifndef ESP_POCKET_AUDIO_AMY_PCM_VOICES
+#define ESP_POCKET_AUDIO_AMY_PCM_VOICES          6
+#endif
+/* Periodic AMY audio-task diagnostics. Logs render budget, slow blocks,
+ * I2S blocking time, heap, and audio task stack headroom.
+ */
+#ifndef ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED
+#define ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED    1
+#endif
+#ifndef ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS
+#define ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS 2000
+#endif
 /* Dedicated control I2C bus for ADS1115 and PCF8574. */
 #define ESP_POCKET_AUDIO_CONTROL_I2C_PORT        I2C_NUM_1
 #define ESP_POCKET_AUDIO_CONTROL_I2C_SDA_GPIO    GPIO_NUM_21

@@ -46,6 +46,12 @@ typedef struct {
     synth_sound_t sound;
     synth_play_mode_t mode;
     uint16_t bpm;
+    bool mode_bpm_submenu;
+    synth_strum_speed_t strum_speed;
+    synth_arp_pattern_t arp_pattern;
+    synth_rhythm_rate_t arp_rate;
+    synth_arp_chord_mode_t arp_chord_mode;
+    synth_rhythm_rate_t repeat_rate;
     uint8_t held_mask;
     uint8_t focus_slot;
     uint8_t effect_index;

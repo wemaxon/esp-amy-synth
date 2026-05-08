@@ -8,6 +8,7 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hmi/controls.h"
@@ -45,11 +46,33 @@ typedef struct {
     control_joystick_direction_t joystick_direction;
     uint8_t held_mask;
     uint8_t focus_slot;
+    bool mode_bpm_submenu;
+    synth_strum_speed_t strum_speed;
+    synth_arp_pattern_t arp_pattern;
+    synth_rhythm_rate_t arp_rate;
+    synth_arp_chord_mode_t arp_chord_mode;
+    synth_rhythm_rate_t repeat_rate;
+    synth_chord_t held_chords[SYNTH_CHORD_BUTTON_COUNT];
+    bool held_chord_valid[SYNTH_CHORD_BUTTON_COUNT];
+    synth_chord_t strum_chord;
+    bool strum_active;
+    uint8_t strum_slot;
+    uint8_t strum_voice_index;
+    TickType_t strum_next_tick;
+    bool drone_active;
+    uint8_t drone_slot;
     synth_chord_t arp_chords[SYNTH_CHORD_BUTTON_COUNT];
     bool arp_chord_valid[SYNTH_CHORD_BUTTON_COUNT];
-    uint8_t arp_note_index;
+    uint32_t arp_step_index;
     uint8_t arp_last_slot;
     TickType_t arp_next_tick;
+    bool repeat_active;
+    bool repeat_gate_open;
+    uint8_t repeat_slot;
+    TickType_t repeat_next_tick;
+    uint8_t mode_tap_count;
+    TickType_t mode_tap_first_tick;
+    TickType_t mode_tap_last_tick;
     char chord_name[16];
     char status[22];
     TaskHandle_t task;
@@ -87,6 +110,8 @@ static const float TREMOLO_LEVEL_DIVISORS[] = {
 };
 static const float TREMOLO_DEPTH = 0.78f;
 static const uint8_t ARP_NO_SLOT = UINT8_MAX;
+static const TickType_t MODE_TAP_RESET_TICKS = pdMS_TO_TICKS(2000);
+static const uint8_t ARP_MAX_STEP_NOTES = 2;
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
@@ -101,16 +126,26 @@ static synth_app_state_t s_app = {
     .effects = {
         [PLAY_UI_EFFECT_FILTER] = true,
     },
+    .strum_speed = SYNTH_STRUM_SPEED_MEDIUM,
+    .arp_pattern = SYNTH_ARP_PATTERN_UP,
+    .arp_rate = SYNTH_RHYTHM_RATE_EIGHTH,
+    .arp_chord_mode = SYNTH_ARP_CHORD_MODE_ARP_ONLY,
+    .repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH,
     .wheel_percent = 100,
     .last_applied_wheel_percent = UINT8_MAX,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
     .focus_slot = 0,
+    .strum_slot = UINT8_MAX,
+    .drone_slot = UINT8_MAX,
     .arp_last_slot = UINT8_MAX,
+    .repeat_slot = UINT8_MAX,
     .chord_name = "---",
     .status = "READY",
 };
+
+static void step_mode(int8_t steps);
 
 static play_ui_screen_t active_screen(void)
 {
@@ -147,6 +182,12 @@ static void update_ui(void)
     model.sound = s_app.sound;
     model.mode = s_app.mode;
     model.bpm = s_app.bpm;
+    model.mode_bpm_submenu = s_app.mode_bpm_submenu;
+    model.strum_speed = s_app.strum_speed;
+    model.arp_pattern = s_app.arp_pattern;
+    model.arp_rate = s_app.arp_rate;
+    model.arp_chord_mode = s_app.arp_chord_mode;
+    model.repeat_rate = s_app.repeat_rate;
     model.held_mask = s_app.held_mask;
     model.focus_slot = s_app.focus_slot;
     model.effect_index = s_app.effect_index;
@@ -218,32 +259,145 @@ static void format_chord_notes(const synth_chord_t *chord, char *out, size_t out
     }
 }
 
-static TickType_t arp_step_ticks(void)
+static uint32_t rhythm_rate_interval_ms(synth_rhythm_rate_t rate, uint32_t step_index)
 {
-    uint32_t step_ms = 30000UL / s_app.bpm; /* Default 1/8 rate: two notes per beat. */
-    if (step_ms < 20) {
-        step_ms = 20;
+    float beat_ms = 60000.0f / (float)s_app.bpm;
+    float interval_ms = beat_ms * 0.5f;
+
+    switch (rate) {
+    case SYNTH_RHYTHM_RATE_WHOLE:
+        interval_ms = beat_ms * 4.0f;
+        break;
+    case SYNTH_RHYTHM_RATE_HALF:
+        interval_ms = beat_ms * 2.0f;
+        break;
+    case SYNTH_RHYTHM_RATE_QUARTER:
+        interval_ms = beat_ms;
+        break;
+    case SYNTH_RHYTHM_RATE_EIGHTH:
+        interval_ms = beat_ms * 0.5f;
+        break;
+    case SYNTH_RHYTHM_RATE_SIXTEENTH:
+        interval_ms = beat_ms * 0.25f;
+        break;
+    case SYNTH_RHYTHM_RATE_SIXTEENTH_TRIPLET:
+        interval_ms = beat_ms / 6.0f;
+        break;
+    case SYNTH_RHYTHM_RATE_THIRTY_SECOND:
+        interval_ms = beat_ms * 0.125f;
+        break;
+    case SYNTH_RHYTHM_RATE_SWING_EIGHTH:
+        interval_ms = (step_index & 1U) == 0 ? beat_ms * (2.0f / 3.0f) : beat_ms * (1.0f / 3.0f);
+        break;
+    case SYNTH_RHYTHM_RATE_SWING_SIXTEENTH:
+        interval_ms = (step_index & 1U) == 0 ? beat_ms * (1.0f / 3.0f) : beat_ms * (1.0f / 6.0f);
+        break;
+    default:
+        break;
     }
-    return pdMS_TO_TICKS(step_ms);
+
+    if (interval_ms < 20.0f) {
+        interval_ms = 20.0f;
+    }
+    return (uint32_t)(interval_ms + 0.5f);
 }
 
-static uint8_t first_held_slot(void)
+static TickType_t rhythm_rate_ticks(synth_rhythm_rate_t rate, uint32_t step_index)
+{
+    return pdMS_TO_TICKS(rhythm_rate_interval_ms(rate, step_index));
+}
+
+static void sort_notes(uint8_t *notes, uint8_t note_count)
+{
+    for (uint8_t i = 1; i < note_count; ++i) {
+        uint8_t note = notes[i];
+        uint8_t j = i;
+        while (j > 0 && notes[j - 1] > note) {
+            notes[j] = notes[j - 1];
+            --j;
+        }
+        notes[j] = note;
+    }
+}
+
+static uint8_t first_valid_held_slot(const bool valid[SYNTH_CHORD_BUTTON_COUNT])
 {
     for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if ((s_app.held_mask & (1U << slot)) != 0 && s_app.arp_chord_valid[slot]) {
+        if ((s_app.held_mask & (1U << slot)) != 0 && valid[slot]) {
             return slot;
         }
     }
     return ARP_NO_SLOT;
 }
 
-static uint8_t active_arp_slot(void)
+static uint8_t active_valid_held_slot(const bool valid[SYNTH_CHORD_BUTTON_COUNT])
 {
-    if ((s_app.held_mask & (1U << s_app.focus_slot)) != 0 &&
-        s_app.arp_chord_valid[s_app.focus_slot]) {
+    if ((s_app.held_mask & (1U << s_app.focus_slot)) != 0 && valid[s_app.focus_slot]) {
         return s_app.focus_slot;
     }
-    return first_held_slot();
+    return first_valid_held_slot(valid);
+}
+
+static void stop_strum(void)
+{
+    if (s_app.strum_active && s_app.strum_slot != ARP_NO_SLOT) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.strum_slot));
+    }
+    s_app.strum_active = false;
+    s_app.strum_slot = ARP_NO_SLOT;
+    s_app.strum_voice_index = 0;
+}
+
+static void start_strum(uint8_t slot, const synth_chord_t *chord)
+{
+    if (chord == NULL) {
+        return;
+    }
+
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+    s_app.strum_chord = *chord;
+    s_app.strum_slot = slot;
+    s_app.strum_voice_index = 0;
+    s_app.strum_next_tick = xTaskGetTickCount();
+    s_app.strum_active = true;
+    set_status("STRUM");
+}
+
+static void update_strum(void)
+{
+    if (s_app.mode != SYNTH_PLAY_MODE_STRUM || !s_app.strum_active) {
+        return;
+    }
+    if ((s_app.held_mask & (1U << s_app.strum_slot)) == 0) {
+        stop_strum();
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if ((int32_t)(now - s_app.strum_next_tick) < 0) {
+        return;
+    }
+
+    esp_err_t err = synth_amy_chord_voice_on(s_app.strum_slot, &s_app.strum_chord, s_app.strum_voice_index);
+    if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_NOT_SUPPORTED) {
+        s_app.strum_active = false;
+        return;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to strum voice %u: %s",
+                 s_app.strum_voice_index,
+                 esp_err_to_name(err));
+        s_app.strum_active = false;
+        return;
+    }
+
+    ++s_app.strum_voice_index;
+    s_app.strum_next_tick = now + pdMS_TO_TICKS(synth_strum_speed_delay_ms(s_app.strum_speed));
+}
+
+static uint8_t active_arp_slot(void)
+{
+    return active_valid_held_slot(s_app.arp_chord_valid);
 }
 
 static void stop_arp(void)
@@ -252,19 +406,116 @@ static void stop_arp(void)
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.arp_last_slot));
     }
     s_app.arp_last_slot = ARP_NO_SLOT;
-    s_app.arp_note_index = 0;
+    s_app.arp_step_index = 0;
 }
 
 static void clear_arp_sources(void)
 {
     memset(s_app.arp_chord_valid, 0, sizeof(s_app.arp_chord_valid));
-    s_app.arp_note_index = 0;
+    s_app.arp_step_index = 0;
     s_app.arp_next_tick = xTaskGetTickCount();
+}
+
+static uint8_t arp_pattern_note_index(uint8_t note_count, uint32_t step_index)
+{
+    if (note_count <= 1) {
+        return 0;
+    }
+
+    switch (s_app.arp_pattern) {
+    case SYNTH_ARP_PATTERN_DOWN:
+        return (uint8_t)((note_count - 1U) - (step_index % note_count));
+    case SYNTH_ARP_PATTERN_UP_DOWN: {
+        uint8_t cycle = (uint8_t)((note_count * 2U) - 2U);
+        uint8_t pos = (uint8_t)(step_index % cycle);
+        return pos < note_count ? pos : (uint8_t)(cycle - pos);
+    }
+    case SYNTH_ARP_PATTERN_DOWN_UP: {
+        uint8_t cycle = (uint8_t)((note_count * 2U) - 2U);
+        uint8_t pos = (uint8_t)(step_index % cycle);
+        uint8_t up_index = pos < note_count ? pos : (uint8_t)(cycle - pos);
+        return (uint8_t)((note_count - 1U) - up_index);
+    }
+    case SYNTH_ARP_PATTERN_RANDOM:
+        return (uint8_t)(esp_random() % note_count);
+    case SYNTH_ARP_PATTERN_UP:
+    case SYNTH_ARP_PATTERN_FINGERPICK:
+    default:
+        return (uint8_t)(step_index % note_count);
+    }
+}
+
+static void build_fingerpick_step(const uint8_t *notes,
+                                  uint8_t note_count,
+                                  uint32_t step_index,
+                                  synth_chord_t *step)
+{
+    if (note_count == 0 || step == NULL) {
+        return;
+    }
+
+    uint8_t high = note_count > 2 ? 2 : (uint8_t)(note_count - 1);
+    uint8_t alt = note_count > 3 ? 3 : high;
+    uint8_t low = (step_index & 1U) != 0 && note_count > 1 ? 1 : 0;
+    uint8_t top = (step_index & 2U) != 0 ? alt : high;
+
+    step->notes[0] = notes[low];
+    step->note_count = 1;
+    if (top != low && step->note_count < ARP_MAX_STEP_NOTES) {
+        step->notes[step->note_count++] = notes[top];
+    }
+}
+
+static void append_step_notes(synth_chord_t *dest, const synth_chord_t *step)
+{
+    if (dest == NULL || step == NULL) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < step->note_count && dest->note_count < SYNTH_MAX_CHORD_NOTES; ++i) {
+        bool duplicate = false;
+        for (uint8_t j = 0; j < dest->note_count; ++j) {
+            if (dest->notes[j] == step->notes[i]) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) {
+            dest->notes[dest->note_count++] = step->notes[i];
+        }
+    }
+}
+
+static void build_arp_step_chord(const synth_chord_t *source, synth_chord_t *step)
+{
+    if (source == NULL || step == NULL || source->note_count == 0) {
+        return;
+    }
+
+    uint8_t notes[SYNTH_MAX_CHORD_NOTES] = {0};
+    uint8_t note_count = source->note_count;
+    if (note_count > SYNTH_MAX_CHORD_NOTES) {
+        note_count = SYNTH_MAX_CHORD_NOTES;
+    }
+    memcpy(notes, source->notes, note_count);
+    sort_notes(notes, note_count);
+
+    *step = *source;
+    strlcpy(step->name, "ARP", sizeof(step->name));
+    step->note_count = 0;
+
+    if (s_app.arp_pattern == SYNTH_ARP_PATTERN_FINGERPICK) {
+        build_fingerpick_step(notes, note_count, s_app.arp_step_index, step);
+        return;
+    }
+
+    step->notes[0] = notes[arp_pattern_note_index(note_count, s_app.arp_step_index)];
+    step->note_count = 1;
 }
 
 static void update_arp(void)
 {
-    if (s_app.mode != SYNTH_PLAY_MODE_ARP) {
+    if (s_app.mode != SYNTH_PLAY_MODE_ARPEGGIO) {
         return;
     }
 
@@ -287,27 +538,93 @@ static void update_arp(void)
     if (s_app.arp_last_slot != ARP_NO_SLOT && s_app.arp_last_slot != slot) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.arp_last_slot));
     }
-    if (s_app.arp_note_index >= source->note_count) {
-        s_app.arp_note_index = 0;
+
+    synth_chord_t step = {0};
+    build_arp_step_chord(source, &step);
+
+    synth_chord_t output = step;
+    if (s_app.arp_chord_mode == SYNTH_ARP_CHORD_MODE_CHORD_ARP) {
+        output = *source;
+        append_step_notes(&output, &step);
+    } else if (s_app.arp_chord_mode == SYNTH_ARP_CHORD_MODE_RHYTHM_ARP) {
+        output = (s_app.arp_step_index & 1U) == 0 ? *source : step;
+        if ((s_app.arp_step_index & 1U) == 0) {
+            append_step_notes(&output, &step);
+        }
     }
 
-    synth_chord_t note = *source;
-    note.notes[0] = source->notes[s_app.arp_note_index];
-    note.note_count = 1;
-    ++s_app.arp_note_index;
-
-    esp_err_t err = synth_amy_chord_on(slot, &note);
+    esp_err_t err = synth_amy_chord_on(slot, &output);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "failed to play arp note: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "failed to play arp step: %s", esp_err_to_name(err));
         return;
     }
 
-    s_app.arp_last_slot = slot;
-    s_app.arp_next_tick = now + arp_step_ticks();
+    char note_name[48];
+    format_chord_notes(&step, note_name, sizeof(note_name));
+    ESP_LOGD(TAG,
+             "arp %s slot=%u pattern=%s rate=%s mode=%s step=%lu notes=%s",
+             source->name,
+             (unsigned)(slot + 1),
+             synth_arp_pattern_name(s_app.arp_pattern),
+             synth_rhythm_rate_name(s_app.arp_rate),
+             synth_arp_chord_mode_name(s_app.arp_chord_mode),
+             (unsigned long)s_app.arp_step_index,
+             note_name);
 
-    char note_name[24];
-    format_chord_notes(&note, note_name, sizeof(note_name));
-    ESP_LOGD(TAG, "arp %s slot=%u note=%s", source->name, (unsigned)(slot + 1), note_name);
+    s_app.arp_last_slot = slot;
+    s_app.arp_next_tick = now + rhythm_rate_ticks(s_app.arp_rate, s_app.arp_step_index);
+    ++s_app.arp_step_index;
+}
+
+static void stop_repeat(void)
+{
+    if (s_app.repeat_active && s_app.repeat_slot != ARP_NO_SLOT) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.repeat_slot));
+    }
+    s_app.repeat_active = false;
+    s_app.repeat_gate_open = false;
+    s_app.repeat_slot = ARP_NO_SLOT;
+}
+
+static void update_repeat(void)
+{
+    if (s_app.mode != SYNTH_PLAY_MODE_REPEAT) {
+        return;
+    }
+
+    uint8_t slot = active_valid_held_slot(s_app.held_chord_valid);
+    if (slot == ARP_NO_SLOT) {
+        stop_repeat();
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if ((int32_t)(now - s_app.repeat_next_tick) < 0) {
+        return;
+    }
+
+    uint32_t interval_ms = rhythm_rate_interval_ms(s_app.repeat_rate, 0);
+    TickType_t gate_ticks = pdMS_TO_TICKS(interval_ms / 2U);
+    if (gate_ticks < pdMS_TO_TICKS(20)) {
+        gate_ticks = pdMS_TO_TICKS(20);
+    }
+
+    if (s_app.repeat_gate_open) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.repeat_slot));
+        s_app.repeat_gate_open = false;
+        s_app.repeat_next_tick = now + gate_ticks;
+        return;
+    }
+
+    s_app.repeat_slot = slot;
+    esp_err_t err = synth_amy_chord_on(slot, &s_app.held_chords[slot]);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to repeat chord: %s", esp_err_to_name(err));
+        return;
+    }
+    s_app.repeat_active = true;
+    s_app.repeat_gate_open = true;
+    s_app.repeat_next_tick = now + gate_ticks;
 }
 
 static void update_lfo(void)
@@ -378,6 +695,117 @@ static void update_tremolo(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_tremolo_amount(amount));
 }
 
+static void warn_unimplemented_mode(synth_play_mode_t mode)
+{
+    ESP_LOGW(TAG, "play mode %s is visible in UI but not implemented yet", synth_play_mode_name(mode));
+    set_status("WARN MODE TODO");
+}
+
+static void log_chord_event(const char *verb, const synth_chord_t *chord)
+{
+    if (chord == NULL) {
+        return;
+    }
+
+    char note_names[96];
+    format_chord_notes(chord, note_names, sizeof(note_names));
+    ESP_LOGI(TAG,
+             "%s %s mode=%s key=%s octave=%d mod=%s notes=%u [%s]",
+             verb,
+             chord->name,
+             synth_play_mode_name(s_app.mode),
+             synth_key_name(s_app.key),
+             s_app.global_octave_shift,
+             synth_chord_modifier_name(s_app.modifier),
+             chord->note_count,
+             note_names);
+}
+
+static void make_root_note_chord(const synth_chord_t *source, synth_chord_t *note)
+{
+    if (source == NULL || note == NULL) {
+        return;
+    }
+
+    *note = *source;
+    note->notes[0] = source->root_midi;
+    note->note_count = 1;
+    snprintf(note->name, sizeof(note->name), "%s", synth_key_name((synth_key_t)(source->root_midi % 12)));
+}
+
+static void append_unique_layer_note(synth_chord_t *layer, uint8_t note)
+{
+    if (layer == NULL || layer->note_count >= SYNTH_MAX_CHORD_NOTES) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < layer->note_count; ++i) {
+        if (layer->notes[i] == note) {
+            return;
+        }
+    }
+    layer->notes[layer->note_count++] = note;
+}
+
+static bool build_play_layer(synth_chord_t *layer)
+{
+    if (layer == NULL) {
+        return false;
+    }
+
+    memset(layer, 0, sizeof(*layer));
+    bool initialized = false;
+    uint8_t chord_count = 0;
+
+    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
+        if ((s_app.held_mask & (1U << slot)) == 0 || !s_app.held_chord_valid[slot]) {
+            continue;
+        }
+
+        const synth_chord_t *chord = &s_app.held_chords[slot];
+        if (!initialized) {
+            *layer = *chord;
+            layer->note_count = 0;
+            initialized = true;
+        }
+        ++chord_count;
+        for (uint8_t note_index = 0; note_index < chord->note_count; ++note_index) {
+            append_unique_layer_note(layer, chord->notes[note_index]);
+        }
+    }
+
+    if (!initialized || layer->note_count == 0) {
+        return false;
+    }
+    if (chord_count > 1) {
+        strlcpy(layer->name, "LAYER", sizeof(layer->name));
+    }
+    return true;
+}
+
+static void render_play_layer(void)
+{
+    synth_chord_t layer = {0};
+    if (!build_play_layer(&layer)) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        strlcpy(s_app.chord_name, "---", sizeof(s_app.chord_name));
+        set_status("READY");
+        update_ui();
+        return;
+    }
+
+    esp_err_t err = synth_amy_chord_on(0, &layer);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to play layer: %s", esp_err_to_name(err));
+        return;
+    }
+
+    log_chord_event("play", &layer);
+    strlcpy(s_app.chord_name, layer.name, sizeof(s_app.chord_name));
+    set_status(layer.note_count > 3 ? "LAYER" : "PLAYING");
+    update_ui();
+}
+
 static void play_degree(uint8_t degree)
 {
     synth_chord_t chord = {0};
@@ -387,44 +815,82 @@ static void play_degree(uint8_t degree)
     }
 
     uint8_t slot = slot_from_degree(degree);
-    if (s_app.mode == SYNTH_PLAY_MODE_ARP) {
-        s_app.arp_chords[slot] = chord;
-        s_app.arp_chord_valid[slot] = true;
-        s_app.arp_note_index = 0;
-        s_app.arp_next_tick = xTaskGetTickCount();
+    s_app.held_chords[slot] = chord;
+    s_app.held_chord_valid[slot] = true;
+
+    if (!synth_play_mode_is_implemented(s_app.mode)) {
+        warn_unimplemented_mode(s_app.mode);
         strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
-        set_status("ARP");
-        char note_names[96];
-        format_chord_notes(&chord, note_names, sizeof(note_names));
-        ESP_LOGI(TAG, "arp source %s key=%s octave=%d mod=%s notes=%u [%s]",
-                 chord.name,
-                 synth_key_name(s_app.key),
-                 s_app.global_octave_shift,
-                 synth_chord_modifier_name(s_app.modifier),
-                 chord.note_count,
-                 note_names);
         update_ui();
         return;
     }
 
-    esp_err_t err = synth_amy_chord_on(slot, &chord);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "failed to play chord: %s", esp_err_to_name(err));
+    if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
+        s_app.arp_chords[slot] = chord;
+        s_app.arp_chord_valid[slot] = true;
+        s_app.arp_step_index = 0;
+        s_app.arp_next_tick = xTaskGetTickCount();
+        strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
+        set_status("ARP");
+        log_chord_event("arp source", &chord);
+        update_ui();
         return;
     }
 
-    char note_names[96];
-    format_chord_notes(&chord, note_names, sizeof(note_names));
-    ESP_LOGI(TAG, "play %s key=%s octave=%d mod=%s notes=%u [%s]",
-             chord.name,
-             synth_key_name(s_app.key),
-             s_app.global_octave_shift,
-             synth_chord_modifier_name(s_app.modifier),
-             chord.note_count,
-             note_names);
-    strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
-    set_status("PLAYING");
-    update_ui();
+    if (s_app.mode == SYNTH_PLAY_MODE_STRUM) {
+        strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
+        log_chord_event("strum", &chord);
+        start_strum(slot, &chord);
+        update_ui();
+        return;
+    }
+
+    if (s_app.mode == SYNTH_PLAY_MODE_LEAD) {
+        synth_chord_t note = {0};
+        make_root_note_chord(&chord, &note);
+        esp_err_t err = synth_amy_chord_on(slot, &note);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to play lead note: %s", esp_err_to_name(err));
+            return;
+        }
+        log_chord_event("lead", &note);
+        strlcpy(s_app.chord_name, note.name, sizeof(s_app.chord_name));
+        set_status("LEAD");
+        update_ui();
+        return;
+    }
+
+    if (s_app.mode == SYNTH_PLAY_MODE_DRONE) {
+        if (s_app.drone_active && s_app.drone_slot != slot) {
+            ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.drone_slot));
+        }
+        esp_err_t err = synth_amy_chord_on(slot, &chord);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to play drone: %s", esp_err_to_name(err));
+            return;
+        }
+        s_app.drone_active = true;
+        s_app.drone_slot = slot;
+        log_chord_event("drone", &chord);
+        strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
+        set_status("DRONE");
+        update_ui();
+        return;
+    }
+
+    if (s_app.mode == SYNTH_PLAY_MODE_REPEAT) {
+        s_app.repeat_slot = slot;
+        s_app.repeat_active = true;
+        s_app.repeat_gate_open = false;
+        s_app.repeat_next_tick = xTaskGetTickCount();
+        strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
+        set_status("REPEAT");
+        log_chord_event("repeat source", &chord);
+        update_ui();
+        return;
+    }
+
+    render_play_layer();
 }
 
 static void refresh_held_chords(void)
@@ -440,11 +906,45 @@ static void release_degree(uint8_t degree)
 {
     uint8_t slot = slot_from_degree(degree);
     s_app.held_mask &= (uint8_t)~(1U << slot);
+    s_app.held_chord_valid[slot] = false;
     s_app.arp_chord_valid[slot] = false;
-    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(slot));
+
+    if (s_app.mode == SYNTH_PLAY_MODE_DRONE) {
+        set_status(s_app.drone_active ? "DRONE" : "READY");
+        update_ui();
+        return;
+    }
+
+    if (s_app.mode == SYNTH_PLAY_MODE_PLAY) {
+        render_play_layer();
+        return;
+    }
+
+    if (s_app.mode == SYNTH_PLAY_MODE_STRUM && s_app.strum_slot == slot) {
+        stop_strum();
+    } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
+        if (s_app.arp_last_slot == slot || s_app.held_mask == 0) {
+            stop_arp();
+        }
+    } else if (s_app.mode == SYNTH_PLAY_MODE_REPEAT) {
+        if (s_app.repeat_slot == slot || s_app.held_mask == 0) {
+            stop_repeat();
+        }
+    } else {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(slot));
+    }
+
     if (s_app.held_mask == 0) {
         stop_arp();
+        if (s_app.mode != SYNTH_PLAY_MODE_DRONE) {
+            stop_repeat();
+        }
         set_status("READY");
+    } else if (s_app.mode == SYNTH_PLAY_MODE_PLAY) {
+        uint8_t next_slot = active_valid_held_slot(s_app.held_chord_valid);
+        if (next_slot != ARP_NO_SLOT) {
+            play_degree((uint8_t)(next_slot + 1));
+        }
     }
     update_ui();
 }
@@ -463,6 +963,27 @@ static void handle_chord_event(const control_event_t *event)
             ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
             set_status("SOUND SELECTED");
             refresh_held_chords();
+            update_ui();
+            return;
+        }
+        if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+            if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree <= 6) {
+                s_app.arp_pattern = (synth_arp_pattern_t)(degree - 1);
+                s_app.arp_step_index = 0;
+                ESP_LOGI(TAG, "arp pattern=%s", synth_arp_pattern_name(s_app.arp_pattern));
+                set_status(synth_arp_pattern_name(s_app.arp_pattern));
+            } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree == 7) {
+                s_app.arp_chord_mode = (synth_arp_chord_mode_t)((s_app.arp_chord_mode + 1U) %
+                                                                SYNTH_ARP_CHORD_MODE_COUNT);
+                ESP_LOGI(TAG, "arp chord mode=%s", synth_arp_chord_mode_name(s_app.arp_chord_mode));
+                set_status(synth_arp_chord_mode_name(s_app.arp_chord_mode));
+            } else {
+                synth_play_mode_t next = synth_play_mode_quick_select(degree);
+                step_mode((int8_t)((int)next - (int)s_app.mode));
+                if (synth_play_mode_is_implemented(s_app.mode)) {
+                    set_status(synth_play_mode_short_name(s_app.mode));
+                }
+            }
             update_ui();
             return;
         }
@@ -769,6 +1290,40 @@ static void step_bpm(int16_t delta)
     update_ui();
 }
 
+static void cycle_mode_param(void)
+{
+    switch (s_app.mode) {
+    case SYNTH_PLAY_MODE_STRUM:
+        s_app.strum_speed = (synth_strum_speed_t)((s_app.strum_speed + 1U) % SYNTH_STRUM_SPEED_COUNT);
+        ESP_LOGI(TAG,
+                 "strum speed=%s delay=%ums",
+                 synth_strum_speed_name(s_app.strum_speed),
+                 synth_strum_speed_delay_ms(s_app.strum_speed));
+        set_status(synth_strum_speed_name(s_app.strum_speed));
+        break;
+    case SYNTH_PLAY_MODE_ARPEGGIO:
+        s_app.arp_rate = (synth_rhythm_rate_t)((s_app.arp_rate + 1U) % SYNTH_RHYTHM_RATE_COUNT);
+        s_app.arp_step_index = 0;
+        ESP_LOGI(TAG, "arp rate=%s", synth_rhythm_rate_name(s_app.arp_rate));
+        set_status(synth_rhythm_rate_name(s_app.arp_rate));
+        break;
+    case SYNTH_PLAY_MODE_REPEAT:
+        s_app.repeat_rate = (synth_rhythm_rate_t)((s_app.repeat_rate + 1U) % SYNTH_RHYTHM_RATE_COUNT);
+        s_app.repeat_next_tick = xTaskGetTickCount();
+        ESP_LOGI(TAG, "repeat rate=%s", synth_rhythm_rate_name(s_app.repeat_rate));
+        set_status(synth_rhythm_rate_name(s_app.repeat_rate));
+        break;
+    default:
+        if (!synth_play_mode_is_implemented(s_app.mode)) {
+            warn_unimplemented_mode(s_app.mode);
+        } else {
+            set_status("NO PARAM");
+        }
+        break;
+    }
+    update_ui();
+}
+
 static float wheel_to_filter_cutoff_hz(uint8_t percent)
 {
     float t = (float)percent / 100.0f;
@@ -831,22 +1386,33 @@ static void step_mode(int8_t steps)
         return;
     }
 
-    if (previous == SYNTH_PLAY_MODE_ARP) {
-        stop_arp();
-        clear_arp_sources();
+    stop_strum();
+    stop_arp();
+    stop_repeat();
+    if (previous == SYNTH_PLAY_MODE_DRONE && s_app.drone_active) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.drone_slot));
+        s_app.drone_active = false;
+        s_app.drone_slot = ARP_NO_SLOT;
     }
+    clear_arp_sources();
 
     s_app.mode = next;
-    if (s_app.mode == SYNTH_PLAY_MODE_ARP) {
+    s_app.mode_bpm_submenu = false;
+    if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
         clear_arp_sources();
         refresh_held_chords();
-    } else if (previous == SYNTH_PLAY_MODE_ARP && s_app.held_mask != 0) {
+    } else if (synth_play_mode_is_implemented(s_app.mode) && s_app.held_mask != 0) {
         refresh_held_chords();
+    } else if (!synth_play_mode_is_implemented(s_app.mode)) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        warn_unimplemented_mode(s_app.mode);
     }
 
     ESP_LOGI(TAG, "mode=%s", synth_play_mode_name(s_app.mode));
-    set_status("MODE CHANGED");
+    if (synth_play_mode_is_implemented(s_app.mode)) {
+        set_status("MODE CHANGED");
+    }
     update_ui();
 }
 
@@ -857,18 +1423,41 @@ static void update_mode_menu(control_joystick_direction_t direction)
     }
     s_app.last_menu_direction = direction;
 
+    if (s_app.mode_bpm_submenu) {
+        switch (direction) {
+        case CONTROL_JOYSTICK_LEFT:
+            step_bpm(-1);
+            break;
+        case CONTROL_JOYSTICK_RIGHT:
+            step_bpm(1);
+            break;
+        case CONTROL_JOYSTICK_UP:
+        case CONTROL_JOYSTICK_DOWN:
+            s_app.mode_bpm_submenu = false;
+            set_status("MODE MENU");
+            update_ui();
+            break;
+        case CONTROL_JOYSTICK_CENTER:
+        default:
+            break;
+        }
+        return;
+    }
+
     switch (direction) {
     case CONTROL_JOYSTICK_LEFT:
-        step_bpm(-1);
-        break;
-    case CONTROL_JOYSTICK_RIGHT:
-        step_bpm(1);
-        break;
-    case CONTROL_JOYSTICK_UP:
         step_mode(-1);
         break;
-    case CONTROL_JOYSTICK_DOWN:
+    case CONTROL_JOYSTICK_RIGHT:
         step_mode(1);
+        break;
+    case CONTROL_JOYSTICK_UP:
+        s_app.mode_bpm_submenu = true;
+        set_status("BPM");
+        update_ui();
+        break;
+    case CONTROL_JOYSTICK_DOWN:
+        cycle_mode_param();
         break;
     case CONTROL_JOYSTICK_CENTER:
     default:
@@ -928,6 +1517,45 @@ static void update_joystick(void)
     update_ui();
 }
 
+static void handle_mode_button_tap(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    if (s_app.mode_tap_count == 0 ||
+        (int32_t)(now - s_app.mode_tap_last_tick) > (int32_t)MODE_TAP_RESET_TICKS) {
+        s_app.mode_tap_count = 1;
+        s_app.mode_tap_first_tick = now;
+        s_app.mode_tap_last_tick = now;
+        return;
+    }
+
+    ++s_app.mode_tap_count;
+    s_app.mode_tap_last_tick = now;
+    if (s_app.mode_tap_count < 3) {
+        return;
+    }
+
+    TickType_t span_ticks = s_app.mode_tap_last_tick - s_app.mode_tap_first_tick;
+    uint32_t span_ms = (uint32_t)span_ticks * (uint32_t)portTICK_PERIOD_MS;
+    if (span_ms > 0) {
+        uint32_t beat_ms = span_ms / (uint32_t)(s_app.mode_tap_count - 1U);
+        if (beat_ms > 0) {
+            uint16_t bpm = (uint16_t)(60000UL / beat_ms);
+            if (bpm < BPM_MIN) {
+                bpm = BPM_MIN;
+            } else if (bpm > BPM_MAX) {
+                bpm = BPM_MAX;
+            }
+            s_app.bpm = bpm;
+            if (s_app.effects[PLAY_UI_EFFECT_DELAY]) {
+                apply_delay_level();
+            }
+            ESP_LOGI(TAG, "tap tempo bpm=%u taps=%u", s_app.bpm, s_app.mode_tap_count);
+            set_status("TAP TEMPO");
+            update_ui();
+        }
+    }
+}
+
 static void handle_menu_event(const control_event_t *event)
 {
     if (event->type != CONTROL_EVENT_SWITCH_PRESSED) {
@@ -948,6 +1576,9 @@ static void handle_menu_event(const control_event_t *event)
     } else if (event->sw == CONTROL_KEY_MENU ||
                event->sw == CONTROL_SOUND_MENU ||
                event->sw == CONTROL_MODE_MENU) {
+        if (event->sw == CONTROL_MODE_MENU) {
+            handle_mode_button_tap();
+        }
         update_ui();
     }
 }
@@ -968,7 +1599,9 @@ static void app_task(void *arg)
         }
 
         update_joystick();
+        update_strum();
         update_arp();
+        update_repeat();
         update_lfo();
         update_tremolo();
         update_wheel();

@@ -1000,8 +1000,10 @@ static void build_voice_assignment(const synth_chord_t *chord,
         assignments[2].note = chord->notes[2];
     }
 
-    assignments[3].enabled = true;
-    assignments[3].note = transpose_midi_saturating(chord->notes[0], -24);
+    if (chord->note_count >= 3) {
+        assignments[3].enabled = true;
+        assignments[3].note = transpose_midi_saturating(chord->notes[0], -24);
+    }
 
     if (chord->note_count > 3) {
         assignments[4].enabled = true;
@@ -1216,6 +1218,56 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
              (unsigned)allocated_patch_osc_count(),
              assignment_log);
     return ESP_OK;
+}
+
+esp_err_t synth_amy_chord_voice_on(uint8_t slot, const synth_chord_t *chord, uint8_t voice_index)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (slot >= SYNTH_CHORD_BUTTON_COUNT || chord == NULL || chord->note_count == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    if (runtime->backend == AMY_SOUND_BACKEND_PATCH && !s_patch_loaded) {
+        configure_patch_synth(runtime);
+    }
+
+    amy_voice_assignment_t assignments[AMY_MUSICAL_VOICE_COUNT];
+    build_voice_assignment(chord, assignments);
+
+    const uint8_t *priority = role_priority_for_runtime(runtime);
+    uint8_t limit = runtime_voice_limit(runtime);
+    uint8_t played = 0;
+    uint8_t available = 0;
+
+    for (uint8_t index = 0; index < AMY_MUSICAL_VOICE_COUNT; ++index) {
+        uint8_t role = priority[index];
+        if (role >= AMY_MUSICAL_VOICE_COUNT || !assignments[role].enabled) {
+            continue;
+        }
+        if (available == voice_index) {
+            if (played >= limit) {
+                return ESP_ERR_NOT_SUPPORTED;
+            }
+            play_voice(slot, role, assignments[role].note, runtime);
+            ESP_LOGD(TAG,
+                     "voice on slot=%u role=%s note=%u active_oscs=%u alloc_oscs=%u",
+                     slot + 1,
+                     VOICE_ROLE_NAMES[role],
+                     assignments[role].note,
+                     (unsigned)active_osc_count(),
+                     (unsigned)allocated_patch_osc_count());
+            return ESP_OK;
+        }
+        ++available;
+        if (played < limit) {
+            ++played;
+        }
+    }
+
+    return ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t synth_amy_all_off(void)

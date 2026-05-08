@@ -70,6 +70,11 @@ void play_ui_model_init(play_ui_model_t *model)
     model->sound = SYNTH_SOUND_SAW;
     model->mode = SYNTH_PLAY_MODE_PLAY;
     model->bpm = 120;
+    model->strum_speed = SYNTH_STRUM_SPEED_MEDIUM;
+    model->arp_pattern = SYNTH_ARP_PATTERN_UP;
+    model->arp_rate = SYNTH_RHYTHM_RATE_EIGHTH;
+    model->arp_chord_mode = SYNTH_ARP_CHORD_MODE_ARP_ONLY;
+    model->repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH;
     model->effect_index = PLAY_UI_EFFECT_JOYSTICK;
     model->wheel_percent = 100;
     model->joystick_direction = CONTROL_JOYSTICK_CENTER;
@@ -136,7 +141,7 @@ static void draw_header(pocket_oled_t *display, const char *title)
 
 static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
 {
-    draw_rowf(display, 0, "%s %3u", synth_play_mode_name(model->mode), model->bpm);
+    draw_rowf(display, 0, "%s %3u", synth_play_mode_short_name(model->mode), model->bpm);
     draw_rowf(display, 1, "KEY %s %s O%+d",
               synth_key_name(model->key),
               synth_scale_name(model->scale),
@@ -154,6 +159,45 @@ static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
               pressed_char(model->held_mask, 5),
               pressed_char(model->held_mask, 6));
     draw_status_row(display, model);
+}
+
+static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model_t *model)
+{
+    switch (model->mode) {
+    case SYNTH_PLAY_MODE_STRUM:
+        draw_rowf(display,
+                  row,
+                  "SPEED %s %ums",
+                  synth_strum_speed_name(model->strum_speed),
+                  synth_strum_speed_delay_ms(model->strum_speed));
+        break;
+    case SYNTH_PLAY_MODE_ARPEGGIO:
+        draw_rowf(display,
+                  row,
+                  "%s %s",
+                  synth_arp_pattern_name(model->arp_pattern),
+                  synth_rhythm_rate_name(model->arp_rate));
+        draw_rowf(display,
+                  row + 1,
+                  "%.21s",
+                  synth_arp_chord_mode_name(model->arp_chord_mode));
+        break;
+    case SYNTH_PLAY_MODE_REPEAT:
+        draw_rowf(display, row, "RATE %s", synth_rhythm_rate_name(model->repeat_rate));
+        break;
+    case SYNTH_PLAY_MODE_PLAY:
+        pocket_oled_draw_text_row(display, row, "PRESS = CHORD");
+        break;
+    case SYNTH_PLAY_MODE_LEAD:
+        pocket_oled_draw_text_row(display, row, "ROOT NOTE ONLY");
+        break;
+    case SYNTH_PLAY_MODE_DRONE:
+        pocket_oled_draw_text_row(display, row, "PRESS = LATCH");
+        break;
+    default:
+        pocket_oled_draw_text_row(display, row, "WARN: NOT IMPLEMENTED");
+        break;
+    }
 }
 
 static void draw_key_menu(pocket_oled_t *display, const play_ui_model_t *model)
@@ -205,12 +249,25 @@ static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model
 
 static void draw_mode_menu(pocket_oled_t *display, const play_ui_model_t *model)
 {
-    draw_header(display, "MODE TEMPO");
-    draw_rowf(display, 2, "MODE %s", synth_play_mode_name(model->mode));
-    draw_rowf(display, 3, "BPM  %u", model->bpm);
-    pocket_oled_draw_text_row(display, 4, "LOOPER OFF");
-    pocket_oled_draw_text_row(display, 5, "DRUMS  OFF");
-    pocket_oled_draw_text_row(display, 6, "L/R BPM U/D MODE");
+    if (model->mode_bpm_submenu) {
+        draw_header(display, "RED BPM");
+        draw_rowf(display, 2, "TEMPO %3u BPM", model->bpm);
+        pocket_oled_draw_text_row(display, 4, "L/R ADJUST");
+        pocket_oled_draw_text_row(display, 5, "U/D BACK");
+        pocket_oled_draw_text_row(display, 6, "RANGE 40-300");
+        draw_status_row(display, model);
+        return;
+    }
+
+    draw_header(display, "RED MODES");
+    draw_rowf(display, 1, "%02u/%02u %s",
+              (unsigned)(model->mode + 1),
+              (unsigned)SYNTH_PLAY_MODE_COUNT,
+              synth_play_mode_short_name(model->mode));
+    draw_rowf(display, 2, "%.21s", synth_play_mode_name(model->mode));
+    draw_mode_param(display, 3, model);
+    pocket_oled_draw_text_row(display, 5, "1-7 QUICK");
+    pocket_oled_draw_text_row(display, 6, "L/R MODE U BPM D PAR");
     draw_status_row(display, model);
 }
 

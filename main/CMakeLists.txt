@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "main.c"
+        "diagnostics/digital_silence.c"
+        "diagnostics/sine_gate.c"
         "esp_pocket_audio.c"
         "hmi/control_i2c.c"
         "hmi/controls.c"

@@ -29,6 +29,8 @@ extern "C" {
 #define ES8388_DACCONTROL3      0x19
 #define ES8388_DACCONTROL4      0x1a
 #define ES8388_DACCONTROL5      0x1b
+#define ES8388_DACCONTROL6      0x1c
+#define ES8388_DACCONTROL7      0x1d
 #define ES8388_DACCONTROL16     0x26
 #define ES8388_DACCONTROL17     0x27
 #define ES8388_DACCONTROL20     0x2a

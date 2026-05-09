@@ -36,7 +36,7 @@ typedef struct {
 static const char *TAG = "CONTROLS";
 static const TickType_t SERVICE_PERIOD_TICKS = pdMS_TO_TICKS(20);
 static const TickType_t HELD_LOG_TICKS = pdMS_TO_TICKS(500);
-static const float DIRECTION_AXIS_DEADZONE = 0.50f;
+static const float DIRECTION_AXIS_DEADZONE = 0.75f;
 static const float DIRECTION_DIAGONAL_AXIS_MIN = 0.55f;
 
 static const uint8_t PCF8574_ADDRS[] = {

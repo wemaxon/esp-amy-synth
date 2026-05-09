@@ -42,15 +42,8 @@
 #ifndef ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS
 #define ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS 2000
 #endif
-#ifndef ESP_POCKET_AUDIO_AMY_RAW_OSCS
-#define ESP_POCKET_AUDIO_AMY_RAW_OSCS 18
-#endif
 
 #define AMY_MUSICAL_VOICE_COUNT 6
-#define AMY_RAW_OSC_COUNT ESP_POCKET_AUDIO_AMY_RAW_OSCS
-#if AMY_RAW_OSC_COUNT < AMY_MUSICAL_VOICE_COUNT
-#error "ESP_POCKET_AUDIO_AMY_RAW_OSCS must be at least AMY_MUSICAL_VOICE_COUNT"
-#endif
 #define AMY_PATCH_SYNTH 0
 #define AMY_JUNO_OSCS_PER_VOICE 5
 #define AMY_DX7_OSCS_PER_VOICE 8
@@ -96,21 +89,9 @@ typedef struct {
     bool active;
     amy_sound_backend_t backend;
     uint8_t slot;
-    uint8_t role;
-    uint8_t osc;
     uint8_t note;
     uint32_t age;
-    uint32_t release_ms;
 } amy_voice_t;
-
-typedef struct {
-    bool allocated;
-    bool releasing;
-    uint8_t role;
-    uint8_t note;
-    uint32_t age;
-    int64_t release_done_us;
-} amy_raw_osc_t;
 
 typedef struct {
     bool enabled;
@@ -142,34 +123,6 @@ static const uint8_t RAW_ROLE_PRIORITY[AMY_MUSICAL_VOICE_COUNT] = {
 };
 static const uint8_t PATCH_ROLE_PRIORITY[AMY_MUSICAL_VOICE_COUNT] = {
     0, 1, 2, 4, 3, 5,
-};
-
-static const float SOUND_OUTPUT_GAIN[SYNTH_SOUND_COUNT] = {
-    [SYNTH_SOUND_SAW] = 0.82f,
-    [SYNTH_SOUND_SINE] = 1.08f,
-    [SYNTH_SOUND_TRIANGLE] = 1.02f,
-    [SYNTH_SOUND_SQUARE] = 0.88f,
-    [SYNTH_SOUND_FM_EPIANO] = 1.42f,
-    [SYNTH_SOUND_FM_BELL] = 1.55f,
-    [SYNTH_SOUND_FM_HX7] = 1.55f,
-    [SYNTH_SOUND_PIANO] = 1.28f,
-    [SYNTH_SOUND_STRINGS] = 1.00f,
-    [SYNTH_SOUND_FLUTE] = 1.18f,
-    [SYNTH_SOUND_BRASS] = 1.00f,
-    [SYNTH_SOUND_CLARINET] = 1.15f,
-    [SYNTH_SOUND_WURLI] = 1.42f,
-    [SYNTH_SOUND_VOX_AHH] = 1.08f,
-    [SYNTH_SOUND_VIBRAPHONE] = 1.38f,
-    [SYNTH_SOUND_ACOUSTIC] = 1.42f,
-    [SYNTH_SOUND_HARP] = 1.42f,
-    [SYNTH_SOUND_HUMMING] = 1.15f,
-    [SYNTH_SOUND_ROBBO] = 1.18f,
-    [SYNTH_SOUND_SHUTTER] = 0.88f,
-    [SYNTH_SOUND_JUNO_POLY] = 0.96f,
-    [SYNTH_SOUND_OCEAN_PAD] = 1.10f,
-    [SYNTH_SOUND_SAWSQUARE] = 0.82f,
-    [SYNTH_SOUND_MIC_SAMPLE] = 1.00f,
-    [SYNTH_SOUND_USER_SAMPLE] = 1.00f,
 };
 
 static const float FILTER_CUTOFF_MIN_HZ = 20.0f;
@@ -276,7 +229,6 @@ static const esp_pocket_audio_hw_t *s_hw;
 static TaskHandle_t s_audio_task;
 static bool s_initialized;
 static amy_voice_t s_voices[AMY_MUSICAL_VOICE_COUNT];
-static amy_raw_osc_t s_raw_oscs[AMY_RAW_OSC_COUNT];
 static uint32_t s_voice_age;
 static synth_sound_t s_sound = SYNTH_SOUND_SAW;
 static bool s_patch_loaded;
@@ -305,14 +257,6 @@ static float amy_external_coef(uint16_t channel)
     default:
         return 0.0f;
     }
-}
-
-static float sound_output_gain(synth_sound_t sound)
-{
-    if (sound >= SYNTH_SOUND_COUNT || SOUND_OUTPUT_GAIN[sound] <= 0.0f) {
-        return 1.0f;
-    }
-    return SOUND_OUTPUT_GAIN[sound];
 }
 
 static float clamp_float(float value, float min_value, float max_value)
@@ -373,18 +317,9 @@ static uint8_t runtime_voice_limit(const amy_sound_runtime_t *runtime)
 static uint16_t active_osc_count(void)
 {
     const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    uint16_t per_voice = runtime->backend == AMY_SOUND_BACKEND_RAW ? 1U : runtime->oscs_per_voice;
     uint16_t active = 0;
 
-    if (runtime->backend == AMY_SOUND_BACKEND_RAW || runtime->backend == AMY_SOUND_BACKEND_PCM) {
-        for (uint8_t osc = 0; osc < AMY_RAW_OSC_COUNT; ++osc) {
-            if (s_raw_oscs[osc].allocated) {
-                ++active;
-            }
-        }
-        return active;
-    }
-
-    uint16_t per_voice = runtime->oscs_per_voice;
     for (uint8_t voice = 0; voice < AMY_MUSICAL_VOICE_COUNT; ++voice) {
         if (s_voices[voice].active) {
             active = (uint16_t)(active + per_voice);
@@ -399,18 +334,6 @@ static uint16_t allocated_patch_osc_count(void)
         return 0;
     }
     return (uint16_t)s_patch_voice_count * (uint16_t)s_patch_oscs_per_voice;
-}
-
-static void cleanup_raw_osc_releases(void)
-{
-    int64_t now_us = esp_timer_get_time();
-    for (uint8_t osc = 0; osc < AMY_RAW_OSC_COUNT; ++osc) {
-        if (s_raw_oscs[osc].allocated &&
-            s_raw_oscs[osc].releasing &&
-            now_us >= s_raw_oscs[osc].release_done_us) {
-            memset(&s_raw_oscs[osc], 0, sizeof(s_raw_oscs[osc]));
-        }
-    }
 }
 
 static void set_amp_envelope(amy_event *event, const amy_raw_profile_t *profile)
@@ -457,67 +380,15 @@ static void amy_note_off_raw(uint8_t osc)
     amy_add_event(&event);
 }
 
-static uint8_t allocate_raw_osc(void)
+static void amy_note_on_raw(uint8_t voice, uint8_t midi_note, const amy_sound_runtime_t *runtime)
 {
-    cleanup_raw_osc_releases();
-
-    for (uint8_t osc = 0; osc < AMY_RAW_OSC_COUNT; ++osc) {
-        if (!s_raw_oscs[osc].allocated) {
-            return osc;
-        }
-    }
-
-    uint8_t oldest_releasing = UINT8_MAX;
-    uint32_t oldest_age = UINT32_MAX;
-    for (uint8_t osc = 0; osc < AMY_RAW_OSC_COUNT; ++osc) {
-        if (s_raw_oscs[osc].releasing && s_raw_oscs[osc].age < oldest_age) {
-            oldest_releasing = osc;
-            oldest_age = s_raw_oscs[osc].age;
-        }
-    }
-
-    if (oldest_releasing != UINT8_MAX) {
-        amy_note_off_raw(oldest_releasing);
-        memset(&s_raw_oscs[oldest_releasing], 0, sizeof(s_raw_oscs[oldest_releasing]));
-        return oldest_releasing;
-    }
-
-    return UINT8_MAX;
-}
-
-static void mark_raw_osc_active(uint8_t osc, uint8_t role, uint8_t note)
-{
-    if (osc >= AMY_RAW_OSC_COUNT) {
-        return;
-    }
-    s_raw_oscs[osc].allocated = true;
-    s_raw_oscs[osc].releasing = false;
-    s_raw_oscs[osc].role = role;
-    s_raw_oscs[osc].note = note;
-    s_raw_oscs[osc].age = ++s_voice_age;
-    s_raw_oscs[osc].release_done_us = 0;
-}
-
-static void mark_raw_osc_releasing(uint8_t osc, uint32_t release_ms)
-{
-    if (osc >= AMY_RAW_OSC_COUNT || !s_raw_oscs[osc].allocated) {
-        return;
-    }
-
-    int64_t release_us = ((int64_t)release_ms + 20) * 1000;
-    s_raw_oscs[osc].releasing = true;
-    s_raw_oscs[osc].release_done_us = esp_timer_get_time() + release_us;
-}
-
-static void amy_note_on_raw(uint8_t osc, uint8_t role, uint8_t midi_note, const amy_sound_runtime_t *runtime)
-{
-    if (osc >= AMY_RAW_OSC_COUNT || role >= AMY_MUSICAL_VOICE_COUNT || runtime == NULL) {
+    if (voice >= AMY_MUSICAL_VOICE_COUNT || runtime == NULL) {
         return;
     }
 
     const amy_raw_profile_t *profile = &runtime->raw;
     amy_event event = amy_default_event();
-    event.osc = osc;
+    event.osc = voice;
     event.wave = profile->wave;
     if (runtime->backend == AMY_SOUND_BACKEND_PCM) {
         event.preset = runtime->pcm_preset;
@@ -525,7 +396,7 @@ static void amy_note_on_raw(uint8_t osc, uint8_t role, uint8_t midi_note, const 
     }
     event.midi_note = midi_note;
     event.velocity = runtime->velocity > 0.0f ? runtime->velocity : RAW_NOTE_VELOCITY;
-    event.amp_coefs[COEF_CONST] = RAW_NOTE_AMP * profile->amp * VOICE_ROLE_AMPS[role];
+    event.amp_coefs[COEF_CONST] = RAW_NOTE_AMP * profile->amp * VOICE_ROLE_AMPS[voice];
     event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
     event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
     event.pan_coefs[COEF_CONST] = 0.5f;
@@ -557,35 +428,28 @@ static void apply_raw_filter(uint8_t voice)
 {
     const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
     if (voice >= AMY_MUSICAL_VOICE_COUNT ||
-        !s_voices[voice].active ||
         (runtime->backend != AMY_SOUND_BACKEND_RAW && runtime->backend != AMY_SOUND_BACKEND_PCM)) {
         return;
     }
 
     amy_event event = amy_default_event();
-    event.osc = s_voices[voice].osc;
+    event.osc = voice;
     fill_raw_filter_event(&event, &runtime->raw);
     amy_add_event(&event);
 }
 
 static void apply_raw_lfo(uint8_t voice)
 {
-    if (voice >= AMY_MUSICAL_VOICE_COUNT || !s_voices[voice].active) {
-        return;
-    }
     amy_event event = amy_default_event();
-    event.osc = s_voices[voice].osc;
+    event.osc = voice;
     event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
     amy_add_event(&event);
 }
 
 static void apply_raw_tremolo(uint8_t voice)
 {
-    if (voice >= AMY_MUSICAL_VOICE_COUNT || !s_voices[voice].active) {
-        return;
-    }
     amy_event event = amy_default_event();
-    event.osc = s_voices[voice].osc;
+    event.osc = voice;
     event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
     amy_add_event(&event);
 }
@@ -663,11 +527,10 @@ static void release_voice(uint8_t voice)
     if (s_voices[voice].backend == AMY_SOUND_BACKEND_PATCH) {
         amy_note_off_patch(s_voices[voice].note);
     } else {
-        amy_note_off_raw(s_voices[voice].osc);
-        mark_raw_osc_releasing(s_voices[voice].osc, s_voices[voice].release_ms);
+        amy_note_off_raw(voice);
     }
 
-    memset(&s_voices[voice], 0, sizeof(s_voices[voice]));
+    s_voices[voice].active = false;
 }
 
 static void configure_patch_synth(const amy_sound_runtime_t *runtime)
@@ -990,54 +853,6 @@ static void apply_flanger(int16_t *block)
     }
 }
 
-static int16_t soft_limit_sample(float sample)
-{
-    float x = sample / 32768.0f;
-    float sign = x < 0.0f ? -1.0f : 1.0f;
-    float ax = fabsf(x);
-
-    if (ax <= 0.82f) {
-        return clamp_int16(sample);
-    }
-
-    float over = ax - 0.82f;
-    float limited = 0.82f + (over / (1.0f + over * 3.0f));
-    if (limited > 0.995f) {
-        limited = 0.995f;
-    }
-    return clamp_int16(sign * limited * 32767.0f);
-}
-
-static void apply_sound_gain(int16_t *block)
-{
-    if (block == NULL) {
-        return;
-    }
-
-    float gain = sound_output_gain(s_sound);
-    if (fabsf(gain - 1.0f) < 0.001f) {
-        return;
-    }
-
-    for (uint16_t i = 0; i < AMY_BLOCK_SIZE * AMY_NCHANS; ++i) {
-        block[i] = soft_limit_sample((float)block[i] * gain);
-    }
-}
-
-static void apply_output_limiter(int16_t *block)
-{
-    if (block == NULL) {
-        return;
-    }
-
-    for (uint16_t i = 0; i < AMY_BLOCK_SIZE * AMY_NCHANS; ++i) {
-        float sample = (float)block[i];
-        if (fabsf(sample) > 26869.0f) {
-            block[i] = soft_limit_sample(sample);
-        }
-    }
-}
-
 static void perf_record_block(uint32_t render_us, uint32_t write_us, int64_t now_us)
 {
 #if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED
@@ -1202,46 +1017,6 @@ static void build_voice_assignment(const synth_chord_t *chord,
     }
 }
 
-static const uint8_t *role_priority_for_runtime(const amy_sound_runtime_t *runtime);
-
-static uint8_t build_limited_voice_assignment(const synth_chord_t *chord,
-                                              const amy_sound_runtime_t *runtime,
-                                              amy_voice_assignment_t desired[AMY_MUSICAL_VOICE_COUNT],
-                                              char *assignment_log,
-                                              size_t assignment_log_size,
-                                              size_t *assignment_log_used)
-{
-    amy_voice_assignment_t requested[AMY_MUSICAL_VOICE_COUNT];
-    build_voice_assignment(chord, requested);
-    memset(desired, 0, sizeof(amy_voice_assignment_t) * AMY_MUSICAL_VOICE_COUNT);
-
-    const uint8_t *priority = role_priority_for_runtime(runtime);
-    uint8_t limit = runtime_voice_limit(runtime);
-    uint8_t played = 0;
-
-    for (uint8_t index = 0; index < AMY_MUSICAL_VOICE_COUNT; ++index) {
-        uint8_t role = priority[index];
-        if (role >= AMY_MUSICAL_VOICE_COUNT || !requested[role].enabled) {
-            continue;
-        }
-
-        if (played >= limit) {
-            append_note_log(assignment_log,
-                            assignment_log_size,
-                            assignment_log_used,
-                            "skip-",
-                            role,
-                            requested[role].note);
-            continue;
-        }
-
-        desired[role] = requested[role];
-        ++played;
-    }
-
-    return played;
-}
-
 static const uint8_t *role_priority_for_runtime(const amy_sound_runtime_t *runtime)
 {
     if (runtime == NULL || runtime->backend == AMY_SOUND_BACKEND_RAW ||
@@ -1257,39 +1032,19 @@ static void play_voice(uint8_t slot, uint8_t role, uint8_t note, const amy_sound
         return;
     }
 
-    if (s_voices[role].active &&
-        s_voices[role].backend == runtime->backend &&
-        s_voices[role].note == note) {
-        s_voices[role].slot = slot;
-        return;
-    }
-
-    if (s_voices[role].active) {
-        release_voice(role);
-    }
+    release_voice(role);
 
     if (runtime->backend == AMY_SOUND_BACKEND_PATCH) {
         amy_note_on_patch(note, runtime);
-        s_voices[role].osc = role;
     } else {
-        uint8_t osc = allocate_raw_osc();
-        if (osc == UINT8_MAX) {
-            ESP_LOGW(TAG, "no raw osc available for role=%s note=%u", VOICE_ROLE_NAMES[role], note);
-            return;
-        }
-        amy_note_on_raw(osc, role, note, runtime);
-        mark_raw_osc_active(osc, role, note);
-        s_voices[role].osc = osc;
+        amy_note_on_raw(role, note, runtime);
     }
 
     s_voices[role].active = true;
     s_voices[role].backend = runtime->backend;
     s_voices[role].slot = slot;
-    s_voices[role].role = role;
     s_voices[role].note = note;
     s_voices[role].age = ++s_voice_age;
-    s_voices[role].release_ms =
-        (runtime->backend == AMY_SOUND_BACKEND_PATCH) ? 0 : runtime->raw.release_ms;
 }
 
 static void audio_task(void *arg)
@@ -1300,10 +1055,7 @@ static void audio_task(void *arg)
         int64_t render_start_us = esp_timer_get_time();
         int16_t *block = amy_update();
         apply_flanger(block);
-        apply_sound_gain(block);
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
-        apply_output_limiter(block);
-        cleanup_raw_osc_releases();
         int64_t render_done_us = esp_timer_get_time();
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(
@@ -1377,14 +1129,13 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
 
     s_initialized = true;
     ESP_LOGI(TAG,
-             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u raw_tail_oscs=%u juno=%u dx7=%u piano=%u pcm=%u stereo_pairs=%s perf_log=%s",
+             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u juno=%u dx7=%u piano=%u pcm=%u stereo_pairs=%s perf_log=%s",
              AMY_SAMPLE_RATE,
              AMY_NCHANS,
              AMY_BLOCK_SIZE,
              SYNTH_AUDIO_BLOCK_US,
              (unsigned)config.max_oscs,
              (unsigned)config.max_voices,
-             (unsigned)AMY_RAW_OSC_COUNT,
              (unsigned)ESP_POCKET_AUDIO_AMY_JUNO_VOICES,
              (unsigned)ESP_POCKET_AUDIO_AMY_DX7_VOICES,
              (unsigned)ESP_POCKET_AUDIO_AMY_PIANO_VOICES,
@@ -1417,48 +1168,47 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
         return ESP_ERR_INVALID_ARG;
     }
 
+    ESP_RETURN_ON_ERROR(synth_amy_all_off(), TAG, "all off failed");
+
     const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
     if (runtime->backend == AMY_SOUND_BACKEND_PATCH && !s_patch_loaded) {
         configure_patch_synth(runtime);
     }
 
-    amy_voice_assignment_t desired[AMY_MUSICAL_VOICE_COUNT];
-    char assignment_log[224] = {0};
-    size_t used = 0;
-    uint8_t played = build_limited_voice_assignment(chord,
-                                                    runtime,
-                                                    desired,
-                                                    assignment_log,
-                                                    sizeof(assignment_log),
-                                                    &used);
-
-    for (uint8_t role = 0; role < AMY_MUSICAL_VOICE_COUNT; ++role) {
-        if (!s_voices[role].active) {
-            continue;
-        }
-        if (!desired[role].enabled ||
-            s_voices[role].backend != runtime->backend ||
-            s_voices[role].note != desired[role].note) {
-            release_voice(role);
-        }
-    }
+    amy_voice_assignment_t assignments[AMY_MUSICAL_VOICE_COUNT];
+    build_voice_assignment(chord, assignments);
 
     const uint8_t *priority = role_priority_for_runtime(runtime);
+    uint8_t limit = runtime_voice_limit(runtime);
+    uint8_t played = 0;
+    char assignment_log[224] = {0};
+    size_t used = 0;
+
     for (uint8_t index = 0; index < AMY_MUSICAL_VOICE_COUNT; ++index) {
         uint8_t role = priority[index];
-        if (role >= AMY_MUSICAL_VOICE_COUNT || !desired[role].enabled) {
+        if (role >= AMY_MUSICAL_VOICE_COUNT) {
             continue;
         }
-        bool kept = s_voices[role].active &&
-            s_voices[role].backend == runtime->backend &&
-            s_voices[role].note == desired[role].note;
-        play_voice(slot, role, desired[role].note, runtime);
+        if (!assignments[role].enabled) {
+            continue;
+        }
+        if (played >= limit) {
+            append_note_log(assignment_log,
+                            sizeof(assignment_log),
+                            &used,
+                            "skip-",
+                            role,
+                            assignments[role].note);
+            continue;
+        }
+        play_voice(slot, role, assignments[role].note, runtime);
         append_note_log(assignment_log,
                         sizeof(assignment_log),
                         &used,
-                        kept ? "keep-" : "",
+                        "",
                         role,
-                        desired[role].note);
+                        assignments[role].note);
+        ++played;
     }
 
     ESP_LOGI(TAG,
@@ -1468,7 +1218,7 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
              synth_sound_engine_name(s_sound),
              backend_name(runtime->backend),
              played,
-             runtime_voice_limit(runtime),
+             limit,
              (unsigned)active_osc_count(),
              (unsigned)allocated_patch_osc_count(),
              assignment_log);

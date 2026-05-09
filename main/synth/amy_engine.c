@@ -81,6 +81,7 @@ typedef struct {
     int16_t pcm_preset;
     bool pcm_loop;
     float velocity;
+    float trim_gain;
     const char *patch_label;
     amy_raw_profile_t raw;
 } amy_sound_runtime_t;
@@ -112,6 +113,10 @@ static const char *TAG = "SYNTH_AMY";
 
 static const float RAW_NOTE_VELOCITY = 0.45f;
 static const float RAW_NOTE_AMP = 0.62f;
+static const float MASTER_VOLUME_MIN_DB = -56.0f;
+static const float MASTER_VOLUME_MAX_DB = -3.0f;
+static const float MASTER_VOLUME_MUTE_THRESHOLD = 0.005f;
+static const float AMY_GLOBAL_VOLUME_UNITY = 10.0f;
 static const float VOICE_ROLE_AMPS[AMY_MUSICAL_VOICE_COUNT] = {
     0.90f, 0.64f, 0.64f, 0.34f, 0.52f, 0.28f,
 };
@@ -164,24 +169,26 @@ static const BaseType_t AUDIO_TASK_CORE = 1;
         .release_ms = (_release), \
     }
 
-#define RAW_SOUND(_wave, _amp, _duty, _cutoff, _res, _attack, _decay, _sustain, _release) \
+#define RAW_SOUND(_wave, _amp, _duty, _cutoff, _res, _attack, _decay, _sustain, _release, _trim) \
     { \
         .backend = AMY_SOUND_BACKEND_RAW, \
         .velocity = RAW_NOTE_VELOCITY, \
+        .trim_gain = (_trim), \
         .raw = RAW_PROFILE((_wave), (_amp), (_duty), (_cutoff), (_res), (_attack), (_decay), (_sustain), (_release)), \
     }
 
-#define PATCH_SOUND(_patch, _voices, _oscs, _velocity, _label) \
+#define PATCH_SOUND(_patch, _voices, _oscs, _velocity, _trim, _label) \
     { \
         .backend = AMY_SOUND_BACKEND_PATCH, \
         .patch_number = (_patch), \
         .patch_voices = (_voices), \
         .oscs_per_voice = (_oscs), \
         .velocity = (_velocity), \
+        .trim_gain = (_trim), \
         .patch_label = (_label), \
     }
 
-#define PCM_SOUND(_preset, _loop, _velocity) \
+#define PCM_SOUND(_preset, _loop, _velocity, _trim) \
     { \
         .backend = AMY_SOUND_BACKEND_PCM, \
         .pcm_preset = (_preset), \
@@ -189,35 +196,36 @@ static const BaseType_t AUDIO_TASK_CORE = 1;
         .patch_voices = ESP_POCKET_AUDIO_AMY_PCM_VOICES, \
         .oscs_per_voice = AMY_PCM_OSCS_PER_VOICE, \
         .velocity = (_velocity), \
+        .trim_gain = (_trim), \
         .raw = RAW_PROFILE(PCM, 0.70f, 0.5f, 18000.0f, 0.0f, 2, 260, 0.70f, 500), \
     }
 
 static const amy_sound_runtime_t SOUND_RUNTIME[SYNTH_SOUND_COUNT] = {
-    [SYNTH_SOUND_SAW] = RAW_SOUND(SAW_UP, 0.72f, 0.50f, 16000.0f, 0.20f, 5, 450, 0.74f, 850),
-    [SYNTH_SOUND_SINE] = RAW_SOUND(SINE, 0.86f, 0.50f, 20000.0f, 0.00f, 6, 550, 0.78f, 900),
-    [SYNTH_SOUND_TRIANGLE] = RAW_SOUND(TRIANGLE, 0.82f, 0.50f, 16000.0f, 0.08f, 8, 620, 0.72f, 900),
-    [SYNTH_SOUND_SQUARE] = RAW_SOUND(PULSE, 0.76f, 0.50f, 14500.0f, 0.12f, 4, 460, 0.70f, 700),
-    [SYNTH_SOUND_FM_EPIANO] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.52f, "DX7 E.PIANO 1"),
-    [SYNTH_SOUND_FM_BELL] = PATCH_SOUND(153, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.46f, "DX7 TUB BELLS"),
-    [SYNTH_SOUND_FM_HX7] = PATCH_SOUND(141, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.44f, "DX7 SYN-LEAD 1"),
-    [SYNTH_SOUND_PIANO] = PATCH_SOUND(256, ESP_POCKET_AUDIO_AMY_PIANO_VOICES, AMY_PIANO_OSCS_PER_VOICE, 0.58f, "AMY PIANO"),
-    [SYNTH_SOUND_STRINGS] = PATCH_SOUND(64, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, "JUNO B11 STRINGS"),
-    [SYNTH_SOUND_FLUTE] = PATCH_SOUND(3, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, "JUNO A14 FLUTES"),
-    [SYNTH_SOUND_BRASS] = PATCH_SOUND(0, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.60f, "JUNO A11 BRASS"),
-    [SYNTH_SOUND_CLARINET] = PATCH_SOUND(105, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, "JUNO B62 CLARINET"),
-    [SYNTH_SOUND_WURLI] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, "DX7 E.PIANO 1"),
-    [SYNTH_SOUND_VOX_AHH] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, "JUNO A17 CHOIR"),
-    [SYNTH_SOUND_VIBRAPHONE] = PATCH_SOUND(148, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, "DX7 VIBE 1"),
-    [SYNTH_SOUND_ACOUSTIC] = PATCH_SOUND(139, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.48f, "DX7 GUITAR 1"),
-    [SYNTH_SOUND_HARP] = PATCH_SOUND(188, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, "DX7 HARP 1"),
-    [SYNTH_SOUND_HUMMING] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.58f, "JUNO A17 CHOIR"),
-    [SYNTH_SOUND_ROBBO] = PATCH_SOUND(142, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, "DX7 BASS 1"),
-    [SYNTH_SOUND_SHUTTER] = PATCH_SOUND(61, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.58f, "JUNO A86 HAND CLAPS"),
-    [SYNTH_SOUND_JUNO_POLY] = PATCH_SOUND(47, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, "JUNO A68 SYNTH PAD"),
-    [SYNTH_SOUND_OCEAN_PAD] = PATCH_SOUND(101, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.56f, "JUNO B56 ETHEREAL"),
-    [SYNTH_SOUND_SAWSQUARE] = RAW_SOUND(PULSE, 0.78f, 0.42f, 12000.0f, 0.18f, 5, 430, 0.68f, 720),
-    [SYNTH_SOUND_MIC_SAMPLE] = PCM_SOUND(0, false, 0.60f),
-    [SYNTH_SOUND_USER_SAMPLE] = PCM_SOUND(1, false, 0.60f),
+    [SYNTH_SOUND_SAW] = RAW_SOUND(SAW_UP, 0.72f, 0.50f, 16000.0f, 0.20f, 5, 450, 0.74f, 850, 1.0f),
+    [SYNTH_SOUND_SINE] = RAW_SOUND(SINE, 0.86f, 0.50f, 20000.0f, 0.00f, 6, 550, 0.78f, 900, 1.0f),
+    [SYNTH_SOUND_TRIANGLE] = RAW_SOUND(TRIANGLE, 0.82f, 0.50f, 16000.0f, 0.08f, 8, 620, 0.72f, 900, 1.00f),
+    [SYNTH_SOUND_SQUARE] = RAW_SOUND(PULSE, 0.76f, 0.50f, 14500.0f, 0.12f, 4, 460, 0.70f, 700, 1.0f),
+    [SYNTH_SOUND_FM_EPIANO] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.52f, 1.41f, "DX7 E.PIANO 1"),
+    [SYNTH_SOUND_FM_BELL] = PATCH_SOUND(153, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.46f, 1.58f, "DX7 TUB BELLS"),
+    [SYNTH_SOUND_FM_HX7] = PATCH_SOUND(141, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.44f, 1.41f, "DX7 SYN-LEAD 1"),
+    [SYNTH_SOUND_PIANO] = PATCH_SOUND(256, ESP_POCKET_AUDIO_AMY_PIANO_VOICES, AMY_PIANO_OSCS_PER_VOICE, 0.58f, 1.00f, "AMY PIANO"),
+    [SYNTH_SOUND_STRINGS] = PATCH_SOUND(64, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, 0.71f, "JUNO B11 STRINGS"),
+    [SYNTH_SOUND_FLUTE] = PATCH_SOUND(3, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, 1.12f, "JUNO A14 FLUTES"),
+    [SYNTH_SOUND_BRASS] = PATCH_SOUND(0, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.60f, 0.79f, "JUNO A11 BRASS"),
+    [SYNTH_SOUND_CLARINET] = PATCH_SOUND(105, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, 1.12f, "JUNO B62 CLARINET"),
+    [SYNTH_SOUND_WURLI] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, 1.26f, "DX7 E.PIANO 1"),
+    [SYNTH_SOUND_VOX_AHH] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, 0.79f, "JUNO A17 CHOIR"),
+    [SYNTH_SOUND_VIBRAPHONE] = PATCH_SOUND(148, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, 1.41f, "DX7 VIBE 1"),
+    [SYNTH_SOUND_ACOUSTIC] = PATCH_SOUND(139, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.48f, 1.26f, "DX7 GUITAR 1"),
+    [SYNTH_SOUND_HARP] = PATCH_SOUND(188, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, 1.41f, "DX7 HARP 1"),
+    [SYNTH_SOUND_HUMMING] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.58f, 0.79f, "JUNO A17 CHOIR"),
+    [SYNTH_SOUND_ROBBO] = PATCH_SOUND(142, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, 0.89f, "DX7 BASS 1"),
+    [SYNTH_SOUND_SHUTTER] = PATCH_SOUND(61, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.58f, 0.56f, "JUNO A86 HAND CLAPS"),
+    [SYNTH_SOUND_JUNO_POLY] = PATCH_SOUND(47, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, 0.56f, "JUNO A68 SYNTH PAD"),
+    [SYNTH_SOUND_OCEAN_PAD] = PATCH_SOUND(101, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.56f, 0.25f, "JUNO B56 ETHEREAL"),
+    [SYNTH_SOUND_SAWSQUARE] = RAW_SOUND(PULSE, 0.78f, 0.42f, 12000.0f, 0.18f, 5, 430, 0.68f, 720, 0.50f),
+    [SYNTH_SOUND_MIC_SAMPLE] = PCM_SOUND(0, false, 0.60f, 1.00f),
+    [SYNTH_SOUND_USER_SAMPLE] = PCM_SOUND(1, false, 0.60f, 1.00f),
 };
 
 #undef PCM_SOUND
@@ -268,6 +276,38 @@ static float clamp_float(float value, float min_value, float max_value)
         return max_value;
     }
     return value;
+}
+
+static float db_to_gain(float db)
+{
+    return powf(10.0f, db / 20.0f);
+}
+
+static float master_volume_to_amy_volume(float normalized_volume)
+{
+    float normalized = clamp_float(normalized_volume, 0.0f, 1.0f);
+    if (normalized <= MASTER_VOLUME_MUTE_THRESHOLD) {
+        return 0.0f;
+    }
+
+    float shaped = sqrtf(normalized);
+    float db = MASTER_VOLUME_MIN_DB + shaped * (MASTER_VOLUME_MAX_DB - MASTER_VOLUME_MIN_DB);
+    return AMY_GLOBAL_VOLUME_UNITY * db_to_gain(db);
+}
+
+static float runtime_trim_gain(const amy_sound_runtime_t *runtime)
+{
+    if (runtime == NULL || runtime->trim_gain <= 0.0f) {
+        return 1.0f;
+    }
+    return clamp_float(runtime->trim_gain, 0.25f, 2.0f);
+}
+
+static void enqueue_master_volume(float normalized_volume)
+{
+    amy_event event = amy_default_event();
+    event.volume = master_volume_to_amy_volume(normalized_volume);
+    amy_add_event(&event);
 }
 
 static uint8_t clamp_voice_count(uint8_t count)
@@ -396,7 +436,8 @@ static void amy_note_on_raw(uint8_t voice, uint8_t midi_note, const amy_sound_ru
     }
     event.midi_note = midi_note;
     event.velocity = runtime->velocity > 0.0f ? runtime->velocity : RAW_NOTE_VELOCITY;
-    event.amp_coefs[COEF_CONST] = RAW_NOTE_AMP * profile->amp * VOICE_ROLE_AMPS[voice];
+    event.amp_coefs[COEF_CONST] =
+        RAW_NOTE_AMP * profile->amp * VOICE_ROLE_AMPS[voice] * runtime_trim_gain(runtime);
     event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
     event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
     event.pan_coefs[COEF_CONST] = 0.5f;
@@ -411,7 +452,8 @@ static void amy_note_on_patch(uint8_t midi_note, const amy_sound_runtime_t *runt
     amy_event event = amy_default_event();
     event.synth = AMY_PATCH_SYNTH;
     event.midi_note = midi_note;
-    event.velocity = runtime != NULL ? runtime->velocity : 0.55f;
+    float velocity = runtime != NULL ? runtime->velocity : 0.55f;
+    event.velocity = clamp_float(velocity * runtime_trim_gain(runtime), 0.0f, 1.0f);
     amy_add_event(&event);
 }
 
@@ -598,10 +640,11 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
     }
 
     ESP_LOGI(TAG,
-             "sound=%s engine=%s backend=%s%s%s",
+             "sound=%s engine=%s backend=%s trim=%.2f%s%s",
              synth_sound_name(sound),
              synth_sound_engine_name(sound),
              backend_name(runtime->backend),
+             runtime_trim_gain(runtime),
              runtime->patch_label != NULL ? " patch=" : "",
              runtime->patch_label != NULL ? runtime->patch_label : "");
     return ESP_OK;
@@ -613,10 +656,7 @@ esp_err_t synth_amy_set_volume(float normalized_volume)
         return ESP_ERR_INVALID_STATE;
     }
 
-    amy_event event = amy_default_event();
-    normalized_volume = clamp_float(normalized_volume, 0.0f, 1.0f);
-    event.volume = normalized_volume * 10.0f;
-    amy_add_event(&event);
+    enqueue_master_volume(normalized_volume);
     return ESP_OK;
 }
 
@@ -1108,6 +1148,7 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     config.max_sequencer_tags = 8;
     config.amy_external_coef_hook = amy_external_coef;
     amy_start(config);
+    enqueue_master_volume((float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f);
     amy_global.echo.max_delay_samples = SYNTH_DELAY_MAX_SAMPLES;
     memset(&s_perf, 0, sizeof(s_perf));
     ESP_RETURN_ON_ERROR(synth_looper_init(AMY_SAMPLE_RATE, AMY_NCHANS),

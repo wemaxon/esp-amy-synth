@@ -21,6 +21,8 @@ typedef struct {
     uint32_t record_position;
     uint32_t record_start_frame;
     uint32_t target_record_frames;
+    int32_t declick_offset;
+    uint16_t declick_remaining;
 } synth_looper_track_t;
 
 typedef struct {
@@ -30,6 +32,8 @@ typedef struct {
     uint32_t play_position;
     uint32_t record_position;
     uint32_t target_record_frames;
+    int32_t declick_offset;
+    uint16_t declick_remaining;
 } synth_looper_process_track_t;
 
 static const char *TAG = "SYNTH_LOOPER";
@@ -39,6 +43,7 @@ static const uint8_t LIVE_GAIN_DEN = 4;
 static const uint8_t LOOP_GAIN_NUM = 3;
 static const uint8_t LOOP_GAIN_DEN = 4;
 static const uint32_t MIN_RECORD_MS = 120;
+static const uint16_t LOOP_DECLICK_FRAMES = 128;
 
 static synth_looper_track_t s_tracks[SYNTH_LOOPER_TRACK_COUNT];
 static uint32_t s_sample_rate_hz;
@@ -121,6 +126,8 @@ static void clear_track_locked(uint8_t track)
     slot->record_position = 0;
     slot->record_start_frame = 0;
     slot->target_record_frames = 0;
+    slot->declick_offset = 0;
+    slot->declick_remaining = 0;
 }
 
 static void clear_all_locked(void)
@@ -158,6 +165,16 @@ static int16_t encode_sample(int32_t sample)
 static int32_t decode_sample(int16_t sample)
 {
     return ((int32_t)sample * LOOP_GAIN_NUM) / LOOP_GAIN_DEN;
+}
+
+static uint16_t declick_frames_for_length(uint32_t length_frames)
+{
+    uint32_t frames = LOOP_DECLICK_FRAMES;
+    uint32_t max_frames = length_frames / 4U;
+    if (frames > max_frames) {
+        frames = max_frames;
+    }
+    return (uint16_t)frames;
 }
 
 static int16_t clamp_i16(int32_t sample)
@@ -220,6 +237,8 @@ static void start_recording_locked(uint8_t track, uint32_t target_frames)
     slot->record_position = 0;
     slot->record_start_frame = 0;
     slot->target_record_frames = target_frames;
+    slot->declick_offset = 0;
+    slot->declick_remaining = 0;
 
     set_message_locked("REC");
 }
@@ -252,6 +271,8 @@ static void finalize_recording_locked(uint8_t track, bool auto_advance, bool com
     slot->record_start_frame = 0;
     slot->record_armed = false;
     slot->sync_to_master = false;
+    slot->declick_offset = 0;
+    slot->declick_remaining = 0;
     slot->state = SYNTH_LOOPER_TRACK_LOOPING;
 
     if (s_master_length_frames == 0 || track == 0) {
@@ -368,9 +389,30 @@ static void process_track_playback(synth_looper_process_track_t *track,
         track->play_position = 0;
     }
 
-    int32_t sample = decode_sample(track->samples[track->play_position++]);
+    uint32_t position = track->play_position;
+    int32_t sample = decode_sample(track->samples[position]);
+    bool wrapped = false;
+
+    track->play_position = position + 1U;
     if (track->play_position >= track->length_frames) {
         track->play_position = 0;
+        wrapped = true;
+    }
+
+    uint16_t declick_frames = declick_frames_for_length(track->length_frames);
+    if (declick_frames > 0 && track->declick_remaining > 0) {
+        sample += (track->declick_offset * (int32_t)track->declick_remaining) /
+                  (int32_t)declick_frames;
+        --track->declick_remaining;
+        if (track->declick_remaining == 0) {
+            track->declick_offset = 0;
+        }
+    }
+
+    if (wrapped && declick_frames > 0) {
+        int32_t next_sample = decode_sample(track->samples[0]);
+        track->declick_offset = sample - next_sample;
+        track->declick_remaining = declick_frames;
     }
     *mixed_sample += sample;
 }
@@ -424,6 +466,8 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
         process_tracks[i].play_position = s_tracks[i].play_position;
         process_tracks[i].record_position = s_tracks[i].record_position;
         process_tracks[i].target_record_frames = s_tracks[i].target_record_frames;
+        process_tracks[i].declick_offset = s_tracks[i].declick_offset;
+        process_tracks[i].declick_remaining = s_tracks[i].declick_remaining;
         if (process_tracks[i].state == SYNTH_LOOPER_TRACK_RECORDING ||
             process_tracks[i].state == SYNTH_LOOPER_TRACK_LOOPING) {
             has_active_track = true;
@@ -468,6 +512,8 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
         }
         if (slot->state == SYNTH_LOOPER_TRACK_LOOPING) {
             slot->play_position = process_tracks[track].play_position;
+            slot->declick_offset = process_tracks[track].declick_offset;
+            slot->declick_remaining = process_tracks[track].declick_remaining;
         } else if (slot->state == SYNTH_LOOPER_TRACK_RECORDING) {
             slot->record_position = process_tracks[track].record_position;
             if (completed[track]) {

@@ -77,6 +77,7 @@ void play_ui_model_init(play_ui_model_t *model)
     model->repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH;
     model->effect_index = PLAY_UI_EFFECT_JOYSTICK;
     model->wheel_percent = 100;
+    model->volume_percent = 100;
     model->joystick_direction = CONTROL_JOYSTICK_CENTER;
     strlcpy(model->chord_name, "---", sizeof(model->chord_name));
     strlcpy(model->status, "READY", sizeof(model->status));
@@ -123,6 +124,18 @@ static void draw_header(pocket_oled_t *display, const char *title)
 {
     pocket_oled_draw_text_row(display, 0, title);
     oled_display_draw_hline(display, 0, 8, POCKET_OLED_WIDTH, true);
+}
+
+static void draw_volume(pocket_oled_t *display, const play_ui_model_t *model)
+{
+    uint8_t percent = model->volume_percent;
+    if (percent > 100) {
+        percent = 100;
+    }
+
+    char line[5];
+    snprintf(line, sizeof(line), "V%3u", (unsigned)percent);
+    pocket_oled_draw_text(display, POCKET_OLED_WIDTH - 24, 0, line);
 }
 
 static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
@@ -313,6 +326,7 @@ static void draw_display(pocket_oled_t *display, const play_ui_model_t *model)
         draw_home(display, model);
         break;
     }
+    draw_volume(display, model);
 }
 
 static void play_ui_task(void *arg)

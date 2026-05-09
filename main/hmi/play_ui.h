@@ -63,6 +63,7 @@ typedef struct {
     uint8_t tremolo_level;
     bool wheel_present;
     uint8_t wheel_percent;
+    uint8_t volume_percent;
     control_joystick_direction_t joystick_direction;
     synth_looper_snapshot_t looper;
     char chord_name[16];

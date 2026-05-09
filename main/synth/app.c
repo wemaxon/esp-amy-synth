@@ -41,6 +41,7 @@ typedef struct {
     TickType_t tremolo_last_tick;
     bool wheel_present;
     uint8_t wheel_percent;
+    uint8_t volume_percent;
     uint8_t last_applied_wheel_percent;
     control_joystick_direction_t last_menu_direction;
     control_joystick_direction_t last_play_direction;
@@ -136,6 +137,7 @@ static synth_app_state_t s_app = {
     .arp_chord_mode = SYNTH_ARP_CHORD_MODE_ARP_ONLY,
     .repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH,
     .wheel_percent = 100,
+    .volume_percent = 100,
     .last_applied_wheel_percent = UINT8_MAX,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
@@ -205,6 +207,7 @@ static void update_ui(void)
     model.tremolo_level = s_app.tremolo_level;
     model.wheel_present = s_app.wheel_present;
     model.wheel_percent = s_app.wheel_percent;
+    model.volume_percent = s_app.volume_percent;
     model.joystick_direction = s_app.joystick_direction;
     synth_looper_get_snapshot(&model.looper);
     strlcpy(model.chord_name, s_app.chord_name, sizeof(model.chord_name));
@@ -1365,6 +1368,7 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
         set_status("FILTER");
     } else {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(wheel->value));
+        s_app.volume_percent = wheel->percent;
         set_status("VOLUME");
     }
     return true;

@@ -69,6 +69,15 @@ extern "C" {
 #ifndef ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS
 #define ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS 2000
 #endif
+/* AMY internal profile dump. This requires the AMY component to be built with
+ * AMY_DEBUG; components/amy/CMakeLists.txt enables that for profiling builds.
+ */
+#ifndef ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED
+#define ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED 1
+#endif
+#ifndef ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS
+#define ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS 10000
+#endif
 
 /* Temporary firmware diagnostics. When enabled, the app skips AMY/synth startup
  * and runs the codec + controls with a continuous digital-zero I2S stream.

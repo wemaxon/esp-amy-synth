@@ -82,6 +82,7 @@ typedef struct {
     uint64_t write_us_total;
     uint64_t write_us_max;
     int64_t next_log_us;
+    int64_t next_profile_log_us;
 } amy_perf_stats_t;
 
 static const char *TAG = "SYNTH_AMY";
@@ -858,6 +859,7 @@ static void apply_flanger(int16_t *block)
 
 static void perf_record_block(uint32_t render_us, uint32_t write_us, int64_t now_us)
 {
+#if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED || ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED
 #if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED
     if (s_perf.next_log_us == 0) {
         s_perf.next_log_us =
@@ -877,47 +879,62 @@ static void perf_record_block(uint32_t render_us, uint32_t write_us, int64_t now
         ++s_perf.slow_blocks;
     }
 
-    if (now_us < s_perf.next_log_us || s_perf.blocks == 0) {
-        return;
+    if (now_us >= s_perf.next_log_us && s_perf.blocks > 0) {
+        uint32_t render_avg = (uint32_t)(s_perf.render_us_total / s_perf.blocks);
+        uint32_t write_avg = (uint32_t)(s_perf.write_us_total / s_perf.blocks);
+        float render_cpu_pct = ((float)render_avg * 100.0f) / (float)SYNTH_AUDIO_BLOCK_US;
+        uint32_t free_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        uint32_t min_heap = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+        uint32_t largest_heap = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        uint32_t internal_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        UBaseType_t stack_words = uxTaskGetStackHighWaterMark(NULL);
+
+        esp_log_level_t level = s_perf.slow_blocks > 0 ? ESP_LOG_WARN : ESP_LOG_INFO;
+        ESP_LOG_LEVEL(level,
+                      TAG,
+                      "perf blocks=%u active_oscs=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u i2s_us avg=%u max=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
+                      (unsigned)s_perf.blocks,
+                      (unsigned)active_osc_count(),
+                      (unsigned)allocated_patch_osc_count(),
+                      (unsigned)render_avg,
+                      (unsigned)s_perf.render_us_max,
+                      (unsigned)SYNTH_AUDIO_BLOCK_US,
+                      render_cpu_pct,
+                      (unsigned)s_perf.slow_blocks,
+                      (unsigned)write_avg,
+                      (unsigned)s_perf.write_us_max,
+                      (unsigned)free_heap,
+                      (unsigned)min_heap,
+                      (unsigned)largest_heap,
+                      (unsigned)internal_heap,
+                      (unsigned)stack_words);
+
+        s_perf.blocks = 0;
+        s_perf.slow_blocks = 0;
+        s_perf.render_us_total = 0;
+        s_perf.render_us_max = 0;
+        s_perf.write_us_total = 0;
+        s_perf.write_us_max = 0;
+        s_perf.next_log_us =
+            now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS * 1000);
     }
+#else
+    (void)render_us;
+    (void)write_us;
+#endif
 
-    uint32_t render_avg = (uint32_t)(s_perf.render_us_total / s_perf.blocks);
-    uint32_t write_avg = (uint32_t)(s_perf.write_us_total / s_perf.blocks);
-    float render_cpu_pct = ((float)render_avg * 100.0f) / (float)SYNTH_AUDIO_BLOCK_US;
-    uint32_t free_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_8BIT);
-    uint32_t min_heap = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
-    uint32_t largest_heap = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    uint32_t internal_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    UBaseType_t stack_words = uxTaskGetStackHighWaterMark(NULL);
-
-    esp_log_level_t level = s_perf.slow_blocks > 0 ? ESP_LOG_WARN : ESP_LOG_INFO;
-    ESP_LOG_LEVEL(level,
-                  TAG,
-                  "perf blocks=%u active_oscs=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u i2s_us avg=%u max=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
-                  (unsigned)s_perf.blocks,
-                  (unsigned)active_osc_count(),
-                  (unsigned)allocated_patch_osc_count(),
-                  (unsigned)render_avg,
-                  (unsigned)s_perf.render_us_max,
-                  (unsigned)SYNTH_AUDIO_BLOCK_US,
-                  render_cpu_pct,
-                  (unsigned)s_perf.slow_blocks,
-                  (unsigned)write_avg,
-                  (unsigned)s_perf.write_us_max,
-                  (unsigned)free_heap,
-                  (unsigned)min_heap,
-                  (unsigned)largest_heap,
-                  (unsigned)internal_heap,
-                  (unsigned)stack_words);
-
-    s_perf.blocks = 0;
-    s_perf.slow_blocks = 0;
-    s_perf.render_us_total = 0;
-    s_perf.render_us_max = 0;
-    s_perf.write_us_total = 0;
-    s_perf.write_us_max = 0;
-    s_perf.next_log_us =
-        now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS * 1000);
+#if ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED
+    if (s_perf.next_profile_log_us == 0) {
+        s_perf.next_profile_log_us =
+            now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS * 1000);
+    }
+    if (now_us >= s_perf.next_profile_log_us) {
+        ESP_LOGI(TAG, "AMY profile window follows");
+        amy_profiles_print();
+        s_perf.next_profile_log_us =
+            now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS * 1000);
+    }
+#endif
 #else
     (void)render_us;
     (void)write_us;

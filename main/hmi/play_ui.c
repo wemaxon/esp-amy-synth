@@ -231,6 +231,58 @@ static void draw_mode_menu(pocket_oled_t *display, const play_ui_model_t *model)
     draw_mode_param(display, 3, model);
 }
 
+static void draw_time_ms(pocket_oled_t *display, int row, const char *prefix, uint32_t ms)
+{
+    uint32_t total_seconds = ms / 1000U;
+    draw_rowf(display,
+              row,
+              "%s %02lu:%02lu",
+              prefix,
+              (unsigned long)(total_seconds / 60U),
+              (unsigned long)(total_seconds % 60U));
+}
+
+static void draw_looper_track(pocket_oled_t *display,
+                              const play_ui_model_t *model,
+                              uint8_t track,
+                              int row)
+{
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        return;
+    }
+
+    const char *marker = track == model->looper.current_track ? ">" : " ";
+    uint32_t total_seconds = model->looper.track_ms[track] / 1000U;
+    draw_rowf(display,
+              row,
+              "%sT%u %-4s %02lu:%02lu",
+              marker,
+              (unsigned)(track + 1),
+              synth_looper_track_state_short_name(model->looper.track_state[track]),
+              (unsigned long)(total_seconds / 60U),
+              (unsigned long)(total_seconds % 60U));
+}
+
+static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
+{
+    draw_header(display, "LOOPER");
+    uint8_t first_track = (uint8_t)(model->looper.page * SYNTH_LOOPER_TRACKS_PER_PAGE);
+    draw_looper_track(display, model, first_track, 2);
+    draw_looper_track(display, model, (uint8_t)(first_track + 1U), 3);
+    if (model->looper.bar_count == 0) {
+        pocket_oled_draw_text_row(display, 5, "BARS FREE");
+    } else {
+        draw_rowf(display, 5, "BARS %u", (unsigned)model->looper.bar_count);
+    }
+    if (model->looper.paused) {
+        pocket_oled_draw_text_row(display, 6, "PAUSED");
+    } else if (model->looper.master_ms > 0) {
+        draw_time_ms(display, 6, "LEN", model->looper.master_ms);
+    } else {
+        draw_rowf(display, 6, "%.21s", model->looper.message);
+    }
+}
+
 static void draw_status(pocket_oled_t *display, const play_ui_model_t *model)
 {
     draw_header(display, "STATUS");
@@ -249,6 +301,9 @@ static void draw_display(pocket_oled_t *display, const play_ui_model_t *model)
         break;
     case PLAY_UI_SCREEN_MODE:
         draw_mode_menu(display, model);
+        break;
+    case PLAY_UI_SCREEN_LOOPER:
+        draw_looper(display, model);
         break;
     case PLAY_UI_SCREEN_STATUS:
         draw_status(display, model);

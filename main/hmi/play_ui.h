@@ -8,6 +8,7 @@
 #include "esp_pocket_audio.h"
 #include "hmi/controls.h"
 #include "synth/chord_engine.h"
+#include "synth/looper.h"
 #include "synth/play_mode.h"
 #include "synth/sound.h"
 
@@ -20,6 +21,7 @@ typedef enum {
     PLAY_UI_SCREEN_KEY,
     PLAY_UI_SCREEN_SOUND,
     PLAY_UI_SCREEN_MODE,
+    PLAY_UI_SCREEN_LOOPER,
     PLAY_UI_SCREEN_STATUS,
 } play_ui_screen_t;
 
@@ -62,6 +64,7 @@ typedef struct {
     bool wheel_present;
     uint8_t wheel_percent;
     control_joystick_direction_t joystick_direction;
+    synth_looper_snapshot_t looper;
     char chord_name[16];
     char status[22];
 } play_ui_model_t;

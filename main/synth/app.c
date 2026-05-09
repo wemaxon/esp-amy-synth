@@ -16,6 +16,7 @@
 #include "hmi/play_ui.h"
 #include "synth/amy_engine.h"
 #include "synth/chord_engine.h"
+#include "synth/looper.h"
 #include "synth/play_mode.h"
 #include "synth/sound.h"
 
@@ -43,9 +44,12 @@ typedef struct {
     uint8_t last_applied_wheel_percent;
     control_joystick_direction_t last_menu_direction;
     control_joystick_direction_t last_play_direction;
+    control_joystick_direction_t last_looper_direction;
     control_joystick_direction_t joystick_direction;
     uint8_t held_mask;
     uint8_t focus_slot;
+    bool looper_visible;
+    TickType_t looper_next_ui_tick;
     bool mode_bpm_submenu;
     synth_strum_speed_t strum_speed;
     synth_arp_pattern_t arp_pattern;
@@ -135,6 +139,7 @@ static synth_app_state_t s_app = {
     .last_applied_wheel_percent = UINT8_MAX,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
+    .last_looper_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
     .focus_slot = 0,
     .strum_slot = UINT8_MAX,
@@ -157,6 +162,9 @@ static play_ui_screen_t active_screen(void)
     }
     if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
         return PLAY_UI_SCREEN_MODE;
+    }
+    if (s_app.looper_visible) {
+        return PLAY_UI_SCREEN_LOOPER;
     }
     return PLAY_UI_SCREEN_HOME;
 }
@@ -198,6 +206,7 @@ static void update_ui(void)
     model.wheel_present = s_app.wheel_present;
     model.wheel_percent = s_app.wheel_percent;
     model.joystick_direction = s_app.joystick_direction;
+    synth_looper_get_snapshot(&model.looper);
     strlcpy(model.chord_name, s_app.chord_name, sizeof(model.chord_name));
     strlcpy(model.status, s_app.status, sizeof(model.status));
     play_ui_update(&model);
@@ -1465,6 +1474,91 @@ static void update_mode_menu(control_joystick_direction_t direction)
     }
 }
 
+static void open_looper(void)
+{
+    s_app.looper_visible = true;
+    s_app.last_looper_direction = CONTROL_JOYSTICK_CENTER;
+    s_app.looper_next_ui_tick = xTaskGetTickCount();
+    set_status("LOOPER");
+    update_ui();
+}
+
+static void handle_looper_click(void)
+{
+    if (!s_app.looper_visible) {
+        open_looper();
+        return;
+    }
+
+    esp_err_t err = synth_looper_click(s_app.bpm);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "looper click failed: %s", esp_err_to_name(err));
+        set_status("LOOPER ERR");
+    } else {
+        set_status("LOOPER");
+    }
+    update_ui();
+}
+
+static void update_looper_joystick(control_joystick_direction_t direction)
+{
+    if (direction == s_app.last_looper_direction) {
+        return;
+    }
+    s_app.last_looper_direction = direction;
+
+    esp_err_t err = ESP_OK;
+    switch (direction) {
+    case CONTROL_JOYSTICK_LEFT:
+        if (synth_looper_current_track_is_waiting()) {
+            err = synth_looper_adjust_bars(-1);
+        } else {
+            err = synth_looper_select_track(-1);
+        }
+        break;
+    case CONTROL_JOYSTICK_RIGHT:
+        if (synth_looper_current_track_is_waiting()) {
+            err = synth_looper_adjust_bars(1);
+        } else {
+            err = synth_looper_select_track(1);
+        }
+        break;
+    case CONTROL_JOYSTICK_DOWN:
+        err = synth_looper_toggle_pause();
+        break;
+    case CONTROL_JOYSTICK_CENTER:
+    case CONTROL_JOYSTICK_UP:
+    case CONTROL_JOYSTICK_UP_RIGHT:
+    case CONTROL_JOYSTICK_DOWN_RIGHT:
+    case CONTROL_JOYSTICK_DOWN_LEFT:
+    case CONTROL_JOYSTICK_UP_LEFT:
+    default:
+        break;
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "looper joystick failed: %s", esp_err_to_name(err));
+        set_status("LOOPER ERR");
+    } else if (direction != CONTROL_JOYSTICK_CENTER) {
+        set_status("LOOPER");
+    }
+    update_ui();
+}
+
+static void update_looper_periodic_ui(void)
+{
+    if (!s_app.looper_visible) {
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if ((int32_t)(now - s_app.looper_next_ui_tick) < 0) {
+        return;
+    }
+    s_app.looper_next_ui_tick = now + pdMS_TO_TICKS(250);
+    update_ui();
+}
+
 static void update_joystick(void)
 {
     control_joystick_state_t joystick = {0};
@@ -1489,6 +1583,13 @@ static void update_joystick(void)
         return;
     }
     s_app.last_menu_direction = CONTROL_JOYSTICK_CENTER;
+
+    if (s_app.looper_visible && s_app.held_mask == 0) {
+        update_looper_joystick(joystick.direction);
+        s_app.last_play_direction = CONTROL_JOYSTICK_CENTER;
+        return;
+    }
+    s_app.last_looper_direction = CONTROL_JOYSTICK_CENTER;
 
     if (s_app.joystick_mode == SYNTH_JOYSTICK_MODE_CHROMATIC &&
         s_app.held_mask == 0 &&
@@ -1567,15 +1668,18 @@ static void handle_menu_event(const control_event_t *event)
         if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
             toggle_current_effect();
         } else if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
-            set_status("LOOPER WAITING");
+            set_status("MODE MENU");
             update_ui();
         } else if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
             set_status("KEY MENU");
             update_ui();
+        } else {
+            handle_looper_click();
         }
     } else if (event->sw == CONTROL_KEY_MENU ||
                event->sw == CONTROL_SOUND_MENU ||
                event->sw == CONTROL_MODE_MENU) {
+        s_app.looper_visible = false;
         if (event->sw == CONTROL_MODE_MENU) {
             handle_mode_button_tap();
         }
@@ -1605,6 +1709,7 @@ static void app_task(void *arg)
         update_lfo();
         update_tremolo();
         update_wheel();
+        update_looper_periodic_ui();
         vTaskDelay(APP_UPDATE_TICKS);
     }
 }

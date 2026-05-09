@@ -12,6 +12,7 @@ idf_component_register(
         "synth/app.c"
         "synth/amy_engine.c"
         "synth/chord_engine.c"
+        "synth/looper.c"
         "synth/play_mode.c"
         "synth/sound.c"
 

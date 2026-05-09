@@ -17,10 +17,6 @@
 #include "hmi/wheel_calibration.h"
 #include "pcf8574.h"
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 #define EVENT_QUEUE_LEN 16
 #define CONTROLS_TASK_STACK_SIZE 4096
 
@@ -40,7 +36,8 @@ typedef struct {
 static const char *TAG = "CONTROLS";
 static const TickType_t SERVICE_PERIOD_TICKS = pdMS_TO_TICKS(20);
 static const TickType_t HELD_LOG_TICKS = pdMS_TO_TICKS(500);
-static const float DIRECTION_DEADZONE = 0.35f;
+static const float DIRECTION_AXIS_DEADZONE = 0.50f;
+static const float DIRECTION_DIAGONAL_AXIS_MIN = 0.55f;
 
 static const uint8_t PCF8574_ADDRS[] = {
     ESP_POCKET_AUDIO_PCF8574_0_ADDR,
@@ -171,33 +168,23 @@ const char *controls_joystick_direction_name(control_joystick_direction_t direct
 
 control_joystick_direction_t controls_joystick_direction_from_axes(float x, float y)
 {
-    float magnitude_squared = (x * x) + (y * y);
-    if (magnitude_squared < (DIRECTION_DEADZONE * DIRECTION_DEADZONE)) {
+    float abs_x = fabsf(x);
+    float abs_y = fabsf(y);
+    if (abs_x < DIRECTION_AXIS_DEADZONE && abs_y < DIRECTION_AXIS_DEADZONE) {
         return CONTROL_JOYSTICK_CENTER;
     }
 
-    float angle = atan2f(y, x);
-    int octant = (int)floorf(((angle + (float)M_PI) / ((float)M_PI / 4.0f)) + 0.5f) & 0x07;
-
-    switch (octant) {
-    case 0:
-        return CONTROL_JOYSTICK_LEFT;
-    case 1:
-        return CONTROL_JOYSTICK_DOWN_LEFT;
-    case 2:
-        return CONTROL_JOYSTICK_DOWN;
-    case 3:
-        return CONTROL_JOYSTICK_DOWN_RIGHT;
-    case 4:
-        return CONTROL_JOYSTICK_RIGHT;
-    case 5:
-        return CONTROL_JOYSTICK_UP_RIGHT;
-    case 6:
-        return CONTROL_JOYSTICK_UP;
-    case 7:
-    default:
-        return CONTROL_JOYSTICK_UP_LEFT;
+    if (abs_x >= DIRECTION_DIAGONAL_AXIS_MIN && abs_y >= DIRECTION_DIAGONAL_AXIS_MIN) {
+        if (x > 0.0f) {
+            return y > 0.0f ? CONTROL_JOYSTICK_UP_RIGHT : CONTROL_JOYSTICK_DOWN_RIGHT;
+        }
+        return y > 0.0f ? CONTROL_JOYSTICK_UP_LEFT : CONTROL_JOYSTICK_DOWN_LEFT;
     }
+
+    if (abs_x >= abs_y) {
+        return x > 0.0f ? CONTROL_JOYSTICK_RIGHT : CONTROL_JOYSTICK_LEFT;
+    }
+    return y > 0.0f ? CONTROL_JOYSTICK_UP : CONTROL_JOYSTICK_DOWN;
 }
 
 static esp_err_t probe_i2c_addr(uint8_t address)

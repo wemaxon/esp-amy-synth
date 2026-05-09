@@ -147,4 +147,9 @@ pip install -e .
 - Implement the hichord calibration flow
 - Wire and validate the ADS1115 wheel hardware (`ESP_POCKET_AUDIO_WHEEL_ENABLED`)
 - Add microphone feature
-- Simplify UI, or add two modes?
+- Beautify UI
+- Performance
+  - IRAM
+  - PSRAM pools
+  - amy multicore/multithread
+  - profiling

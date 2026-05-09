@@ -42,6 +42,10 @@ extern "C" {
 #ifndef ESP_POCKET_AUDIO_AMY_STEREO_PAIRS
 #define ESP_POCKET_AUDIO_AMY_STEREO_PAIRS        0
 #endif
+        
+#ifndef ESP_POCKET_AUDIO_AMY_MULTICORE
+#define ESP_POCKET_AUDIO_AMY_MULTICORE           1
+#endif
 /* AMY patch engines allocate multiple oscillators per note. Six piano voices
  * need 150 patch oscillators, so keep the global pool above that.
  */
@@ -49,10 +53,10 @@ extern "C" {
 #define ESP_POCKET_AUDIO_AMY_MAX_OSCS            160
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_JUNO_VOICES
-#define ESP_POCKET_AUDIO_AMY_JUNO_VOICES         6
+#define ESP_POCKET_AUDIO_AMY_JUNO_VOICES         4
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_DX7_VOICES
-#define ESP_POCKET_AUDIO_AMY_DX7_VOICES          6
+#define ESP_POCKET_AUDIO_AMY_DX7_VOICES          3
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_PIANO_VOICES
 #define ESP_POCKET_AUDIO_AMY_PIANO_VOICES        6
@@ -69,11 +73,11 @@ extern "C" {
 #ifndef ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS
 #define ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS 2000
 #endif
-/* AMY internal profile dump. This requires the AMY component to be built with
- * AMY_DEBUG; components/amy/CMakeLists.txt enables that for profiling builds.
+/* AMY internal profile dump. This is intentionally off by default because the
+ * serial dump is large and can trip the watchdog from the audio task.
  */
 #ifndef ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED
-#define ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED 1
+#define ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED 0
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS
 #define ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS 10000

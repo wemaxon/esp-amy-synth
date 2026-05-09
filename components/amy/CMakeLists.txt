@@ -33,7 +33,7 @@ idf_component_register(
         "${AMY_SRC_DIR}"
 )
 
-set(ESP_POCKET_AUDIO_AMY_PROFILE ON CACHE BOOL "Build AMY with internal profiling counters")
+set(ESP_POCKET_AUDIO_AMY_PROFILE OFF CACHE BOOL "Build AMY with internal profiling counters" FORCE)
 if(ESP_POCKET_AUDIO_AMY_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE AMY_DEBUG)
 endif()

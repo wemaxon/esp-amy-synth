@@ -85,6 +85,14 @@ typedef struct {
     int64_t next_profile_log_us;
 } amy_perf_stats_t;
 
+typedef struct {
+    uint16_t audible;
+    uint16_t audible_low;
+    uint16_t audible_high;
+    uint16_t aux;
+    uint16_t suspended;
+} amy_osc_stats_t;
+
 static const char *TAG = "SYNTH_AMY";
 
 static const float RAW_NOTE_AMP = 0.62f;
@@ -338,6 +346,42 @@ static uint16_t allocated_patch_osc_count(void)
         return 0;
     }
     return (uint16_t)s_patch_voice_count * (uint16_t)s_patch_oscs_per_voice;
+}
+
+static amy_osc_stats_t amy_runtime_osc_stats(void)
+{
+    amy_osc_stats_t stats = {0};
+    if (synth == NULL) {
+        return stats;
+    }
+
+    uint16_t split = (uint16_t)(AMY_OSCS / 2U);
+    for (uint16_t osc = 0; osc < AMY_OSCS; ++osc) {
+        if (synth[osc] == NULL) {
+            continue;
+        }
+
+        switch (synth[osc]->status) {
+        case SYNTH_AUDIBLE:
+            ++stats.audible;
+            if (osc < split) {
+                ++stats.audible_low;
+            } else {
+                ++stats.audible_high;
+            }
+            break;
+        case SYNTH_IS_MOD_SOURCE:
+        case SYNTH_IS_ALGO_SOURCE:
+            ++stats.aux;
+            break;
+        case SYNTH_AUDIBLE_SUSPENDED:
+            ++stats.suspended;
+            break;
+        default:
+            break;
+        }
+    }
+    return stats;
 }
 
 static void set_amp_envelope(amy_event *event, const amy_raw_profile_t *profile)
@@ -888,13 +932,19 @@ static void perf_record_block(uint32_t render_us, uint32_t write_us, int64_t now
         uint32_t largest_heap = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
         uint32_t internal_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         UBaseType_t stack_words = uxTaskGetStackHighWaterMark(NULL);
+        amy_osc_stats_t amy_oscs = amy_runtime_osc_stats();
 
         esp_log_level_t level = s_perf.slow_blocks > 0 ? ESP_LOG_WARN : ESP_LOG_INFO;
         ESP_LOG_LEVEL(level,
                       TAG,
-                      "perf blocks=%u active_oscs=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u i2s_us avg=%u max=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
+                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u i2s_us avg=%u max=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
                       (unsigned)s_perf.blocks,
                       (unsigned)active_osc_count(),
+                      (unsigned)amy_oscs.audible,
+                      (unsigned)amy_oscs.audible_low,
+                      (unsigned)amy_oscs.audible_high,
+                      (unsigned)amy_oscs.aux,
+                      (unsigned)amy_oscs.suspended,
                       (unsigned)allocated_patch_osc_count(),
                       (unsigned)render_avg,
                       (unsigned)s_perf.render_us_max,
@@ -1119,7 +1169,7 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     config.features.echo = 1;
     config.features.partials = 1;
     config.features.custom = 0;
-    config.platform.multicore = 0;
+    config.platform.multicore = ESP_POCKET_AUDIO_AMY_MULTICORE;
     config.platform.multithread = 0;
     config.max_oscs = ESP_POCKET_AUDIO_AMY_MAX_OSCS;
     config.max_voices = AMY_MUSICAL_VOICE_COUNT;
@@ -1150,7 +1200,7 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
 
     s_initialized = true;
     ESP_LOGI(TAG,
-             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u juno=%u dx7=%u piano=%u pcm=%u stereo_pairs=%s perf_log=%s",
+             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u juno=%u dx7=%u piano=%u pcm=%u stereo_pairs=%s multicore=%s perf_log=%s",
              AMY_SAMPLE_RATE,
              AMY_NCHANS,
              AMY_BLOCK_SIZE,
@@ -1162,6 +1212,7 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
              (unsigned)ESP_POCKET_AUDIO_AMY_PIANO_VOICES,
              (unsigned)ESP_POCKET_AUDIO_AMY_PCM_VOICES,
              ESP_POCKET_AUDIO_AMY_STEREO_PAIRS ? "on" : "off",
+             config.platform.multicore ? "on" : "off",
              ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED ? "on" : "off");
     return ESP_OK;
 }

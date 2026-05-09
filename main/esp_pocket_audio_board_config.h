@@ -42,21 +42,20 @@ extern "C" {
 #ifndef ESP_POCKET_AUDIO_AMY_STEREO_PAIRS
 #define ESP_POCKET_AUDIO_AMY_STEREO_PAIRS        0
 #endif
-/* AMY patch engines allocate multiple oscillators per note. Defaults are
- * intentionally conservative for the ESP32: Juno=5 oscs/voice, DX7=8,
- * built-in piano=25.
+/* AMY patch engines allocate multiple oscillators per note. Six piano voices
+ * need 150 patch oscillators, so keep the global pool above that.
  */
 #ifndef ESP_POCKET_AUDIO_AMY_MAX_OSCS
-#define ESP_POCKET_AUDIO_AMY_MAX_OSCS            128
+#define ESP_POCKET_AUDIO_AMY_MAX_OSCS            160
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_JUNO_VOICES
-#define ESP_POCKET_AUDIO_AMY_JUNO_VOICES         4
+#define ESP_POCKET_AUDIO_AMY_JUNO_VOICES         6
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_DX7_VOICES
-#define ESP_POCKET_AUDIO_AMY_DX7_VOICES          3
+#define ESP_POCKET_AUDIO_AMY_DX7_VOICES          6
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_PIANO_VOICES
-#define ESP_POCKET_AUDIO_AMY_PIANO_VOICES        3
+#define ESP_POCKET_AUDIO_AMY_PIANO_VOICES        6
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_PCM_VOICES
 #define ESP_POCKET_AUDIO_AMY_PCM_VOICES          6

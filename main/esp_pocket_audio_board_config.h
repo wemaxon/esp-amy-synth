@@ -80,7 +80,7 @@ extern "C" {
 /* 1.3 inch 128x64 SH1106 I2C OLED on the shared control I2C bus. */
 #define ESP_POCKET_AUDIO_OLED_ENABLED            1
 #define ESP_POCKET_AUDIO_OLED_ADDR               0x3C
-#define ESP_POCKET_AUDIO_OLED_I2C_CLK_HZ         100000
+#define ESP_POCKET_AUDIO_OLED_I2C_CLK_HZ         400000
 
 /* ADS1115 analog input configuration. */
 #define ESP_POCKET_AUDIO_ADS1115_ADDR            0x48

@@ -7,7 +7,7 @@
 #define ES8388_DACCONTROL3_DAC_MUTE      0x04
 #define ES8388_DACCONTROL3_SLOW_RAMP     0xe2
 #define ES8388_DACCONTROL6_CLICK_FREE    0x08
-#define ES8388_OUTPUT_VOLUME_NEG_6DB     0x1a
+#define ES8388_OUTPUT_VOLUME_NEG_3DB     0x1c
 
 static const char *TAG = "ES8388";
 
@@ -134,10 +134,10 @@ esp_err_t es8388_init(es8388_t *codec, i2c_master_bus_handle_t bus, uint8_t addr
     err |= es8388_write_reg(codec, ES8388_DACCONTROL21, 0x80);
     err |= es8388_write_reg(codec, ES8388_DACCONTROL23, 0x00);
     err |= set_adc_dac_volume(codec, false, true, 0, 0);
-    err |= es8388_write_reg(codec, ES8388_DACCONTROL24, ES8388_OUTPUT_VOLUME_NEG_6DB);
-    err |= es8388_write_reg(codec, ES8388_DACCONTROL25, ES8388_OUTPUT_VOLUME_NEG_6DB);
-    err |= es8388_write_reg(codec, ES8388_DACCONTROL26, ES8388_OUTPUT_VOLUME_NEG_6DB);
-    err |= es8388_write_reg(codec, ES8388_DACCONTROL27, ES8388_OUTPUT_VOLUME_NEG_6DB);
+    err |= es8388_write_reg(codec, ES8388_DACCONTROL24, ES8388_OUTPUT_VOLUME_NEG_3DB);
+    err |= es8388_write_reg(codec, ES8388_DACCONTROL25, ES8388_OUTPUT_VOLUME_NEG_3DB);
+    err |= es8388_write_reg(codec, ES8388_DACCONTROL26, ES8388_OUTPUT_VOLUME_NEG_3DB);
+    err |= es8388_write_reg(codec, ES8388_DACCONTROL27, ES8388_OUTPUT_VOLUME_NEG_3DB);
     err |= es8388_write_reg(codec, ES8388_DACPOWER, ES8388_DAC_OUTPUT_ALL);
 
     err |= es8388_write_reg(codec, ES8388_ADCPOWER, 0xff);

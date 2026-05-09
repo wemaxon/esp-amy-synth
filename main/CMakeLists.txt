@@ -11,6 +11,7 @@ idf_component_register(
         "hmi/keymap.c"
         "hmi/oled_display.c"
         "hmi/play_ui.c"
+        "hmi/wheel_calibration.c"
         "synth/app.c"
         "synth/amy_engine.c"
         "synth/chord_engine.c"

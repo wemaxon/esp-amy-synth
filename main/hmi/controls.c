@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 #include "hmi/control_i2c.h"
 #include "hmi/joystick_calibration.h"
+#include "hmi/wheel_calibration.h"
 #include "pcf8574.h"
 
 #ifndef M_PI
@@ -432,24 +433,6 @@ static float clamp01(float value)
     return value;
 }
 
-#if ESP_POCKET_AUDIO_WHEEL_ENABLED
-static float normalize_wheel_raw(int16_t raw)
-{
-    int32_t min_raw = ESP_POCKET_AUDIO_WHEEL_MIN_RAW;
-    int32_t max_raw = ESP_POCKET_AUDIO_WHEEL_MAX_RAW;
-    if (max_raw <= min_raw) {
-        return 0.0f;
-    }
-
-    float value = ((float)raw - (float)min_raw) / (float)(max_raw - min_raw);
-    value = clamp01(value);
-#if ESP_POCKET_AUDIO_WHEEL_INVERT
-    value = 1.0f - value;
-#endif
-    return value;
-}
-#endif
-
 static void set_wheel_state(int16_t raw, float value, bool present)
 {
     value = clamp01(value);
@@ -469,7 +452,7 @@ static esp_err_t update_wheel(void)
         return err;
     }
 
-    set_wheel_state(raw, normalize_wheel_raw(raw), true);
+    set_wheel_state(raw, wheel_calibration_normalize(raw), true);
 #else
     set_wheel_state(0, (float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f, false);
 #endif
@@ -574,6 +557,7 @@ esp_err_t controls_init(i2c_master_bus_handle_t bus)
 
     s_i2c_bus = bus;
     ESP_RETURN_ON_ERROR(joystick_calibration_init(), TAG, "joystick calibration init failed");
+    ESP_RETURN_ON_ERROR(wheel_calibration_init(), TAG, "wheel calibration init failed");
     ESP_RETURN_ON_ERROR(init_interrupt_pin(), TAG, "PCF interrupt pin failed");
     ESP_RETURN_ON_ERROR(control_i2c_call(init_i2c_peripherals, NULL, pdMS_TO_TICKS(500)), TAG, "control I2C peripheral init failed");
 

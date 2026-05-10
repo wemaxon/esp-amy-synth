@@ -15,6 +15,7 @@
 #include "esp_pocket_audio_board_config.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "synth/looper.h"
 
@@ -215,6 +216,7 @@ static const amy_sound_runtime_t SOUND_RUNTIME[SYNTH_SOUND_COUNT] = {
 
 static const esp_pocket_audio_hw_t *s_hw;
 static TaskHandle_t s_audio_task;
+static SemaphoreHandle_t s_amy_graph_lock;
 static bool s_initialized;
 static amy_voice_t s_voices[AMY_MUSICAL_VOICE_COUNT];
 static uint32_t s_voice_age;
@@ -279,6 +281,27 @@ static void enqueue_master_volume(float normalized_volume)
 {
     amy_event event = amy_default_event();
     event.volume = master_volume_to_amy_volume(normalized_volume);
+    amy_add_event(&event);
+}
+
+static void amy_graph_lock(void)
+{
+    if (s_amy_graph_lock != NULL) {
+        xSemaphoreTake(s_amy_graph_lock, portMAX_DELAY);
+    }
+}
+
+static void amy_graph_unlock(void)
+{
+    if (s_amy_graph_lock != NULL) {
+        xSemaphoreGive(s_amy_graph_lock);
+    }
+}
+
+static void amy_hard_all_notes_off(void)
+{
+    amy_event event = amy_default_event();
+    event.reset_osc = RESET_ALL_NOTES;
     amy_add_event(&event);
 }
 
@@ -636,7 +659,17 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
     }
 
     if (s_initialized) {
-        ESP_RETURN_ON_ERROR(synth_amy_all_off(), TAG, "all off failed");
+        amy_graph_lock();
+    }
+
+    if (s_initialized) {
+        esp_err_t err = synth_amy_all_off();
+        if (err != ESP_OK) {
+            amy_graph_unlock();
+            ESP_LOGE(TAG, "all off failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        amy_hard_all_notes_off();
         release_patch_synth();
     }
 
@@ -645,6 +678,10 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
 
     if (s_initialized && runtime->backend == AMY_SOUND_BACKEND_PATCH) {
         configure_patch_synth(runtime);
+    }
+
+    if (s_initialized) {
+        amy_graph_unlock();
     }
 
     ESP_LOGI(TAG,
@@ -697,7 +734,14 @@ esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
         return ESP_ERR_INVALID_ARG;
     }
 
-    ESP_RETURN_ON_ERROR(synth_amy_all_off(), TAG, "all off failed");
+    amy_graph_lock();
+    esp_err_t err = synth_amy_all_off();
+    if (err != ESP_OK) {
+        amy_graph_unlock();
+        ESP_LOGE(TAG, "all off failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    amy_hard_all_notes_off();
     release_patch_synth();
 
     amy_sound_runtime_t runtime = {
@@ -709,6 +753,7 @@ esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
         .patch_label = "diagnostic",
     };
     configure_patch_synth(&runtime);
+    amy_graph_unlock();
     return ESP_OK;
 }
 
@@ -1205,7 +1250,9 @@ static void audio_task(void *arg)
 
     while (true) {
         int64_t render_start_us = esp_timer_get_time();
+        amy_graph_lock();
         int16_t *block = amy_update();
+        amy_graph_unlock();
         apply_flanger(block);
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
         int64_t render_done_us = esp_timer_get_time();
@@ -1266,6 +1313,10 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     ESP_RETURN_ON_ERROR(synth_looper_init(AMY_SAMPLE_RATE, AMY_NCHANS),
                         TAG,
                         "looper init failed");
+    s_amy_graph_lock = xSemaphoreCreateMutex();
+    if (s_amy_graph_lock == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
 
     BaseType_t task_created = xTaskCreatePinnedToCore(
         audio_task,

@@ -9,6 +9,8 @@
 #include "synth/chord_engine.h"
 #include "synth/sound.h"
 
+#define SYNTH_AMY_BUILTIN_PATCH_COUNT 258U
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,6 +19,11 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw);
 esp_err_t synth_amy_set_sound(synth_sound_t sound);
 float synth_amy_sound_velocity(synth_sound_t sound);
 bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, const char **patch_label);
+esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
+                                      uint8_t voices,
+                                      uint8_t oscs_per_voice);
+esp_err_t synth_amy_builtin_patch_note_on(uint8_t midi_note, float velocity);
+esp_err_t synth_amy_builtin_patch_note_off(uint8_t midi_note);
 esp_err_t synth_amy_set_volume(float normalized_volume);
 esp_err_t synth_amy_set_filter_enabled(bool enabled);
 esp_err_t synth_amy_set_filter_cutoff(float cutoff_hz);

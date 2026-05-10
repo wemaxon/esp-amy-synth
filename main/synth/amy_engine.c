@@ -686,6 +686,60 @@ bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, con
     return true;
 }
 
+esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
+                                      uint8_t voices,
+                                      uint8_t oscs_per_voice)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (patch_number >= SYNTH_AMY_BUILTIN_PATCH_COUNT || voices == 0 || oscs_per_voice == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_RETURN_ON_ERROR(synth_amy_all_off(), TAG, "all off failed");
+    release_patch_synth();
+
+    amy_sound_runtime_t runtime = {
+        .backend = AMY_SOUND_BACKEND_PATCH,
+        .patch_number = patch_number,
+        .patch_voices = voices,
+        .oscs_per_voice = oscs_per_voice,
+        .velocity = 0.55f,
+        .patch_label = "diagnostic",
+    };
+    configure_patch_synth(&runtime);
+    return ESP_OK;
+}
+
+esp_err_t synth_amy_builtin_patch_note_on(uint8_t midi_note, float velocity)
+{
+    if (!s_initialized || !s_patch_loaded) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    amy_sound_runtime_t runtime = {
+        .backend = AMY_SOUND_BACKEND_PATCH,
+        .patch_number = s_patch_number,
+        .patch_voices = s_patch_voice_count,
+        .oscs_per_voice = s_patch_oscs_per_voice,
+        .velocity = velocity,
+        .patch_label = "diagnostic",
+    };
+    amy_note_on_patch(midi_note, &runtime);
+    return ESP_OK;
+}
+
+esp_err_t synth_amy_builtin_patch_note_off(uint8_t midi_note)
+{
+    if (!s_initialized || !s_patch_loaded) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    amy_note_off_patch(midi_note);
+    return ESP_OK;
+}
+
 esp_err_t synth_amy_set_volume(float normalized_volume)
 {
     if (!s_initialized) {

@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "diagnostics/amy_patch_browser.c"
         "diagnostics/digital_silence.c"
         "diagnostics/sine_gate.c"
         "esp_pocket_audio.c"

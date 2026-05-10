@@ -658,6 +658,34 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
     return ESP_OK;
 }
 
+float synth_amy_sound_velocity(synth_sound_t sound)
+{
+    if (sound >= SYNTH_SOUND_COUNT) {
+        return 0.0f;
+    }
+    return runtime_for_sound(sound)->velocity;
+}
+
+bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, const char **patch_label)
+{
+    if (sound >= SYNTH_SOUND_COUNT) {
+        return false;
+    }
+
+    const amy_sound_runtime_t *runtime = runtime_for_sound(sound);
+    if (runtime->backend != AMY_SOUND_BACKEND_PATCH) {
+        return false;
+    }
+
+    if (patch_number != NULL) {
+        *patch_number = runtime->patch_number;
+    }
+    if (patch_label != NULL) {
+        *patch_label = runtime->patch_label;
+    }
+    return true;
+}
+
 esp_err_t synth_amy_set_volume(float normalized_volume)
 {
     if (!s_initialized) {

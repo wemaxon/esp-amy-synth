@@ -6,6 +6,7 @@
 #include "nvs_flash.h"
 
 #include "es8388.h"
+#include "diagnostics/amy_patch_browser.h"
 #include "diagnostics/digital_silence.h"
 #include "diagnostics/sine_gate.h"
 #include "esp_pocket_audio.h"
@@ -70,6 +71,10 @@ static void app_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 #else
+    if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+        ESP_LOGI(TAG, "sound key held on boot, entering AMY patch browser");
+        ESP_ERROR_CHECK(diagnostics_amy_patch_browser_run(hw));
+    }
     if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
         ESP_LOGI(TAG, "mode key held on boot, entering diagnostic UI");
         diagnostic_ui_run(hw);

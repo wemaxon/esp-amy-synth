@@ -79,31 +79,6 @@ extern "C" {
 #define ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS 10000
 #endif
 
-/* Temporary firmware diagnostics. When enabled, the app skips AMY/synth startup
- * and runs the codec + controls with a continuous digital-zero I2S stream.
- */
-#ifndef ESP_POCKET_AUDIO_DIAG_DIGITAL_SILENCE
-#define ESP_POCKET_AUDIO_DIAG_DIGITAL_SILENCE    0
-#endif
-#ifndef ESP_POCKET_AUDIO_DIAG_SINE_GATE
-#define ESP_POCKET_AUDIO_DIAG_SINE_GATE          0
-#endif
-#ifndef ESP_POCKET_AUDIO_DIAG_SINE_AUTO_GATE
-#define ESP_POCKET_AUDIO_DIAG_SINE_AUTO_GATE     0
-#endif
-#ifndef ESP_POCKET_AUDIO_DIAG_SINE_ATTACK_MS
-#define ESP_POCKET_AUDIO_DIAG_SINE_ATTACK_MS     12
-#endif
-#ifndef ESP_POCKET_AUDIO_DIAG_SINE_RELEASE_MS
-#define ESP_POCKET_AUDIO_DIAG_SINE_RELEASE_MS    120
-#endif
-#ifndef ESP_POCKET_AUDIO_DIAG_SINE_AUTO_ON_MS
-#define ESP_POCKET_AUDIO_DIAG_SINE_AUTO_ON_MS    1500
-#endif
-#ifndef ESP_POCKET_AUDIO_DIAG_SINE_AUTO_OFF_MS
-#define ESP_POCKET_AUDIO_DIAG_SINE_AUTO_OFF_MS   1500
-#endif
-
 /* Dedicated control I2C bus for ADS1115 and PCF8574. */
 #define ESP_POCKET_AUDIO_CONTROL_I2C_PORT        I2C_NUM_1
 #define ESP_POCKET_AUDIO_CONTROL_I2C_SDA_GPIO    GPIO_NUM_21

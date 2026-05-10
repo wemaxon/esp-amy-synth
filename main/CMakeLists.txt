@@ -2,12 +2,10 @@ idf_component_register(
     SRCS
         "main.c"
         "diagnostics/amy_patch_browser.c"
-        "diagnostics/digital_silence.c"
-        "diagnostics/sine_gate.c"
+        "diagnostics/diagnostic_ui.c"
         "esp_pocket_audio.c"
         "hmi/control_i2c.c"
         "hmi/controls.c"
-        "hmi/diagnostic_ui.c"
         "hmi/joystick_calibration.c"
         "hmi/keymap.c"
         "hmi/oled_display.c"

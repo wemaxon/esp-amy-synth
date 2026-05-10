@@ -1,5 +1,5 @@
-#ifndef HMI_DIAGNOSTIC_UI_H
-#define HMI_DIAGNOSTIC_UI_H
+#ifndef DIAGNOSTICS_DIAGNOSTIC_UI_H
+#define DIAGNOSTICS_DIAGNOSTIC_UI_H
 
 #include "esp_pocket_audio.h"
 

@@ -7,12 +7,10 @@
 
 #include "es8388.h"
 #include "diagnostics/amy_patch_browser.h"
-#include "diagnostics/digital_silence.h"
-#include "diagnostics/sine_gate.h"
+#include "diagnostics/diagnostic_ui.h"
 #include "esp_pocket_audio.h"
 #include "esp_pocket_audio_board_config.h"
 #include "hmi/controls.h"
-#include "hmi/diagnostic_ui.h"
 #include "synth/app.h"
 
 static const char *TAG = "main";
@@ -27,7 +25,7 @@ static void log_setup(void)
     esp_log_level_set("ES8388", ESP_LOG_VERBOSE);
     esp_log_level_set("POCKET_OLED", ESP_LOG_VERBOSE);
     esp_log_level_set("CONTROLS", ESP_LOG_INFO);
-    esp_log_level_set("DIAG_SILENCE", ESP_LOG_INFO);
+    esp_log_level_set("DIAG_AMY_PATCH", ESP_LOG_INFO);
     esp_log_level_set("DIAG_UI", ESP_LOG_VERBOSE);
     esp_log_level_set("JOYSTICK_CAL", ESP_LOG_VERBOSE);
     esp_log_level_set("SYNTH_APP", ESP_LOG_VERBOSE);
@@ -58,19 +56,6 @@ static void app_task(void *arg)
     const esp_pocket_audio_hw_t *hw = esp_pocket_audio_hw();
     ESP_ERROR_CHECK(hw != NULL ? ESP_OK : ESP_ERR_INVALID_STATE);
     ESP_ERROR_CHECK(es8388_dump_registers((es8388_t *)&hw->codec, TAG));
-#if ESP_POCKET_AUDIO_DIAG_SINE_GATE
-    ESP_LOGW(TAG, "sine gate diagnostic enabled; synth app will not start");
-    ESP_ERROR_CHECK(diagnostics_sine_gate_start(hw));
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-#elif ESP_POCKET_AUDIO_DIAG_DIGITAL_SILENCE
-    ESP_LOGW(TAG, "digital silence diagnostic enabled; synth app will not start");
-    ESP_ERROR_CHECK(diagnostics_digital_silence_start(hw));
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-#else
     if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
         ESP_LOGI(TAG, "sound key held on boot, entering AMY patch browser");
         ESP_ERROR_CHECK(diagnostics_amy_patch_browser_run(hw));
@@ -81,7 +66,6 @@ static void app_task(void *arg)
     }
     ESP_ERROR_CHECK(synth_app_start(hw));
     vTaskDelete(NULL);
-#endif
 }
 
 void app_main(void)

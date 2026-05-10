@@ -1,4 +1,4 @@
-#include "hmi/diagnostic_ui.h"
+#include "diagnostics/diagnostic_ui.h"
 
 #include <inttypes.h>
 #include <stdbool.h>

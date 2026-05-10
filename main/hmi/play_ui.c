@@ -140,7 +140,14 @@ static void draw_volume(pocket_oled_t *display, const play_ui_model_t *model)
 
 static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
 {
-    draw_rowf(display, 3, "%.21s", model->chord_name);
+    size_t length = strnlen(model->chord_name, sizeof(model->chord_name));
+    uint8_t scale = length <= 10 ? 2 : 1;
+    int width = (int)length * 6 * (int)scale;
+    int x = (POCKET_OLED_WIDTH - width) / 2;
+    if (x < 0) {
+        x = 0;
+    }
+    pocket_oled_draw_text_scaled(display, x, scale == 2 ? 24 : 28, model->chord_name, scale);
 }
 
 static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model_t *model)
@@ -255,6 +262,56 @@ static void draw_time_ms(pocket_oled_t *display, int row, const char *prefix, ui
               (unsigned long)(total_seconds % 60U));
 }
 
+static bool draw_looper_progress(pocket_oled_t *display, const play_ui_model_t *model)
+{
+    uint8_t track = model->looper.current_track;
+    synth_looper_track_state_t state = model->looper.track_state[track];
+    if (model->looper.current_track_armed &&
+        !model->looper.waiting_for_sync &&
+        model->looper.wait_ms > 0) {
+        draw_rowf(display,
+                  4,
+                  "COUNT %lu.%lus",
+                  (unsigned long)(model->looper.wait_ms / 1000U),
+                  (unsigned long)((model->looper.wait_ms % 1000U) / 100U));
+        return true;
+    }
+
+    if (model->looper.waiting_for_sync && model->looper.progress_total_ms > 0) {
+        uint32_t pos_seconds = model->looper.progress_ms / 1000U;
+        uint32_t total_seconds = model->looper.progress_total_ms / 1000U;
+        draw_rowf(display,
+                  4,
+                  "SYNC %02lu:%02lu/%02lu:%02lu",
+                  (unsigned long)(pos_seconds / 60U),
+                  (unsigned long)(pos_seconds % 60U),
+                  (unsigned long)(total_seconds / 60U),
+                  (unsigned long)(total_seconds % 60U));
+        return true;
+    }
+
+    if (model->looper.progress_total_ms > 0) {
+        const char *prefix = state == SYNTH_LOOPER_TRACK_RECORDING ? "REC" : "POS";
+        uint32_t pos_seconds = model->looper.progress_ms / 1000U;
+        uint32_t total_seconds = model->looper.progress_total_ms / 1000U;
+        draw_rowf(display,
+                  4,
+                  "%s %02lu:%02lu/%02lu:%02lu",
+                  prefix,
+                  (unsigned long)(pos_seconds / 60U),
+                  (unsigned long)(pos_seconds % 60U),
+                  (unsigned long)(total_seconds / 60U),
+                  (unsigned long)(total_seconds % 60U));
+        return true;
+    }
+
+    if (state == SYNTH_LOOPER_TRACK_RECORDING) {
+        draw_time_ms(display, 4, "REC", model->looper.track_position_ms[track]);
+        return true;
+    }
+    return false;
+}
+
 static void draw_looper_track(pocket_oled_t *display,
                               const play_ui_model_t *model,
                               uint8_t track,
@@ -282,6 +339,7 @@ static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
     uint8_t first_track = (uint8_t)(model->looper.page * SYNTH_LOOPER_TRACKS_PER_PAGE);
     draw_looper_track(display, model, first_track, 2);
     draw_looper_track(display, model, (uint8_t)(first_track + 1U), 3);
+    bool drew_progress = draw_looper_progress(display, model);
     if (model->looper.bar_count == 0) {
         pocket_oled_draw_text_row(display, 5, "BARS FREE");
     } else {
@@ -291,7 +349,7 @@ static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
         pocket_oled_draw_text_row(display, 6, "PAUSED");
     } else if (model->looper.master_ms > 0) {
         draw_time_ms(display, 6, "LEN", model->looper.master_ms);
-    } else {
+    } else if (!drew_progress) {
         draw_rowf(display, 6, "%.21s", model->looper.message);
     }
 }

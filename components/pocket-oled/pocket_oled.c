@@ -210,6 +210,39 @@ void pocket_oled_draw_text(pocket_oled_t *display, int x, int y, const char *tex
     }
 }
 
+void pocket_oled_draw_text_scaled(pocket_oled_t *display, int x, int y, const char *text, uint8_t scale)
+{
+    if (display == NULL || text == NULL) {
+        return;
+    }
+    if (scale <= 1) {
+        pocket_oled_draw_text(display, x, y, text);
+        return;
+    }
+
+    int cursor_x = x;
+    int glyph_width = 5 * (int)scale;
+    int advance = 6 * (int)scale;
+    while (*text != '\0' && cursor_x <= (POCKET_OLED_WIDTH - glyph_width)) {
+        const uint8_t *glyph = glyph_for_char(*text++);
+        for (int col = 0; col < 5; ++col) {
+            uint8_t bits = glyph[col];
+            for (int row = 0; row < 7; ++row) {
+                bool on = (bits & (1U << row)) != 0;
+                for (uint8_t sy = 0; sy < scale; ++sy) {
+                    for (uint8_t sx = 0; sx < scale; ++sx) {
+                        pocket_oled_set_pixel(display,
+                                              cursor_x + (col * (int)scale) + sx,
+                                              y + (row * (int)scale) + sy,
+                                              on);
+                    }
+                }
+            }
+        }
+        cursor_x += advance;
+    }
+}
+
 void pocket_oled_draw_text_row(pocket_oled_t *display, int row, const char *text)
 {
     pocket_oled_draw_text(display, 0, row * 8, text);

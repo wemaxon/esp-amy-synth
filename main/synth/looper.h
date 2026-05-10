@@ -30,12 +30,18 @@ typedef enum {
 typedef struct {
     synth_looper_track_state_t track_state[SYNTH_LOOPER_TRACK_COUNT];
     uint32_t track_ms[SYNTH_LOOPER_TRACK_COUNT];
+    uint32_t track_position_ms[SYNTH_LOOPER_TRACK_COUNT];
     uint8_t current_track;
     uint8_t page;
     uint8_t bar_count;
     bool paused;
     uint32_t master_ms;
+    uint32_t progress_ms;
+    uint32_t progress_total_ms;
+    uint32_t wait_ms;
     uint32_t max_seconds;
+    bool current_track_armed;
+    bool waiting_for_sync;
     char message[22];
 } synth_looper_snapshot_t;
 
@@ -46,6 +52,7 @@ esp_err_t synth_looper_click(uint16_t bpm);
 esp_err_t synth_looper_select_track(int8_t steps);
 esp_err_t synth_looper_adjust_bars(int8_t steps);
 esp_err_t synth_looper_toggle_pause(void);
+esp_err_t synth_looper_clear_all(void);
 bool synth_looper_current_track_is_waiting(void);
 
 void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot);

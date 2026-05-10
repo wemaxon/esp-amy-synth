@@ -50,6 +50,8 @@ typedef struct {
     uint8_t held_mask;
     uint8_t focus_slot;
     bool looper_visible;
+    bool looper_menu_held;
+    bool looper_menu_clear_used;
     TickType_t looper_next_ui_tick;
     bool mode_bpm_submenu;
     synth_strum_speed_t strum_speed;
@@ -1504,6 +1506,18 @@ static void handle_looper_click(void)
     update_ui();
 }
 
+static void handle_looper_clear_all(void)
+{
+    esp_err_t err = synth_looper_clear_all();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "looper clear failed: %s", esp_err_to_name(err));
+        set_status("LOOPER ERR");
+    } else {
+        set_status("LOOPER CLR");
+    }
+    update_ui();
+}
+
 static void update_looper_joystick(control_joystick_direction_t direction)
 {
     if (direction == s_app.last_looper_direction) {
@@ -1664,6 +1678,13 @@ static void handle_mode_button_tap(void)
 static void handle_menu_event(const control_event_t *event)
 {
     if (event->type != CONTROL_EVENT_SWITCH_PRESSED) {
+        if (event->sw == CONTROL_KEY_MENU && s_app.looper_menu_held) {
+            if (!s_app.looper_menu_clear_used) {
+                s_app.looper_visible = false;
+            }
+            s_app.looper_menu_held = false;
+            s_app.looper_menu_clear_used = false;
+        }
         update_ui();
         return;
     }
@@ -1675,15 +1696,27 @@ static void handle_menu_event(const control_event_t *event)
             set_status("MODE MENU");
             update_ui();
         } else if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
-            set_status("KEY MENU");
-            update_ui();
+            if (s_app.looper_visible) {
+                s_app.looper_menu_clear_used = true;
+                handle_looper_clear_all();
+            } else {
+                set_status("KEY MENU");
+                update_ui();
+            }
         } else {
             handle_looper_click();
         }
     } else if (event->sw == CONTROL_KEY_MENU ||
                event->sw == CONTROL_SOUND_MENU ||
                event->sw == CONTROL_MODE_MENU) {
-        s_app.looper_visible = false;
+        if (event->sw == CONTROL_KEY_MENU && s_app.looper_visible) {
+            s_app.looper_menu_held = true;
+            s_app.looper_menu_clear_used = false;
+        } else {
+            s_app.looper_visible = false;
+            s_app.looper_menu_held = false;
+            s_app.looper_menu_clear_used = false;
+        }
         if (event->sw == CONTROL_MODE_MENU) {
             handle_mode_button_tap();
         }

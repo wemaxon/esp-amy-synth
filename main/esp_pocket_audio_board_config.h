@@ -15,14 +15,10 @@ extern "C" {
 #define ESP_POCKET_AUDIO_CODEC_I2C_SCL_GPIO      GPIO_NUM_32
 #define ESP_POCKET_AUDIO_CODEC_I2C_CLK_HZ        100000
 #define ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS    50
-/* ESP-ADF's ES8388_ADDR value is 0x20 because it uses the 8-bit wire address.
- * ESP-IDF's i2c_master driver expects the 7-bit device address directly.
- */
+
 #define ESP_POCKET_AUDIO_ES8388_ADDR             0x10
 
-/* ES8388 I2S pins on the ESP32-A1S module. ES8388 slave-mode playback needs
- * MCLK; this matches the ADF board layer that previously drove MCLK on GPIO0.
- */
+/* ES8388 I2S pins on the ESP32-A1S module. */
 #define ESP_POCKET_AUDIO_I2S_PORT                I2S_NUM_0
 #define ESP_POCKET_AUDIO_I2S_MCLK_GPIO           GPIO_NUM_0
 #define ESP_POCKET_AUDIO_I2S_BCLK_GPIO           GPIO_NUM_27
@@ -44,7 +40,7 @@ extern "C" {
 #endif
         
 #ifndef ESP_POCKET_AUDIO_AMY_MULTICORE
-#define ESP_POCKET_AUDIO_AMY_MULTICORE           1
+#define ESP_POCKET_AUDIO_AMY_MULTICORE           0
 #endif
 /* AMY patch engines allocate multiple oscillators per note. Six piano voices
  * need 150 patch oscillators, so keep the global pool above that.
@@ -68,7 +64,7 @@ extern "C" {
  * I2S blocking time, heap, and audio task stack headroom.
  */
 #ifndef ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED
-#define ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED    1
+#define ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED    0
 #endif
 #ifndef ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS
 #define ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS 2000

@@ -1119,17 +1119,6 @@ static void perf_record_block(uint32_t render_us, uint32_t write_us, int64_t now
 #endif
 }
 
-static uint8_t transpose_midi_saturating(uint8_t midi_note, int16_t semitones)
-{
-    int note = (int)midi_note + semitones;
-    if (note < 0) {
-        note = 0;
-    } else if (note > 127) {
-        note = 127;
-    }
-    return (uint8_t)note;
-}
-
 static void format_midi_note(uint8_t midi_note, char *buffer, size_t buffer_size)
 {
     static const char *const NOTE_NAMES[12] = {
@@ -1198,9 +1187,9 @@ static void build_voice_assignment(const synth_chord_t *chord,
         assignments[2].note = chord->notes[2];
     }
 
-    if (chord->note_count >= 3) {
+    if (chord->bass_enabled) {
         assignments[3].enabled = true;
-        assignments[3].note = transpose_midi_saturating(chord->notes[0], -24);
+        assignments[3].note = chord->bass_note;
     }
 
     if (chord->note_count > 3) {

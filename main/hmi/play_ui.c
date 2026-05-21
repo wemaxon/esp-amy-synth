@@ -30,6 +30,9 @@ static const char *EFFECT_NAMES[PLAY_UI_EFFECT_COUNT] = {
     [PLAY_UI_EFFECT_FLANGER] = "FLANGER",
     [PLAY_UI_EFFECT_LFO] = "LFO",
     [PLAY_UI_EFFECT_JOYSTICK] = "JOYSTICK",
+    [PLAY_UI_EFFECT_SCALE] = "SCALE",
+    [PLAY_UI_EFFECT_VOICE_LEADING] = "VOICE LEAD",
+    [PLAY_UI_EFFECT_BASS_MODE] = "BASS MODE",
 };
 
 static const char *LFO_LEVEL_NAMES[] = {
@@ -67,6 +70,9 @@ void play_ui_model_init(play_ui_model_t *model)
     model->scale = SYNTH_SCALE_MAJOR;
     model->modifier = SYNTH_CHORD_MOD_NONE;
     model->joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT;
+    model->bass_mode = SYNTH_BASS_MODE_OFF;
+    model->voice_leading_enabled = false;
+    model->chord_lock_enabled = false;
     model->sound = SYNTH_SOUND_SAW;
     model->mode = SYNTH_PLAY_MODE_PLAY;
     model->bpm = 120;
@@ -196,6 +202,7 @@ static void draw_key_menu(pocket_oled_t *display, const play_ui_model_t *model)
     draw_rowf(display, 3, "SCALE %s", synth_scale_name(model->scale));
     draw_rowf(display, 4, "GLOBAL OCT %+d", model->global_octave_shift);
     draw_rowf(display, 5, "BTN%u OCT %+d", model->focus_slot + 1, model->button_octave_shift[model->focus_slot]);
+    draw_rowf(display, 6, "LOCK %s", model->chord_lock_enabled ? "ON" : "OFF");
 }
 
 static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model)
@@ -206,6 +213,12 @@ static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model
     draw_rowf(display, 3, "ENG %s", synth_sound_engine_name(model->sound));
     if (effect == PLAY_UI_EFFECT_JOYSTICK) {
         draw_rowf(display, 4, "JOY %s", synth_joystick_mode_name(model->joystick_mode));
+    } else if (effect == PLAY_UI_EFFECT_SCALE) {
+        draw_rowf(display, 4, "SCALE %s", synth_scale_name(model->scale));
+    } else if (effect == PLAY_UI_EFFECT_VOICE_LEADING) {
+        draw_rowf(display, 4, "VOICE LEAD %s", model->voice_leading_enabled ? "ON" : "OFF");
+    } else if (effect == PLAY_UI_EFFECT_BASS_MODE) {
+        draw_rowf(display, 4, "BASS %s", synth_bass_mode_name(model->bass_mode));
     } else if (effect == PLAY_UI_EFFECT_DELAY) {
         uint8_t delay_level = model->delay_level;
         if (delay_level >= sizeof(DELAY_LEVEL_NAMES) / sizeof(DELAY_LEVEL_NAMES[0])) {

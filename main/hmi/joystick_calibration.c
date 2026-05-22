@@ -87,6 +87,9 @@ esp_err_t joystick_calibration_init(void)
         ESP_LOGW(TAG, "NVS open failed for joystick calibration: %s", esp_err_to_name(err));
     }
 
+    cal.axis[JOYSTICK_CAL_AXIS_X].invert =  ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_INVERT != 0;
+    cal.axis[JOYSTICK_CAL_AXIS_Y].invert = ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_INVERT != 0;
+
     portENTER_CRITICAL(&s_lock);
     s_calibration = cal;
     s_initialized = true;

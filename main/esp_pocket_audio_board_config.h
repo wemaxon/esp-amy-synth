@@ -1,15 +1,12 @@
 #ifndef ESP_POCKET_AUDIO_BOARD_CONFIG_H
 #define ESP_POCKET_AUDIO_BOARD_CONFIG_H
 
+#include "sdkconfig.h"
 #include "config/esp_pocket_audio_hw_types.h"
 
-#ifndef ESP_POCKET_AUDIO_BOARD
-#define ESP_POCKET_AUDIO_BOARD ESP_POCKET_AUDIO_BOARD_AI_THINKER_A1S
-#endif
-
-#if ESP_POCKET_AUDIO_BOARD == ESP_POCKET_AUDIO_BOARD_AI_THINKER_A1S
+#if defined(CONFIG_ESP_POCKET_AUDIO_BOARD_AI_THINKER_A1S)
 #include "boards/ai_thinker_a1s.h"
-#elif ESP_POCKET_AUDIO_BOARD == ESP_POCKET_AUDIO_BOARD_WT0132P4_A1
+#elif defined(CONFIG_ESP_POCKET_AUDIO_BOARD_WT0132P4_A1)
 #include "boards/wt0132p4_a1.h"
 #else
 #error "Unsupported ESP_POCKET_AUDIO_BOARD selection"

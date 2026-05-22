@@ -1,0 +1,25 @@
+menu "ESP Pocket Audio"
+
+    choice ESP_POCKET_AUDIO_BOARD
+        prompt "Board configuration"
+        default ESP_POCKET_AUDIO_BOARD_WT0132P4_A1 if IDF_TARGET_ESP32P4
+        default ESP_POCKET_AUDIO_BOARD_AI_THINKER_A1S
+        help
+            Select the board-specific hardware configuration header used by the
+            firmware.
+
+        config ESP_POCKET_AUDIO_BOARD_AI_THINKER_A1S
+            bool "AI Thinker A1S"
+            depends on IDF_TARGET_ESP32
+            help
+                Original ESP32 AI Thinker A1S board configuration.
+
+        config ESP_POCKET_AUDIO_BOARD_WT0132P4_A1
+            bool "WT0132P4-A1"
+            depends on IDF_TARGET_ESP32P4
+            help
+                ESP32-P4 WT0132P4-A1 board configuration.
+
+    endchoice
+
+endmenu

@@ -117,6 +117,12 @@ The chord engine supports the three HiChord joystick mode mappings:
 In the Sound/FX menu, select `JOYSTICK` and press joystick click to cycle
 `DEFAULT -> EXTENDED -> CHROMATIC`.
 
+Fast source-level chord checks:
+
+```sh
+python tools/chord_engine_spec_check.py
+```
+
 ## Prereqisites
 
 #### ESP-IDF

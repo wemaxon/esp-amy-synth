@@ -40,6 +40,11 @@ typedef struct {
     uint8_t lfo_level;
     uint8_t delay_level;
     uint8_t tremolo_level;
+    uint8_t voice_level;
+    uint8_t adsr_preset;
+    uint32_t attack_ms;
+    uint32_t release_ms;
+    uint8_t glide_level;
     float lfo_phase;
     TickType_t lfo_last_tick;
     float tremolo_phase;
@@ -113,6 +118,44 @@ static const float LFO_TWO_PI = 6.283185307f;
 static const float LFO_DEPTH_SEMITONES[] = {
     0.0f, 0.12f, 0.35f, 0.75f,
 };
+
+typedef enum {
+    ADSR_PRESET_LONG = 0,
+    ADSR_PRESET_SHORT,
+    ADSR_PRESET_SWELL,
+    ADSR_PRESET_PLUCK,
+    ADSR_PRESET_TOUCH,
+    ADSR_PRESET_SUSTAIN,
+    ADSR_PRESET_COUNT,
+} adsr_preset_t;
+
+typedef struct {
+    const char *name;
+    synth_amy_envelope_t envelope;
+} adsr_preset_def_t;
+
+static const adsr_preset_def_t ADSR_PRESETS[ADSR_PRESET_COUNT] = {
+    [ADSR_PRESET_LONG] = {"LONG", {800, 1000, 0.70f, 2000}},
+    [ADSR_PRESET_SHORT] = {"SHORT", {100, 100, 1.00f, 120}},
+    [ADSR_PRESET_SWELL] = {"SWELL", {800, 300, 0.80f, 2000}},
+    [ADSR_PRESET_PLUCK] = {"PLUCK", {5, 80, 0.00f, 180}},
+    [ADSR_PRESET_TOUCH] = {"TOUCH", {25, 260, 0.66f, 450}},
+    [ADSR_PRESET_SUSTAIN] = {"SUSTAIN", {200, 300, 0.85f, 3000}},
+};
+
+static const uint32_t ATTACK_MIN_MS = 1;
+static const uint32_t ATTACK_MAX_MS = 2000;
+static const uint32_t RELEASE_MIN_MS = 1;
+static const uint32_t RELEASE_MAX_MS = 5000;
+static const uint32_t REPEAT_RELEASE_CAP_MS = 200;
+
+static const uint16_t GLIDE_LEVEL_MS[] = {
+    0, 60, 140, 300,
+};
+static const char *GLIDE_LEVEL_NAMES[] = {
+    "OFF", "FAST", "MED", "SLOW",
+};
+
 static const char *DELAY_LEVEL_NAMES[] = {
     "OFF", "1/4", "1/8", "1/16", "1/16T",
 };
@@ -124,6 +167,12 @@ static const char *TREMOLO_LEVEL_NAMES[] = {
 };
 static const float TREMOLO_LEVEL_DIVISORS[] = {
     0.0f, 1.0f, 2.0f, 4.0f, 6.0f, 8.0f,
+};
+static const uint8_t VOICE_LIMITS[] = {
+    6, 4, 2, 1,
+};
+static const char *VOICE_LEVEL_NAMES[] = {
+    "8", "4", "2", "1",
 };
 static const float TREMOLO_DEPTH = 0.78f;
 static const uint8_t ARP_NO_SLOT = UINT8_MAX;
@@ -146,6 +195,10 @@ static synth_app_state_t s_app = {
         [PLAY_UI_EFFECT_FILTER] = true,
         [PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0,
     },
+    .adsr_preset = ADSR_PRESET_TOUCH,
+    .attack_ms = 25,
+    .release_ms = 450,
+    .glide_level = 0,
     .strum_speed = SYNTH_STRUM_SPEED_MEDIUM,
     .arp_pattern = SYNTH_ARP_PATTERN_UP,
     .arp_rate = SYNTH_RHYTHM_RATE_EIGHTH,
@@ -204,6 +257,52 @@ static bool any_chord_locked(void)
     return false;
 }
 
+static const adsr_preset_def_t *current_adsr_preset(void)
+{
+    uint8_t preset = s_app.adsr_preset;
+    if (preset >= ADSR_PRESET_COUNT) {
+        preset = ADSR_PRESET_TOUCH;
+    }
+    return &ADSR_PRESETS[preset];
+}
+
+static synth_amy_envelope_t current_envelope(void)
+{
+    synth_amy_envelope_t envelope = current_adsr_preset()->envelope;
+    envelope.attack_ms = s_app.attack_ms;
+    envelope.release_ms = s_app.release_ms;
+    if (s_app.mode == SYNTH_PLAY_MODE_REPEAT && envelope.release_ms > REPEAT_RELEASE_CAP_MS) {
+        envelope.release_ms = REPEAT_RELEASE_CAP_MS;
+    }
+    return envelope;
+}
+
+static void apply_current_envelope(void)
+{
+    synth_amy_envelope_t envelope = current_envelope();
+    esp_err_t err = synth_amy_set_envelope(&envelope);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to apply envelope: %s", esp_err_to_name(err));
+    }
+}
+
+static uint16_t current_glide_ms(void)
+{
+    uint8_t level = s_app.glide_level;
+    if (level >= sizeof(GLIDE_LEVEL_MS) / sizeof(GLIDE_LEVEL_MS[0])) {
+        level = 0;
+    }
+    return GLIDE_LEVEL_MS[level];
+}
+
+static void apply_current_glide(void)
+{
+    esp_err_t err = synth_amy_set_portamento(current_glide_ms());
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to apply glide: %s", esp_err_to_name(err));
+    }
+}
+
 static void update_ui(void)
 {
     play_ui_model_t model = {0};
@@ -234,6 +333,11 @@ static void update_ui(void)
     model.lfo_level = s_app.lfo_level;
     model.delay_level = s_app.delay_level;
     model.tremolo_level = s_app.tremolo_level;
+    model.voice_level = s_app.voice_level;
+    model.adsr_preset = s_app.adsr_preset;
+    model.attack_ms = s_app.attack_ms;
+    model.release_ms = s_app.release_ms;
+    model.glide_level = s_app.glide_level;
     model.wheel_present = s_app.wheel_present;
     model.wheel_percent = s_app.wheel_percent;
     model.volume_percent = s_app.volume_percent;
@@ -1099,6 +1203,8 @@ static void handle_chord_event(const control_event_t *event)
         if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
             s_app.sound = synth_sound_quick_select(degree);
             ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
+            apply_current_envelope();
+            apply_current_glide();
             set_status("SOUND SELECTED");
             refresh_held_chords();
             update_ui();
@@ -1250,6 +1356,8 @@ static void step_sound(int8_t steps)
 {
     s_app.sound = synth_sound_step(s_app.sound, steps);
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
+    apply_current_envelope();
+    apply_current_glide();
     set_status("SOUND CHANGED");
     refresh_held_chords();
     update_ui();
@@ -1281,11 +1389,14 @@ static void step_joystick_mode(void)
 static void step_bass_mode(void)
 {
     s_app.bass_mode = synth_bass_mode_step(s_app.bass_mode, 1);
+
     if (s_app.bass_mode != SYNTH_BASS_MODE_SLASH) {
         s_app.slash_bass_slot = UINT8_MAX;
     }
+
     ESP_LOGI(TAG, "bass mode=%s", synth_bass_mode_name(s_app.bass_mode));
     set_status(synth_bass_mode_name(s_app.bass_mode));
+
     refresh_held_chords();
     update_ui();
 }
@@ -1451,6 +1562,58 @@ static void step_tremolo_level(void)
     update_ui();
 }
 
+static void step_voice_level(void)
+{
+    size_t level_count = sizeof(VOICE_LIMITS) / sizeof(VOICE_LIMITS[0]);
+    s_app.voice_level = (uint8_t)((s_app.voice_level + 1U) % level_count);
+    esp_err_t err = synth_amy_set_voice_limit(VOICE_LIMITS[s_app.voice_level]);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "failed to apply voice count: %s", esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG,
+             "voices=%s limit=%u",
+             VOICE_LEVEL_NAMES[s_app.voice_level],
+             (unsigned)VOICE_LIMITS[s_app.voice_level]);
+    set_status("VOICES");
+    refresh_held_chords();
+    update_ui();
+}
+
+static void step_adsr_preset(void)
+{
+    s_app.adsr_preset = (uint8_t)((s_app.adsr_preset + 1U) % ADSR_PRESET_COUNT);
+    const adsr_preset_def_t *preset = current_adsr_preset();
+    s_app.attack_ms = preset->envelope.attack_ms;
+    s_app.release_ms = preset->envelope.release_ms;
+    apply_current_envelope();
+
+    ESP_LOGI(TAG,
+             "adsr=%s attack=%lu decay=%lu sustain=%.2f release=%lu",
+             preset->name,
+             (unsigned long)s_app.attack_ms,
+             (unsigned long)preset->envelope.decay_ms,
+             preset->envelope.sustain_level,
+             (unsigned long)s_app.release_ms);
+    set_status(preset->name);
+    refresh_held_chords();
+    update_ui();
+}
+
+static void step_glide_level(void)
+{
+    size_t level_count = sizeof(GLIDE_LEVEL_MS) / sizeof(GLIDE_LEVEL_MS[0]);
+    s_app.glide_level = (uint8_t)((s_app.glide_level + 1U) % level_count);
+    apply_current_glide();
+
+    ESP_LOGI(TAG,
+             "glide=%s portamento=%ums",
+             GLIDE_LEVEL_NAMES[s_app.glide_level],
+             (unsigned)current_glide_ms());
+    set_status(s_app.glide_level == 0 ? "GLIDE OFF" : "GLIDE ON");
+    update_ui();
+}
+
 static void toggle_current_effect(void)
 {
     play_ui_effect_t effect = (play_ui_effect_t)(s_app.effect_index % PLAY_UI_EFFECT_COUNT);
@@ -1468,6 +1631,18 @@ static void toggle_current_effect(void)
     }
     if (effect == PLAY_UI_EFFECT_BASS_MODE) {
         step_bass_mode();
+        return;
+    }
+    if (effect == PLAY_UI_EFFECT_VOICE_COUNT) {
+        step_voice_level();
+        return;
+    }
+    if (effect == PLAY_UI_EFFECT_ADSR) {
+        step_adsr_preset();
+        return;
+    }
+    if (effect == PLAY_UI_EFFECT_GLIDE) {
+        step_glide_level();
         return;
     }
     if (effect == PLAY_UI_EFFECT_LFO) {
@@ -1600,6 +1775,15 @@ static float wheel_to_filter_cutoff_hz(uint8_t percent)
     return 20.0f * powf(1000.0f, t);
 }
 
+static uint32_t wheel_to_range_ms(uint8_t percent, uint32_t min_ms, uint32_t max_ms)
+{
+    if (percent > 100) {
+        percent = 100;
+    }
+    uint32_t span = max_ms - min_ms;
+    return min_ms + ((span * (uint32_t)percent + 50U) / 100U);
+}
+
 static bool wheel_percent_changed(uint8_t percent)
 {
     if (s_app.last_applied_wheel_percent == UINT8_MAX) {
@@ -1618,9 +1802,15 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
     }
 
     s_app.last_applied_wheel_percent = wheel->percent;
-    if (controls_switch_is_pressed(CONTROL_MODE_MENU) ||
-        (controls_switch_is_pressed(CONTROL_SOUND_MENU) &&
-         s_app.effect_index == PLAY_UI_EFFECT_FILTER)) {
+    if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
+        s_app.attack_ms = wheel_to_range_ms(wheel->percent, ATTACK_MIN_MS, ATTACK_MAX_MS);
+        apply_current_envelope();
+        set_status("ATTACK");
+    } else if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+        s_app.release_ms = wheel_to_range_ms(wheel->percent, RELEASE_MIN_MS, RELEASE_MAX_MS);
+        apply_current_envelope();
+        set_status("RELEASE");
+    } else if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
         float cutoff_hz = wheel_to_filter_cutoff_hz(wheel->percent);
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_filter_cutoff(cutoff_hz));
         set_status("FILTER");
@@ -1669,6 +1859,7 @@ static void step_mode(int8_t steps)
 
     s_app.mode = next;
     s_app.mode_bpm_submenu = false;
+    apply_current_envelope();
     if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
         clear_arp_sources();
@@ -1880,6 +2071,15 @@ static void update_joystick(void)
         return;
     }
 
+    if (s_app.held_mask == 0) {
+        s_app.last_play_direction = joystick.direction;
+        if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {
+            s_app.modifier = SYNTH_CHORD_MOD_NONE;
+            update_ui();
+        }
+        return;
+    }
+
     s_app.last_play_direction = joystick.direction;
     synth_chord_modifier_t modifier = synth_chord_modifier_from_joystick(s_app.joystick_mode, joystick.direction);
     if (modifier == s_app.modifier) {
@@ -2030,6 +2230,8 @@ esp_err_t synth_app_start(const esp_pocket_audio_hw_t *hw)
 
     ESP_RETURN_ON_ERROR(synth_amy_init(hw), TAG, "AMY synth init failed");
     ESP_RETURN_ON_ERROR(synth_amy_set_sound(s_app.sound), TAG, "AMY sound setup failed");
+    apply_current_envelope();
+    apply_current_glide();
     ESP_RETURN_ON_ERROR(play_ui_start(hw), TAG, "play UI start failed");
     update_ui();
 

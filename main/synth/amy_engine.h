@@ -11,6 +11,13 @@
 
 #define SYNTH_AMY_BUILTIN_PATCH_COUNT 258U
 
+typedef struct {
+    uint32_t attack_ms;
+    uint32_t decay_ms;
+    float sustain_level;
+    uint32_t release_ms;
+} synth_amy_envelope_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,6 +43,9 @@ esp_err_t synth_amy_set_flanger_enabled(bool enabled);
 esp_err_t synth_amy_set_stereo_enabled(bool enabled);
 esp_err_t synth_amy_set_lfo_enabled(bool enabled);
 esp_err_t synth_amy_set_lfo_pitch(float semitones);
+esp_err_t synth_amy_set_voice_limit(uint8_t voices);
+esp_err_t synth_amy_set_envelope(const synth_amy_envelope_t *envelope);
+esp_err_t synth_amy_set_portamento(uint16_t portamento_ms);
 esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord);
 esp_err_t synth_amy_chord_voice_on(uint8_t slot, const synth_chord_t *chord, uint8_t voice_index);
 esp_err_t synth_amy_chord_off(uint8_t slot);

@@ -118,7 +118,7 @@ static const uint8_t RAW_ROLE_PRIORITY[AMY_MUSICAL_VOICE_COUNT] = {
     0, 1, 2, 3, 4, 5,
 };
 static const uint8_t PATCH_ROLE_PRIORITY[AMY_MUSICAL_VOICE_COUNT] = {
-    0, 1, 2, 4, 3, 5,
+    0, 1, 2, 3, 4, 5,
 };
 static const float VOICE_MAIN_PANS[AMY_MUSICAL_VOICE_COUNT] = {
     0.20f, 0.80f, 0.35f, 0.65f, 0.45f, 0.55f,
@@ -145,6 +145,13 @@ static const float SYNTH_FLANGER_FEEDBACK = 0.45f;
 static const float SYNTH_FLANGER_DRY = 0.75f;
 static const float SYNTH_FLANGER_WET = 0.32f;
 static const float LFO_MAX_PITCH_SEMITONES = 2.0f;
+static const uint32_t ENVELOPE_ATTACK_MIN_MS = 1;
+static const uint32_t ENVELOPE_ATTACK_MAX_MS = 2000;
+static const uint32_t ENVELOPE_DECAY_MIN_MS = 1;
+static const uint32_t ENVELOPE_DECAY_MAX_MS = 5000;
+static const uint32_t ENVELOPE_RELEASE_MIN_MS = 1;
+static const uint32_t ENVELOPE_RELEASE_MAX_MS = 5000;
+static const uint16_t PORTAMENTO_MAX_MS = 1000;
 static const float TWO_PI = 6.283185307f;
 static const uint32_t AUDIO_TASK_STACK_SIZE = 8192;
 static const UBaseType_t AUDIO_TASK_PRIORITY = 7;
@@ -230,6 +237,14 @@ static SemaphoreHandle_t s_amy_graph_lock;
 static bool s_initialized;
 static amy_voice_t s_voices[AMY_MUSICAL_VOICE_COUNT];
 static uint32_t s_voice_age;
+static uint8_t s_voice_limit = AMY_MUSICAL_VOICE_COUNT;
+static synth_amy_envelope_t s_envelope = {
+    .attack_ms = 25,
+    .decay_ms = 260,
+    .sustain_level = 0.66f,
+    .release_ms = 450,
+};
+static uint16_t s_portamento_ms;
 static synth_sound_t s_sound = SYNTH_SOUND_SAW;
 static bool s_patch_loaded;
 static bool s_patch_pair_loaded;
@@ -262,6 +277,17 @@ static float amy_external_coef(uint16_t channel)
 }
 
 static float clamp_float(float value, float min_value, float max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+static uint32_t clamp_u32(uint32_t value, uint32_t min_value, uint32_t max_value)
 {
     if (value < min_value) {
         return min_value;
@@ -355,10 +381,12 @@ static uint8_t runtime_voice_limit(const amy_sound_runtime_t *runtime)
     if (runtime == NULL) {
         return 0;
     }
+    uint8_t limit = clamp_voice_count(s_voice_limit);
     if (runtime->backend == AMY_SOUND_BACKEND_RAW) {
-        return AMY_MUSICAL_VOICE_COUNT;
+        return limit;
     }
-    return clamp_voice_count(runtime->patch_voices);
+    uint8_t runtime_limit = clamp_voice_count(runtime->patch_voices);
+    return runtime_limit < limit ? runtime_limit : limit;
 }
 
 static uint8_t main_osc_for_voice(uint8_t voice)
@@ -472,18 +500,18 @@ static amy_osc_stats_t amy_runtime_osc_stats(void)
     return stats;
 }
 
-static void set_amp_envelope(amy_event *event, const amy_raw_profile_t *profile)
+static void set_amp_envelope(amy_event *event, const synth_amy_envelope_t *envelope)
 {
-    if (event == NULL || profile == NULL) {
+    if (event == NULL || envelope == NULL) {
         return;
     }
 
     event->eg_type[0] = ENVELOPE_NORMAL;
-    event->eg0_times[0] = profile->attack_ms;
+    event->eg0_times[0] = envelope->attack_ms;
     event->eg0_values[0] = 1.0f;
-    event->eg0_times[1] = profile->decay_ms;
-    event->eg0_values[1] = profile->sustain_level;
-    event->eg0_times[2] = profile->release_ms;
+    event->eg0_times[1] = envelope->decay_ms;
+    event->eg0_values[1] = envelope->sustain_level;
+    event->eg0_times[2] = envelope->release_ms;
     event->eg0_values[2] = 0.0f;
 }
 
@@ -549,10 +577,11 @@ static void amy_note_on_raw_osc(uint8_t voice,
     event.amp_coefs[COEF_CONST] = raw_amp_for_voice(voice, runtime, amp_scale);
     event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
     event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
+    event.portamento_ms = s_portamento_ms;
     event.pan_coefs[COEF_CONST] = clamp_float(pan, 0.0f, 1.0f);
     event.duty_coefs[COEF_CONST] = profile->duty;
     fill_raw_filter_event(&event, profile);
-    set_amp_envelope(&event, profile);
+    set_amp_envelope(&event, &s_envelope);
     amy_add_event(&event);
 }
 
@@ -589,6 +618,7 @@ static void amy_note_on_patch_synth(uint8_t synth_id,
     event.midi_note = midi_note;
     float velocity = runtime != NULL ? runtime->velocity : 0.55f;
     event.velocity = clamp_float(velocity, 0.0f, 1.0f);
+    event.portamento_ms = s_portamento_ms;
     amy_add_event(&event);
 }
 
@@ -663,6 +693,44 @@ static void apply_raw_lfo(uint8_t voice)
     apply_raw_lfo_osc(main_osc_for_voice(voice));
     if (s_voices[voice].pair_active) {
         apply_raw_lfo_osc(pair_osc_for_voice(voice));
+    }
+}
+
+static void apply_raw_envelope_osc(uint8_t osc)
+{
+    amy_event event = amy_default_event();
+    event.osc = osc;
+    set_amp_envelope(&event, &s_envelope);
+    amy_add_event(&event);
+}
+
+static void apply_raw_envelope(uint8_t voice)
+{
+    if (voice >= AMY_MUSICAL_VOICE_COUNT) {
+        return;
+    }
+    apply_raw_envelope_osc(main_osc_for_voice(voice));
+    if (s_voices[voice].pair_active) {
+        apply_raw_envelope_osc(pair_osc_for_voice(voice));
+    }
+}
+
+static void apply_raw_portamento_osc(uint8_t osc)
+{
+    amy_event event = amy_default_event();
+    event.osc = osc;
+    event.portamento_ms = s_portamento_ms;
+    amy_add_event(&event);
+}
+
+static void apply_raw_portamento(uint8_t voice)
+{
+    if (voice >= AMY_MUSICAL_VOICE_COUNT) {
+        return;
+    }
+    apply_raw_portamento_osc(main_osc_for_voice(voice));
+    if (s_voices[voice].pair_active) {
+        apply_raw_portamento_osc(pair_osc_for_voice(voice));
     }
 }
 
@@ -829,12 +897,60 @@ static void apply_patch_tremolo(void)
     }
 }
 
+static void apply_patch_envelope_to_synth(uint8_t synth_id)
+{
+    for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
+        amy_event event = amy_default_event();
+        event.synth = synth_id;
+        event.osc = osc;
+        set_amp_envelope(&event, &s_envelope);
+        amy_add_event(&event);
+    }
+}
+
+static void apply_patch_envelope(void)
+{
+    if (!s_patch_loaded) {
+        return;
+    }
+
+    apply_patch_envelope_to_synth(AMY_PATCH_MAIN_SYNTH);
+    if (s_patch_pair_loaded) {
+        apply_patch_envelope_to_synth(AMY_PATCH_PAIR_SYNTH);
+    }
+}
+
+static void apply_patch_portamento_to_synth(uint8_t synth_id)
+{
+    for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
+        amy_event event = amy_default_event();
+        event.synth = synth_id;
+        event.osc = osc;
+        event.portamento_ms = s_portamento_ms;
+        amy_add_event(&event);
+    }
+}
+
+static void apply_patch_portamento(void)
+{
+    if (!s_patch_loaded) {
+        return;
+    }
+
+    apply_patch_portamento_to_synth(AMY_PATCH_MAIN_SYNTH);
+    if (s_patch_pair_loaded) {
+        apply_patch_portamento_to_synth(AMY_PATCH_PAIR_SYNTH);
+    }
+}
+
 static void apply_patch_runtime_controls(bool force_filter)
 {
     if (!s_patch_loaded) {
         return;
     }
 
+    apply_patch_envelope();
+    apply_patch_portamento();
     if (force_filter ||
         (s_filter_enabled && s_filter_cutoff_hz < (FILTER_CUTOFF_MAX_HZ - 1.0f))) {
         apply_patch_filter();
@@ -1300,6 +1416,97 @@ esp_err_t synth_amy_set_lfo_pitch(float semitones)
     return ESP_OK;
 }
 
+esp_err_t synth_amy_set_voice_limit(uint8_t voices)
+{
+    uint8_t limit = clamp_voice_count(voices);
+    if (s_voice_limit == limit) {
+        return ESP_OK;
+    }
+
+    s_voice_limit = limit;
+    if (!s_initialized) {
+        return ESP_OK;
+    }
+
+    amy_graph_lock();
+    esp_err_t err = synth_amy_all_off();
+    if (err == ESP_OK && s_patch_loaded) {
+        configure_patch_synth(runtime_for_sound(s_sound));
+    }
+    amy_graph_unlock();
+
+    ESP_LOGI(TAG, "voice limit=%u", (unsigned)s_voice_limit);
+    return err;
+}
+
+esp_err_t synth_amy_set_envelope(const synth_amy_envelope_t *envelope)
+{
+    if (envelope == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    s_envelope.attack_ms = clamp_u32(envelope->attack_ms,
+                                     ENVELOPE_ATTACK_MIN_MS,
+                                     ENVELOPE_ATTACK_MAX_MS);
+    s_envelope.decay_ms = clamp_u32(envelope->decay_ms,
+                                    ENVELOPE_DECAY_MIN_MS,
+                                    ENVELOPE_DECAY_MAX_MS);
+    s_envelope.sustain_level = clamp_float(envelope->sustain_level, 0.0f, 1.0f);
+    s_envelope.release_ms = clamp_u32(envelope->release_ms,
+                                      ENVELOPE_RELEASE_MIN_MS,
+                                      ENVELOPE_RELEASE_MAX_MS);
+
+    if (!s_initialized) {
+        return ESP_OK;
+    }
+
+    if (s_patch_loaded) {
+        apply_patch_envelope();
+    } else {
+        for (uint8_t i = 0; i < AMY_MUSICAL_VOICE_COUNT; ++i) {
+            if (s_voices[i].active) {
+                apply_raw_envelope(i);
+            }
+        }
+    }
+
+    ESP_LOGI(TAG,
+             "envelope attack=%lu decay=%lu sustain=%.2f release=%lu",
+             (unsigned long)s_envelope.attack_ms,
+             (unsigned long)s_envelope.decay_ms,
+             s_envelope.sustain_level,
+             (unsigned long)s_envelope.release_ms);
+    return ESP_OK;
+}
+
+esp_err_t synth_amy_set_portamento(uint16_t portamento_ms)
+{
+    if (portamento_ms > PORTAMENTO_MAX_MS) {
+        portamento_ms = PORTAMENTO_MAX_MS;
+    }
+    if (s_portamento_ms == portamento_ms) {
+        return ESP_OK;
+    }
+
+    s_portamento_ms = portamento_ms;
+    if (!s_initialized) {
+        return ESP_OK;
+    }
+
+    if (s_patch_loaded) {
+        apply_patch_portamento();
+    } else {
+        for (uint8_t i = 0; i < AMY_MUSICAL_VOICE_COUNT; ++i) {
+            if (s_voices[i].active) {
+                apply_raw_portamento(i);
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "portamento=%ums", (unsigned)s_portamento_ms);
+    return ESP_OK;
+}
+
 static int16_t clamp_int16(float value)
 {
     if (value > 32767.0f) {
@@ -1499,6 +1706,36 @@ static void append_note_log(char *buffer,
     }
 }
 
+static uint8_t octave_fill_note(uint8_t note)
+{
+    return note <= 115 ? (uint8_t)(note + 12U) : note;
+}
+
+static uint8_t chord_fill_note(const synth_chord_t *chord, uint8_t note_index)
+{
+    if (chord == NULL || chord->note_count == 0) {
+        return SYNTH_DEFAULT_ROOT_MIDI;
+    }
+
+    if (note_index < chord->note_count) {
+        return chord->notes[note_index];
+    }
+
+    return octave_fill_note(chord->notes[note_index % chord->note_count]);
+}
+
+static void assign_voice_note(amy_voice_assignment_t assignments[AMY_MUSICAL_VOICE_COUNT],
+                              uint8_t role,
+                              uint8_t note)
+{
+    if (role >= AMY_MUSICAL_VOICE_COUNT) {
+        return;
+    }
+
+    assignments[role].enabled = true;
+    assignments[role].note = note;
+}
+
 static void build_voice_assignment(const synth_chord_t *chord,
                                    amy_voice_assignment_t assignments[AMY_MUSICAL_VOICE_COUNT])
 {
@@ -1507,36 +1744,30 @@ static void build_voice_assignment(const synth_chord_t *chord,
         return;
     }
 
-    assignments[0].enabled = true;
-    assignments[0].note = chord->notes[0];
+    assign_voice_note(assignments, 0, chord->notes[0]);
 
     if (chord->note_count == 1) {
         return;
     }
 
-    if (chord->note_count > 1) {
-        assignments[1].enabled = true;
-        assignments[1].note = chord->notes[1];
+    assign_voice_note(assignments, 1, chord->notes[1]);
+
+    if (chord->note_count == 2) {
+        return;
     }
-    if (chord->note_count > 2) {
-        assignments[2].enabled = true;
-        assignments[2].note = chord->notes[2];
-    }
+
+    assign_voice_note(assignments, 2, chord->notes[2]);
 
     if (chord->bass_enabled) {
-        assignments[3].enabled = true;
-        assignments[3].note = chord->bass_note;
+        assign_voice_note(assignments, 3, chord->bass_note);
+        assign_voice_note(assignments, 4, chord_fill_note(chord, 3));
+        assign_voice_note(assignments, 5, chord_fill_note(chord, 4));
+        return;
     }
 
-    if (chord->note_count > 3) {
-        assignments[4].enabled = true;
-        assignments[4].note = chord->notes[3];
-    }
-
-    if (chord->note_count > 4) {
-        assignments[5].enabled = true;
-        assignments[5].note = chord->notes[4];
-    }
+    assign_voice_note(assignments, 3, chord_fill_note(chord, 3));
+    assign_voice_note(assignments, 4, chord_fill_note(chord, 4));
+    assign_voice_note(assignments, 5, chord_fill_note(chord, 5));
 }
 
 static const uint8_t *role_priority_for_runtime(const amy_sound_runtime_t *runtime)

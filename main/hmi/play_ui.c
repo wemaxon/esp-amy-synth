@@ -35,6 +35,9 @@ static const char *EFFECT_NAMES[PLAY_UI_EFFECT_COUNT] = {
     [PLAY_UI_EFFECT_SCALE] = "SCALE",
     [PLAY_UI_EFFECT_VOICE_LEADING] = "VOICE LEAD",
     [PLAY_UI_EFFECT_BASS_MODE] = "BASS MODE",
+    [PLAY_UI_EFFECT_VOICE_COUNT] = "VOICES",
+    [PLAY_UI_EFFECT_ADSR] = "ADSR",
+    [PLAY_UI_EFFECT_GLIDE] = "GLIDE",
 };
 
 static const char *LFO_LEVEL_NAMES[] = {
@@ -47,6 +50,18 @@ static const char *DELAY_LEVEL_NAMES[] = {
 
 static const char *TREMOLO_LEVEL_NAMES[] = {
     "OFF", "1/4", "1/8", "1/16", "1/16T", "1/32",
+};
+
+static const char *VOICE_LEVEL_NAMES[] = {
+    "8", "4", "2", "1",
+};
+
+static const char *ADSR_PRESET_NAMES[] = {
+    "LONG", "SHORT", "SWELL", "PLUCK", "TOUCH", "SUSTAIN",
+};
+
+static const char *GLIDE_LEVEL_NAMES[] = {
+    "OFF", "FAST", "MED", "SLOW",
 };
 
 static const esp_pocket_audio_hw_t *s_hw;
@@ -85,6 +100,10 @@ void play_ui_model_init(play_ui_model_t *model)
     model->repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH;
     model->effect_index = PLAY_UI_EFFECT_JOYSTICK;
     model->effects[PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
+    model->adsr_preset = 4;
+    model->attack_ms = 25;
+    model->release_ms = 450;
+    model->glide_level = 0;
     model->wheel_percent = 100;
     model->volume_percent = 100;
     model->joystick_direction = CONTROL_JOYSTICK_CENTER;
@@ -222,6 +241,27 @@ static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model
         draw_rowf(display, 4, "VOICE LEAD %s", model->voice_leading_enabled ? "ON" : "OFF");
     } else if (effect == PLAY_UI_EFFECT_BASS_MODE) {
         draw_rowf(display, 4, "BASS %s", synth_bass_mode_name(model->bass_mode));
+    } else if (effect == PLAY_UI_EFFECT_VOICE_COUNT) {
+        uint8_t voice_level = model->voice_level;
+        if (voice_level >= sizeof(VOICE_LEVEL_NAMES) / sizeof(VOICE_LEVEL_NAMES[0])) {
+            voice_level = 0;
+        }
+        draw_rowf(display, 4, "VOICES %s", VOICE_LEVEL_NAMES[voice_level]);
+    } else if (effect == PLAY_UI_EFFECT_ADSR) {
+        uint8_t preset = model->adsr_preset;
+        if (preset >= sizeof(ADSR_PRESET_NAMES) / sizeof(ADSR_PRESET_NAMES[0])) {
+            preset = 0;
+        }
+        draw_rowf(display, 4, "ADSR %s", ADSR_PRESET_NAMES[preset]);
+        draw_rowf(display, 5, "A%lu R%lu",
+                  (unsigned long)model->attack_ms,
+                  (unsigned long)model->release_ms);
+    } else if (effect == PLAY_UI_EFFECT_GLIDE) {
+        uint8_t glide_level = model->glide_level;
+        if (glide_level >= sizeof(GLIDE_LEVEL_NAMES) / sizeof(GLIDE_LEVEL_NAMES[0])) {
+            glide_level = 0;
+        }
+        draw_rowf(display, 4, "GLIDE %s", GLIDE_LEVEL_NAMES[glide_level]);
     } else if (effect == PLAY_UI_EFFECT_DELAY) {
         uint8_t delay_level = model->delay_level;
         if (delay_level >= sizeof(DELAY_LEVEL_NAMES) / sizeof(DELAY_LEVEL_NAMES[0])) {

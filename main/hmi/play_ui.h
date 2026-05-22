@@ -38,6 +38,9 @@ typedef enum {
     PLAY_UI_EFFECT_SCALE,
     PLAY_UI_EFFECT_VOICE_LEADING,
     PLAY_UI_EFFECT_BASS_MODE,
+    PLAY_UI_EFFECT_VOICE_COUNT,
+    PLAY_UI_EFFECT_ADSR,
+    PLAY_UI_EFFECT_GLIDE,
     PLAY_UI_EFFECT_COUNT,
 } play_ui_effect_t;
 
@@ -68,6 +71,11 @@ typedef struct {
     uint8_t lfo_level;
     uint8_t delay_level;
     uint8_t tremolo_level;
+    uint8_t voice_level;
+    uint8_t adsr_preset;
+    uint32_t attack_ms;
+    uint32_t release_ms;
+    uint8_t glide_level;
     bool wheel_present;
     uint8_t wheel_percent;
     uint8_t volume_percent;

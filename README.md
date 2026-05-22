@@ -1,8 +1,16 @@
-| Supported Targets | ESP32 |
-| ----------------- | ----- |
+| Supported Targets | ESP32, ESP32P4 |
+| ----------------- | ------------- |
 
 # esp-pocket-synth
 IDF-native firmware for the esp-pocket-audio ESP32-A1S hardware.
+
+## Board Selection
+
+Select the hardware board with `idf.py menuconfig` under
+`ESP Pocket Audio -> Board configuration`.
+
+The ESP32 target defaults to `ai-thinker-a1s`. The ESP32P4 target defaults to
+`wt0132p4-a1`.
 
 ## Features
 

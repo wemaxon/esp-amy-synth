@@ -30,9 +30,8 @@ typedef struct {
     synth_joystick_mode_t joystick_mode;
     synth_bass_mode_t bass_mode;
     bool voice_leading_enabled;
-    bool chord_lock_enabled;
+    synth_chord_modifier_t locked_modifier[SYNTH_CHORD_BUTTON_COUNT];
     int8_t chord_inversion[SYNTH_CHORD_BUTTON_COUNT];
-    int8_t chord_slash_offset[SYNTH_CHORD_BUTTON_COUNT];
     synth_sound_t sound;
     synth_play_mode_t mode;
     uint16_t bpm;
@@ -55,6 +54,7 @@ typedef struct {
     control_joystick_direction_t joystick_direction;
     uint8_t held_mask;
     uint8_t focus_slot;
+    uint8_t slash_bass_slot;
     bool looper_visible;
     bool looper_menu_held;
     bool looper_menu_clear_used;
@@ -99,14 +99,12 @@ static const uint32_t APP_TASK_STACK_SIZE = 4096;
 static const UBaseType_t APP_TASK_PRIORITY = 5;
 static const BaseType_t APP_TASK_CORE = 0;
 static const TickType_t APP_UPDATE_TICKS = pdMS_TO_TICKS(20);
-static const int8_t GLOBAL_OCTAVE_MIN = -2;
+static const int8_t GLOBAL_OCTAVE_MIN = -1;
 static const int8_t GLOBAL_OCTAVE_MAX = 2;
 static const int8_t BUTTON_OCTAVE_MIN = -2;
 static const int8_t BUTTON_OCTAVE_MAX = 1;
-static const int8_t CHORD_INVERSION_MIN = -8;
-static const int8_t CHORD_INVERSION_MAX = 8;
-static const int8_t CHORD_SLASH_MIN = -12;
-static const int8_t CHORD_SLASH_MAX = 12;
+static const int8_t CHORD_INVERSION_MIN = 0;
+static const int8_t CHORD_INVERSION_MAX = SYNTH_CHORD_INVERSION_COUNT - 1;
 static const uint16_t BPM_MIN = 40;
 static const uint16_t BPM_MAX = 300;
 static const uint8_t WHEEL_CHANGE_THRESHOLD_PERCENT = 2;
@@ -140,7 +138,6 @@ static synth_app_state_t s_app = {
     .joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT,
     .bass_mode = SYNTH_BASS_MODE_OFF,
     .voice_leading_enabled = false,
-    .chord_lock_enabled = false,
     .sound = SYNTH_SOUND_SAW,
     .mode = SYNTH_PLAY_MODE_PLAY,
     .bpm = 120,
@@ -162,6 +159,7 @@ static synth_app_state_t s_app = {
     .last_looper_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
     .focus_slot = 0,
+    .slash_bass_slot = UINT8_MAX,
     .strum_slot = UINT8_MAX,
     .drone_slot = UINT8_MAX,
     .arp_last_slot = UINT8_MAX,
@@ -196,6 +194,16 @@ static void set_status(const char *status)
     }
 }
 
+static bool any_chord_locked(void)
+{
+    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
+        if (s_app.locked_modifier[slot] != SYNTH_CHORD_MOD_NONE) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void update_ui(void)
 {
     play_ui_model_t model = {0};
@@ -209,7 +217,7 @@ static void update_ui(void)
     model.joystick_mode = s_app.joystick_mode;
     model.bass_mode = s_app.bass_mode;
     model.voice_leading_enabled = s_app.voice_leading_enabled;
-    model.chord_lock_enabled = s_app.chord_lock_enabled;
+    model.chord_lock_enabled = any_chord_locked();
     model.sound = s_app.sound;
     model.mode = s_app.mode;
     model.bpm = s_app.bpm;
@@ -241,19 +249,59 @@ static uint8_t slot_from_degree(uint8_t degree)
     return degree > 0 ? (uint8_t)(degree - 1) : 0;
 }
 
+static synth_chord_modifier_t effective_modifier_for_slot(uint8_t slot)
+{
+    if (s_app.modifier != SYNTH_CHORD_MOD_NONE &&
+        slot == s_app.focus_slot &&
+        (s_app.held_mask & (1U << slot)) != 0) {
+        return s_app.modifier;
+    }
+    if (slot < SYNTH_CHORD_BUTTON_COUNT) {
+        return s_app.locked_modifier[slot];
+    }
+    return SYNTH_CHORD_MOD_NONE;
+}
+
+static uint8_t first_held_slot_except(uint8_t excluded_slot)
+{
+    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
+        if (slot != excluded_slot && (s_app.held_mask & (1U << slot)) != 0) {
+            return slot;
+        }
+    }
+    return UINT8_MAX;
+}
+
+static uint8_t bass_slot_for_chord(uint8_t chord_slot)
+{
+    if (s_app.bass_mode != SYNTH_BASS_MODE_SLASH) {
+        return chord_slot;
+    }
+    if (s_app.slash_bass_slot < SYNTH_CHORD_BUTTON_COUNT &&
+        s_app.slash_bass_slot != chord_slot &&
+        (s_app.held_mask & (1U << s_app.slash_bass_slot)) != 0) {
+        return s_app.slash_bass_slot;
+    }
+
+    uint8_t held_slot = first_held_slot_except(chord_slot);
+    return held_slot < SYNTH_CHORD_BUTTON_COUNT ? held_slot : chord_slot;
+}
+
 static bool build_chord(uint8_t degree, synth_chord_t *chord)
 {
     uint8_t slot = slot_from_degree(degree);
+    uint8_t bass_slot = bass_slot_for_chord(slot);
     synth_chord_request_t request = {
         .key = s_app.key,
         .scale = s_app.scale,
         .degree = degree,
         .global_octave_shift = s_app.global_octave_shift,
         .button_octave_shift = s_app.button_octave_shift[slot],
-        .modifier = s_app.modifier,
+        .modifier = effective_modifier_for_slot(slot),
         .bass_mode = s_app.bass_mode,
         .inversion = s_app.chord_inversion[slot],
-        .slash_offset = s_app.chord_slash_offset[slot],
+        .bass_degree = (uint8_t)(bass_slot + 1),
+        .bass_octave_shift = s_app.button_octave_shift[bass_slot],
         .voice_leading_enabled = s_app.voice_leading_enabled,
     };
     if (s_app.voice_leading_enabled && s_app.voice_anchor_valid) {
@@ -777,7 +825,7 @@ static void log_chord_event(const char *verb, const synth_chord_t *chord)
              synth_play_mode_name(s_app.mode),
              synth_key_name(s_app.key),
              s_app.global_octave_shift,
-             synth_chord_modifier_name(s_app.modifier),
+             synth_chord_modifier_name(chord->modifier),
              chord->note_count,
              note_names);
 }
@@ -810,6 +858,17 @@ static void append_unique_layer_note(synth_chord_t *layer, uint8_t note)
     layer->notes[layer->note_count++] = note;
 }
 
+static uint8_t held_chord_count(void)
+{
+    uint8_t count = 0;
+    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
+        if ((s_app.held_mask & (1U << slot)) != 0 && s_app.held_chord_valid[slot]) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 static bool build_play_layer(synth_chord_t *layer)
 {
     if (layer == NULL) {
@@ -819,9 +878,16 @@ static bool build_play_layer(synth_chord_t *layer)
     memset(layer, 0, sizeof(*layer));
     bool initialized = false;
     uint8_t chord_count = 0;
+    uint8_t held_count = held_chord_count();
+    uint8_t slash_bass_slot = bass_slot_for_chord(UINT8_MAX);
 
     for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
         if ((s_app.held_mask & (1U << slot)) == 0 || !s_app.held_chord_valid[slot]) {
+            continue;
+        }
+        if (s_app.bass_mode == SYNTH_BASS_MODE_SLASH &&
+            held_count > 1 &&
+            slot == slash_bass_slot) {
             continue;
         }
 
@@ -976,6 +1042,10 @@ static void release_degree(uint8_t degree)
     s_app.held_mask &= (uint8_t)~(1U << slot);
     s_app.held_chord_valid[slot] = false;
     s_app.arp_chord_valid[slot] = false;
+    if (s_app.slash_bass_slot == slot) {
+        uint8_t replacement = first_held_slot_except(UINT8_MAX);
+        s_app.slash_bass_slot = replacement < SYNTH_CHORD_BUTTON_COUNT ? replacement : UINT8_MAX;
+    }
 
     if (s_app.mode == SYNTH_PLAY_MODE_DRONE) {
         set_status(s_app.drone_active ? "DRONE" : "READY");
@@ -1054,6 +1124,18 @@ static void handle_chord_event(const control_event_t *event)
             }
             update_ui();
             return;
+        }
+
+        if (s_app.bass_mode == SYNTH_BASS_MODE_SLASH &&
+            s_app.held_mask != 0 &&
+            (s_app.held_mask & (1U << slot)) == 0) {
+            uint8_t bass_slot = active_valid_held_slot(s_app.held_chord_valid);
+            if (bass_slot < SYNTH_CHORD_BUTTON_COUNT) {
+                s_app.slash_bass_slot = bass_slot;
+            }
+        } else if (s_app.bass_mode == SYNTH_BASS_MODE_SLASH &&
+                   s_app.held_mask == 0) {
+            s_app.slash_bass_slot = slot;
         }
 
         s_app.held_mask |= 1U << slot;
@@ -1187,7 +1269,9 @@ static void step_effect(int8_t steps)
 static void step_joystick_mode(void)
 {
     s_app.joystick_mode = synth_joystick_mode_step(s_app.joystick_mode, 1);
-    s_app.modifier = synth_chord_modifier_from_joystick(s_app.joystick_mode, s_app.joystick_direction);
+    s_app.modifier = s_app.held_mask != 0 ?
+        synth_chord_modifier_from_joystick(s_app.joystick_mode, s_app.joystick_direction) :
+        SYNTH_CHORD_MOD_NONE;
     ESP_LOGI(TAG, "joystick mode=%s", synth_joystick_mode_name(s_app.joystick_mode));
     set_status(synth_joystick_mode_name(s_app.joystick_mode));
     refresh_held_chords();
@@ -1197,6 +1281,9 @@ static void step_joystick_mode(void)
 static void step_bass_mode(void)
 {
     s_app.bass_mode = synth_bass_mode_step(s_app.bass_mode, 1);
+    if (s_app.bass_mode != SYNTH_BASS_MODE_SLASH) {
+        s_app.slash_bass_slot = UINT8_MAX;
+    }
     ESP_LOGI(TAG, "bass mode=%s", synth_bass_mode_name(s_app.bass_mode));
     set_status(synth_bass_mode_name(s_app.bass_mode));
     refresh_held_chords();
@@ -1215,79 +1302,70 @@ static void toggle_voice_leading(void)
     update_ui();
 }
 
-static void toggle_chord_lock(void)
+static uint8_t focused_held_slot(void)
 {
-    s_app.chord_lock_enabled = !s_app.chord_lock_enabled;
-    ESP_LOGI(TAG, "chord lock=%s", s_app.chord_lock_enabled ? "on" : "off");
-    set_status(s_app.chord_lock_enabled ? "CHORD LOCK" : "LOCK OFF");
-    update_ui();
-}
-
-static bool step_locked_chord_voicing(control_joystick_direction_t direction)
-{
-    if (!s_app.chord_lock_enabled || s_app.held_mask == 0) {
-        return false;
-    }
-
     uint8_t slot = s_app.focus_slot;
     if ((s_app.held_mask & (1U << slot)) == 0) {
         slot = active_valid_held_slot(s_app.held_chord_valid);
         if (slot == ARP_NO_SLOT) {
-            return false;
+            return UINT8_MAX;
         }
         s_app.focus_slot = slot;
     }
+    return slot;
+}
 
-    bool changed = false;
-    switch (direction) {
-    case CONTROL_JOYSTICK_UP:
-        if (s_app.chord_inversion[slot] < CHORD_INVERSION_MAX) {
-            ++s_app.chord_inversion[slot];
-            changed = true;
-        }
-        break;
-    case CONTROL_JOYSTICK_DOWN:
-        if (s_app.chord_inversion[slot] > CHORD_INVERSION_MIN) {
-            --s_app.chord_inversion[slot];
-            changed = true;
-        }
-        break;
-    case CONTROL_JOYSTICK_LEFT:
-        if (s_app.chord_slash_offset[slot] > CHORD_SLASH_MIN) {
-            --s_app.chord_slash_offset[slot];
-            s_app.bass_mode = SYNTH_BASS_MODE_SLASH;
-            changed = true;
-        }
-        break;
-    case CONTROL_JOYSTICK_RIGHT:
-        if (s_app.chord_slash_offset[slot] < CHORD_SLASH_MAX) {
-            ++s_app.chord_slash_offset[slot];
-            s_app.bass_mode = SYNTH_BASS_MODE_SLASH;
-            changed = true;
-        }
-        break;
-    case CONTROL_JOYSTICK_CENTER:
-    case CONTROL_JOYSTICK_UP_RIGHT:
-    case CONTROL_JOYSTICK_DOWN_RIGHT:
-    case CONTROL_JOYSTICK_DOWN_LEFT:
-    case CONTROL_JOYSTICK_UP_LEFT:
-    default:
-        break;
+static void cycle_focused_chord_inversion(void)
+{
+    if (s_app.held_mask == 0) {
+        return;
     }
 
-    if (!changed) {
-        return false;
+    uint8_t slot = focused_held_slot();
+    if (slot >= SYNTH_CHORD_BUTTON_COUNT) {
+        return;
     }
 
+    int8_t next = (int8_t)(s_app.chord_inversion[slot] + 1);
+    if (next > CHORD_INVERSION_MAX) {
+        next = CHORD_INVERSION_MIN;
+    }
+    s_app.chord_inversion[slot] = next;
+    clear_voice_anchor();
     ESP_LOGI(TAG,
-             "chord %u inversion=%d slash=%d bass=%s",
+             "chord %u inversion=%d",
              (unsigned)(slot + 1),
-             s_app.chord_inversion[slot],
-             s_app.chord_slash_offset[slot],
-             synth_bass_mode_name(s_app.bass_mode));
-    set_status("CHORD LOCK");
+             s_app.chord_inversion[slot]);
+    set_status("INVERSION");
     play_degree((uint8_t)(slot + 1));
-    return true;
+    update_ui();
+}
+
+static void toggle_focused_chord_lock(void)
+{
+    if (s_app.held_mask == 0 || s_app.modifier == SYNTH_CHORD_MOD_NONE) {
+        return;
+    }
+
+    uint8_t slot = focused_held_slot();
+    if (slot >= SYNTH_CHORD_BUTTON_COUNT) {
+        return;
+    }
+
+    if (s_app.locked_modifier[slot] == s_app.modifier) {
+        s_app.locked_modifier[slot] = SYNTH_CHORD_MOD_NONE;
+        ESP_LOGI(TAG, "chord %u lock cleared", (unsigned)(slot + 1));
+        set_status("LOCK OFF");
+    } else {
+        s_app.locked_modifier[slot] = s_app.modifier;
+        ESP_LOGI(TAG,
+                 "chord %u lock=%s",
+                 (unsigned)(slot + 1),
+                 synth_chord_modifier_name(s_app.modifier));
+        set_status("LOCKED");
+    }
+    play_degree((uint8_t)(slot + 1));
+    update_ui();
 }
 
 static void step_lfo_level(void)
@@ -1787,15 +1865,6 @@ static void update_joystick(void)
     }
     s_app.last_looper_direction = CONTROL_JOYSTICK_CENTER;
 
-    if (s_app.chord_lock_enabled && s_app.held_mask != 0) {
-        if (joystick.direction != s_app.last_play_direction) {
-            step_locked_chord_voicing(joystick.direction);
-        }
-        s_app.last_play_direction = joystick.direction;
-        update_ui();
-        return;
-    }
-
     if (s_app.joystick_mode == SYNTH_JOYSTICK_MODE_CHROMATIC &&
         s_app.held_mask == 0 &&
         (joystick.direction == CONTROL_JOYSTICK_LEFT ||
@@ -1877,15 +1946,7 @@ static void handle_menu_event(const control_event_t *event)
     }
 
     if (event->sw == CONTROL_JOYSTICK_CLICK) {
-        if (controls_switch_is_pressed(CONTROL_KEY_MENU) &&
-            controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
-            toggle_chord_lock();
-        } else if (s_app.chord_lock_enabled &&
-                   !controls_switch_is_pressed(CONTROL_KEY_MENU) &&
-                   !controls_switch_is_pressed(CONTROL_SOUND_MENU) &&
-                   !controls_switch_is_pressed(CONTROL_MODE_MENU)) {
-            toggle_chord_lock();
-        } else if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+        if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
             toggle_current_effect();
         } else if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
             set_status("MODE MENU");
@@ -1904,6 +1965,21 @@ static void handle_menu_event(const control_event_t *event)
     } else if (event->sw == CONTROL_KEY_MENU ||
                event->sw == CONTROL_SOUND_MENU ||
                event->sw == CONTROL_MODE_MENU) {
+        if (s_app.held_mask != 0) {
+            if (event->sw == CONTROL_KEY_MENU) {
+                step_focused_button_octave(-1);
+            } else if (event->sw == CONTROL_SOUND_MENU) {
+                if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {
+                    toggle_focused_chord_lock();
+                } else {
+                    cycle_focused_chord_inversion();
+                }
+            } else if (event->sw == CONTROL_MODE_MENU) {
+                step_focused_button_octave(1);
+            }
+            return;
+        }
+
         if (event->sw == CONTROL_KEY_MENU && s_app.looper_visible) {
             s_app.looper_menu_held = true;
             s_app.looper_menu_clear_used = false;

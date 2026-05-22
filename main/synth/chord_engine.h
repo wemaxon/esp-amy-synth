@@ -13,6 +13,7 @@ extern "C" {
 #define SYNTH_CHORD_BUTTON_COUNT 7
 #define SYNTH_MAX_CHORD_NOTES    8
 #define SYNTH_DEFAULT_ROOT_MIDI  60
+#define SYNTH_CHORD_INVERSION_COUNT 3
 
 typedef enum {
     SYNTH_KEY_C = 0,
@@ -63,6 +64,7 @@ typedef enum {
     SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR,
     SYNTH_CHORD_MOD_DOM7,
     SYNTH_CHORD_MOD_MAJ7_MIN7,
+    SYNTH_CHORD_MOD_MAJ9_MIN9,
     SYNTH_CHORD_MOD_ADD9,
     SYNTH_CHORD_MOD_SUS4,
     SYNTH_CHORD_MOD_SIXTH_OR_SUS2,
@@ -81,8 +83,6 @@ typedef enum {
     SYNTH_CHORD_MOD_DOM13,
     SYNTH_CHORD_MOD_DOM7_FLAT9,
     SYNTH_CHORD_MOD_DOM7_ALT,
-    SYNTH_CHORD_MOD_ROOT_DOWN,
-    SYNTH_CHORD_MOD_ROOT_UP,
     SYNTH_CHORD_MOD_COUNT,
 } synth_chord_modifier_t;
 
@@ -95,7 +95,8 @@ typedef struct {
     synth_chord_modifier_t modifier;
     synth_bass_mode_t bass_mode;
     int8_t inversion;
-    int8_t slash_offset;
+    uint8_t bass_degree;
+    int8_t bass_octave_shift;
     bool voice_leading_enabled;
     uint8_t previous_notes[SYNTH_MAX_CHORD_NOTES];
     uint8_t previous_note_count;
@@ -113,7 +114,7 @@ typedef struct {
     synth_scale_t scale;
     synth_chord_modifier_t modifier;
     int8_t inversion;
-    int8_t slash_offset;
+    uint8_t bass_degree;
     bool voice_leading_enabled;
     char name[16];
 } synth_chord_t;

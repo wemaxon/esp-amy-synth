@@ -93,6 +93,8 @@ const char *synth_chord_modifier_name(synth_chord_modifier_t modifier)
         return "dom7";
     case SYNTH_CHORD_MOD_MAJ7_MIN7:
         return "7";
+    case SYNTH_CHORD_MOD_MAJ9_MIN9:
+        return "9";
     case SYNTH_CHORD_MOD_ADD9:
         return "add9";
     case SYNTH_CHORD_MOD_SUS4:
@@ -129,10 +131,6 @@ const char *synth_chord_modifier_name(synth_chord_modifier_t modifier)
         return "7b9";
     case SYNTH_CHORD_MOD_DOM7_ALT:
         return "7alt";
-    case SYNTH_CHORD_MOD_ROOT_DOWN:
-        return "-1";
-    case SYNTH_CHORD_MOD_ROOT_UP:
-        return "+1";
     default:
         return "?";
     }
@@ -230,19 +228,19 @@ static synth_chord_modifier_t chromatic_modifier_from_joystick(control_joystick_
     case CONTROL_JOYSTICK_UP:
         return SYNTH_CHORD_MOD_MIN_MAJ7;
     case CONTROL_JOYSTICK_UP_RIGHT:
-        return SYNTH_CHORD_MOD_DOM7_ALT;
+        return SYNTH_CHORD_MOD_DOM13;
     case CONTROL_JOYSTICK_RIGHT:
-        return SYNTH_CHORD_MOD_ROOT_UP;
+        return SYNTH_CHORD_MOD_SIX_NINE;
     case CONTROL_JOYSTICK_DOWN_RIGHT:
-        return SYNTH_CHORD_MOD_HALF_DIM7;
+        return SYNTH_CHORD_MOD_DOM7_ALT;
     case CONTROL_JOYSTICK_DOWN:
         return SYNTH_CHORD_MOD_MAJ13;
     case CONTROL_JOYSTICK_DOWN_LEFT:
-        return SYNTH_CHORD_MOD_SIX_NINE;
-    case CONTROL_JOYSTICK_LEFT:
-        return SYNTH_CHORD_MOD_ROOT_DOWN;
-    case CONTROL_JOYSTICK_UP_LEFT:
         return SYNTH_CHORD_MOD_DOM7_FLAT9;
+    case CONTROL_JOYSTICK_LEFT:
+        return SYNTH_CHORD_MOD_HALF_DIM7;
+    case CONTROL_JOYSTICK_UP_LEFT:
+        return SYNTH_CHORD_MOD_MAJ7_SHARP11;
     case CONTROL_JOYSTICK_CENTER:
     default:
         return SYNTH_CHORD_MOD_NONE;
@@ -386,6 +384,9 @@ static chord_formula_t formula_for_modifier(synth_chord_modifier_t modifier, con
     static const int16_t MAJ7[] = {0, 4, 7, 11};
     static const int16_t MIN7[] = {0, 3, 7, 10};
     static const int16_t HALF_DIM7[] = {0, 3, 6, 10};
+    static const int16_t MAJ9[] = {0, 4, 7, 11, 14};
+    static const int16_t MIN9[] = {0, 3, 7, 10, 14};
+    static const int16_t HALF_DIM9[] = {0, 3, 6, 10, 14};
     static const int16_t ADD9_MAJOR[] = {0, 4, 7, 14};
     static const int16_t ADD9_MINOR[] = {0, 3, 7, 14};
     static const int16_t ADD9_DIM[] = {0, 3, 6, 14};
@@ -410,8 +411,6 @@ static chord_formula_t formula_for_modifier(synth_chord_modifier_t modifier, con
     chord_formula_t formula = *base_formula;
     switch (modifier) {
     case SYNTH_CHORD_MOD_NONE:
-    case SYNTH_CHORD_MOD_ROOT_DOWN:
-    case SYNTH_CHORD_MOD_ROOT_UP:
         return formula;
     case SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR:
         if (base_is_majorish(base_formula->base)) {
@@ -432,6 +431,15 @@ static chord_formula_t formula_for_modifier(synth_chord_modifier_t modifier, con
             formula_set(&formula, MIN7, 4, "m7", BASE_MINOR);
         } else {
             formula_set(&formula, MAJ7, 4, "maj7", BASE_MAJOR);
+        }
+        return formula;
+    case SYNTH_CHORD_MOD_MAJ9_MIN9:
+        if (base_formula->base == BASE_DIMINISHED) {
+            formula_set(&formula, HALF_DIM9, 5, "m9b5", BASE_DIMINISHED);
+        } else if (base_is_minorish(base_formula->base)) {
+            formula_set(&formula, MIN9, 5, "m9", BASE_MINOR);
+        } else {
+            formula_set(&formula, MAJ9, 5, "maj9", BASE_MAJOR);
         }
         return formula;
     case SYNTH_CHORD_MOD_ADD9:
@@ -632,7 +640,7 @@ static void apply_voice_leading(int16_t *notes,
 
     int32_t best_score = INT_MAX;
     int16_t best_notes[SYNTH_MAX_CHORD_NOTES] = {0};
-    for (int8_t inversion = -8; inversion <= 8; ++inversion) {
+    for (int8_t inversion = 0; inversion < SYNTH_CHORD_INVERSION_COUNT; ++inversion) {
         int16_t candidate[SYNTH_MAX_CHORD_NOTES] = {0};
         for (uint8_t i = 0; i < count; ++i) {
             candidate[i] = notes[i];
@@ -696,7 +704,13 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
         request->scale >= SYNTH_SCALE_COUNT ||
         request->degree == 0 ||
         request->degree > SYNTH_CHORD_BUTTON_COUNT ||
-        request->bass_mode >= SYNTH_BASS_MODE_COUNT) {
+        request->modifier >= SYNTH_CHORD_MOD_COUNT ||
+        request->bass_mode >= SYNTH_BASS_MODE_COUNT ||
+        request->inversion < 0 ||
+        request->inversion >= SYNTH_CHORD_INVERSION_COUNT ||
+        (request->bass_mode == SYNTH_BASS_MODE_SLASH &&
+         (request->bass_degree == 0 ||
+          request->bass_degree > SYNTH_CHORD_BUTTON_COUNT))) {
         return -1;
     }
 
@@ -707,7 +721,7 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
     chord->modifier = request->modifier;
     chord->bass_mode = request->bass_mode;
     chord->inversion = request->inversion;
-    chord->slash_offset = request->slash_offset;
+    chord->bass_degree = request->bass_degree;
     chord->voice_leading_enabled = request->voice_leading_enabled;
 
     const scale_definition_t *scale = &SCALE_DEFS[request->scale];
@@ -718,11 +732,6 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
                    ((int16_t)request->global_octave_shift * 12) +
                    ((int16_t)request->button_octave_shift * 12);
 
-    if (request->modifier == SYNTH_CHORD_MOD_ROOT_DOWN) {
-        --root;
-    } else if (request->modifier == SYNTH_CHORD_MOD_ROOT_UP) {
-        ++root;
-    }
     if (root < 0 || root > 127) {
         return -1;
     }
@@ -737,12 +746,13 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
         voiced[i] = root + formula.intervals[i];
     }
 
-    apply_inversion(voiced, chord->note_count, request->inversion);
     if (request->voice_leading_enabled) {
         apply_voice_leading(voiced,
                             chord->note_count,
                             request->previous_notes,
                             request->previous_note_count);
+    } else {
+        apply_inversion(voiced, chord->note_count, request->inversion);
     }
 
     for (uint8_t i = 0; i < chord->note_count; ++i) {
@@ -751,10 +761,18 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
 
     if (request->bass_mode == SYNTH_BASS_MODE_ROOT) {
         chord->bass_enabled = true;
-        chord->bass_note = bass_below_chord(root - 12, chord);
+        chord->bass_note = bass_below_chord(root - 24, chord);
     } else if (request->bass_mode == SYNTH_BASS_MODE_SLASH) {
+        int16_t bass_root = SYNTH_DEFAULT_ROOT_MIDI +
+                            (int16_t)request->key +
+                            scale_degree_offset(scale, (int)request->bass_degree - 1) +
+                            ((int16_t)request->global_octave_shift * 12) +
+                            ((int16_t)request->bass_octave_shift * 12);
+        if (bass_root < 0 || bass_root > 127) {
+            return -1;
+        }
         chord->bass_enabled = true;
-        chord->bass_note = bass_below_chord(root + request->slash_offset, chord);
+        chord->bass_note = bass_below_chord(bass_root, chord);
     }
 
     set_chord_name(chord, formula.suffix);

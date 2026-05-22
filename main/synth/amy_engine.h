@@ -33,6 +33,7 @@ esp_err_t synth_amy_set_delay_enabled(bool enabled, float delay_ms);
 esp_err_t synth_amy_set_tremolo_enabled(bool enabled);
 esp_err_t synth_amy_set_tremolo_amount(float amount);
 esp_err_t synth_amy_set_flanger_enabled(bool enabled);
+esp_err_t synth_amy_set_stereo_enabled(bool enabled);
 esp_err_t synth_amy_set_lfo_enabled(bool enabled);
 esp_err_t synth_amy_set_lfo_pitch(float semitones);
 esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord);

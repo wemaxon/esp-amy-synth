@@ -8,6 +8,7 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_pocket_audio_board_config.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -146,6 +147,7 @@ static synth_app_state_t s_app = {
     .effect_index = PLAY_UI_EFFECT_JOYSTICK,
     .effects = {
         [PLAY_UI_EFFECT_FILTER] = true,
+        [PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0,
     },
     .strum_speed = SYNTH_STRUM_SPEED_MEDIUM,
     .arp_pattern = SYNTH_ARP_PATTERN_UP,
@@ -1411,6 +1413,9 @@ static void toggle_current_effect(void)
         break;
     case PLAY_UI_EFFECT_CHORUS:
         err = synth_amy_set_chorus_enabled(s_app.effects[effect]);
+        break;
+    case PLAY_UI_EFFECT_STEREO:
+        err = synth_amy_set_stereo_enabled(s_app.effects[effect]);
         break;
     case PLAY_UI_EFFECT_FILTER:
         err = synth_amy_set_filter_enabled(s_app.effects[effect]);

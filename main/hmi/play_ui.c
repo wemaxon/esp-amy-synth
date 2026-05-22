@@ -7,6 +7,7 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -25,6 +26,7 @@ static const char *EFFECT_NAMES[PLAY_UI_EFFECT_COUNT] = {
     [PLAY_UI_EFFECT_REVERB] = "REVERB",
     [PLAY_UI_EFFECT_DELAY] = "DELAY",
     [PLAY_UI_EFFECT_CHORUS] = "CHORUS",
+    [PLAY_UI_EFFECT_STEREO] = "STEREO",
     [PLAY_UI_EFFECT_FILTER] = "FILTER",
     [PLAY_UI_EFFECT_TREMOLO] = "TREMOLO",
     [PLAY_UI_EFFECT_FLANGER] = "FLANGER",
@@ -82,6 +84,7 @@ void play_ui_model_init(play_ui_model_t *model)
     model->arp_chord_mode = SYNTH_ARP_CHORD_MODE_ARP_ONLY;
     model->repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH;
     model->effect_index = PLAY_UI_EFFECT_JOYSTICK;
+    model->effects[PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
     model->wheel_percent = 100;
     model->volume_percent = 100;
     model->joystick_direction = CONTROL_JOYSTICK_CENTER;

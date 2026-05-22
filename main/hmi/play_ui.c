@@ -433,8 +433,12 @@ esp_err_t play_ui_start(const esp_pocket_audio_hw_t *hw)
     if (s_task != NULL) {
         return ESP_OK;
     }
-    if (hw == NULL || !pocket_oled_is_initialized(&hw->display)) {
+    if (hw == NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (!pocket_oled_is_initialized(&hw->display)) {
+        ESP_LOGI(TAG, "play UI disabled: OLED display is not initialized");
+        return ESP_OK;
     }
 
     s_lock = xSemaphoreCreateMutex();

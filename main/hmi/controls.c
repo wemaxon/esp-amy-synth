@@ -14,8 +14,8 @@
 #include "freertos/task.h"
 #include "hmi/control_i2c.h"
 #include "hmi/joystick_calibration.h"
+#include "hmi/switch_expander.h"
 #include "hmi/wheel_calibration.h"
-#include "pcf8574.h"
 
 #define EVENT_QUEUE_LEN 16
 #define CONTROLS_TASK_STACK_SIZE 4096
@@ -39,29 +39,54 @@ static const TickType_t HELD_LOG_TICKS = pdMS_TO_TICKS(500);
 static const float DIRECTION_AXIS_DEADZONE = 0.75f;
 static const float DIRECTION_DIAGONAL_AXIS_MIN = 0.55f;
 
-static const uint8_t PCF8574_ADDRS[] = {
-    ESP_POCKET_AUDIO_PCF8574_0_ADDR,
+#define SWITCH_MAP_FROM_CONFIG(name) \
+    { \
+        .is_gpio = ESP_POCKET_AUDIO_SW_##name##_GPIO != GPIO_NUM_NC, \
+        .expander = ESP_POCKET_AUDIO_SW_##name##_EXPANDER, \
+        .pin = ESP_POCKET_AUDIO_SW_##name##_PIN, \
+        .gpio = ESP_POCKET_AUDIO_SW_##name##_GPIO, \
+    }
+
+#define SWITCH_EXPANDER_STORAGE_COUNT \
+    (ESP_POCKET_AUDIO_SWITCH_EXPANDER_COUNT > 0 ? ESP_POCKET_AUDIO_SWITCH_EXPANDER_COUNT : 1)
+
+static const uint8_t SWITCH_EXPANDER_ADDRS[SWITCH_EXPANDER_STORAGE_COUNT] = {
+#if ESP_POCKET_AUDIO_SWITCH_EXPANDER_COUNT > 0
+    ESP_POCKET_AUDIO_SWITCH_EXPANDER_0_ADDR,
+#else
+    0,
+#endif
+};
+
+static const uint16_t SWITCH_EXPANDER_PULLUP_MASKS[SWITCH_EXPANDER_STORAGE_COUNT] = {
+#if ESP_POCKET_AUDIO_SWITCH_EXPANDER_COUNT > 0
+    ESP_POCKET_AUDIO_SWITCH_EXPANDER_0_PULLUP_MASK,
+#else
+    0,
+#endif
 };
 
 static const switch_mapping_t SWITCH_MAP[CONTROL_SWITCH_COUNT] = {
-    [CONTROL_CHORD_1] = {false, ESP_POCKET_AUDIO_SW_CHORD_1_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_1_PIN, GPIO_NUM_NC},
-    [CONTROL_CHORD_2] = {false, ESP_POCKET_AUDIO_SW_CHORD_2_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_2_PIN, GPIO_NUM_NC},
-    [CONTROL_CHORD_3] = {false, ESP_POCKET_AUDIO_SW_CHORD_3_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_3_PIN, GPIO_NUM_NC},
-    [CONTROL_CHORD_4] = {false, ESP_POCKET_AUDIO_SW_CHORD_4_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_4_PIN, GPIO_NUM_NC},
-    [CONTROL_CHORD_5] = {false, ESP_POCKET_AUDIO_SW_CHORD_5_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_5_PIN, GPIO_NUM_NC},
-    [CONTROL_CHORD_6] = {false, ESP_POCKET_AUDIO_SW_CHORD_6_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_6_PIN, GPIO_NUM_NC},
-    [CONTROL_CHORD_7] = {false, ESP_POCKET_AUDIO_SW_CHORD_7_EXPANDER, ESP_POCKET_AUDIO_SW_CHORD_7_PIN, GPIO_NUM_NC},
-    [CONTROL_JOYSTICK_CLICK] = {true, 0, 0, ESP_POCKET_AUDIO_SW_JOYSTICK_CLICK_GPIO},
-    [CONTROL_KEY_MENU] = {true, 0, 0, ESP_POCKET_AUDIO_SW_MODE_MENU_GPIO},
-    [CONTROL_MODE_MENU] = {false, ESP_POCKET_AUDIO_SW_KEY_MENU_EXPANDER, ESP_POCKET_AUDIO_SW_KEY_MENU_PIN, GPIO_NUM_NC},
-    [CONTROL_SOUND_MENU] = {true, 0, 0, ESP_POCKET_AUDIO_SW_SOUND_MENU_GPIO},
+    [CONTROL_CHORD_1] = SWITCH_MAP_FROM_CONFIG(CHORD_1),
+    [CONTROL_CHORD_2] = SWITCH_MAP_FROM_CONFIG(CHORD_2),
+    [CONTROL_CHORD_3] = SWITCH_MAP_FROM_CONFIG(CHORD_3),
+    [CONTROL_CHORD_4] = SWITCH_MAP_FROM_CONFIG(CHORD_4),
+    [CONTROL_CHORD_5] = SWITCH_MAP_FROM_CONFIG(CHORD_5),
+    [CONTROL_CHORD_6] = SWITCH_MAP_FROM_CONFIG(CHORD_6),
+    [CONTROL_CHORD_7] = SWITCH_MAP_FROM_CONFIG(CHORD_7),
+    [CONTROL_JOYSTICK_CLICK] = SWITCH_MAP_FROM_CONFIG(JOYSTICK_CLICK),
+    [CONTROL_KEY_MENU] = SWITCH_MAP_FROM_CONFIG(KEY_MENU),
+    [CONTROL_MODE_MENU] = SWITCH_MAP_FROM_CONFIG(MODE_MENU),
+    [CONTROL_SOUND_MENU] = SWITCH_MAP_FROM_CONFIG(SOUND_MENU),
 };
 
 static bool s_initialized;
 static i2c_master_bus_handle_t s_i2c_bus;
+#if ESP_POCKET_AUDIO_ADS1115_ENABLED
 static ads1115_t s_ads1115;
-static pcf8574_t s_pcf8574[ESP_POCKET_AUDIO_PCF8574_COUNT];
-static uint8_t s_pcf_port_state[ESP_POCKET_AUDIO_PCF8574_COUNT];
+#endif
+static switch_expander_t s_expanders[SWITCH_EXPANDER_STORAGE_COUNT];
+static uint16_t s_expander_port_state[SWITCH_EXPANDER_STORAGE_COUNT];
 static switch_debounce_t s_switches[CONTROL_SWITCH_COUNT];
 static control_event_t s_events[EVENT_QUEUE_LEN];
 static size_t s_event_head;
@@ -77,7 +102,7 @@ static TaskHandle_t s_service_task;
 
 static size_t configured_expander_count(void)
 {
-    return ESP_POCKET_AUDIO_PCF8574_COUNT > 2 ? 2 : ESP_POCKET_AUDIO_PCF8574_COUNT;
+    return ESP_POCKET_AUDIO_SWITCH_EXPANDER_COUNT;
 }
 
 const char *controls_switch_name(control_switch_t sw)
@@ -192,14 +217,19 @@ static esp_err_t probe_i2c_addr(uint8_t address)
     return i2c_master_probe(s_i2c_bus, address, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS);
 }
 
+static uint64_t gpio_bit(gpio_num_t gpio)
+{
+    return gpio == GPIO_NUM_NC ? 0 : 1ULL << gpio;
+}
+
 static esp_err_t init_interrupt_pin(void)
 {
-    if (ESP_POCKET_AUDIO_PCF8574_INT_GPIO == GPIO_NUM_NC) {
+    if (ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO == GPIO_NUM_NC) {
         return ESP_OK;
     }
 
     gpio_config_t cfg = {
-        .pin_bit_mask = 1ULL << ESP_POCKET_AUDIO_PCF8574_INT_GPIO,
+        .pin_bit_mask = gpio_bit(ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -213,7 +243,7 @@ static esp_err_t init_gpio_switches(void)
     uint64_t gpio_mask = 0;
     for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
         if (SWITCH_MAP[i].is_gpio && SWITCH_MAP[i].gpio != GPIO_NUM_NC) {
-            gpio_mask |= 1ULL << SWITCH_MAP[i].gpio;
+            gpio_mask |= gpio_bit(SWITCH_MAP[i].gpio);
         }
     }
 
@@ -274,12 +304,22 @@ static void push_event(control_switch_t sw, bool pressed)
     portEXIT_CRITICAL(&s_event_mux);
 }
 
+static void log_switch_event(control_switch_t sw, bool pressed)
+{
+#if ESP_POCKET_AUDIO_CONTROL_EVENT_LOG_ENABLED
+    ESP_LOGI(TAG, "%s %s", controls_switch_name(sw), pressed ? "pressed" : "released");
+#else
+    ESP_LOGV(TAG, "%s %s", controls_switch_name(sw), pressed ? "pressed" : "released");
+#endif
+}
+
 static bool mapping_is_available(const switch_mapping_t *mapping)
 {
     if (mapping->is_gpio) {
         return mapping->gpio != GPIO_NUM_NC;
     }
-    return mapping->expander < configured_expander_count() && mapping->pin < 8;
+    return mapping->expander < configured_expander_count() &&
+           mapping->pin < s_expanders[mapping->expander].pin_count;
 }
 
 static bool raw_switch_pressed(const switch_mapping_t *mapping)
@@ -290,7 +330,7 @@ static bool raw_switch_pressed(const switch_mapping_t *mapping)
 
     bool level = mapping->is_gpio ?
         gpio_get_level(mapping->gpio) != 0 :
-        ((s_pcf_port_state[mapping->expander] >> mapping->pin) & 0x01) != 0;
+        ((s_expander_port_state[mapping->expander] >> mapping->pin) & 0x01) != 0;
 
 #if ESP_POCKET_AUDIO_SWITCH_ACTIVE_LOW
     return !level;
@@ -314,13 +354,37 @@ static esp_err_t init_i2c_peripherals(void *ctx)
 {
     (void)ctx;
 
+#if ESP_POCKET_AUDIO_ADS1115_ENABLED
     ESP_RETURN_ON_ERROR(probe_i2c_addr(ESP_POCKET_AUDIO_ADS1115_ADDR), TAG, "ADS1115 not detected");
     ESP_RETURN_ON_ERROR(ads1115_init(&s_ads1115, s_i2c_bus, ESP_POCKET_AUDIO_ADS1115_ADDR, ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "ADS1115 init failed");
+    ESP_LOGI(TAG,
+             "ADS1115 at 0x%02x initialized joystick x_ch=%u y_ch=%u",
+             ESP_POCKET_AUDIO_ADS1115_ADDR,
+             ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_CH,
+             ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_CH);
+#endif
 
     for (size_t i = 0; i < configured_expander_count(); ++i) {
-        ESP_RETURN_ON_ERROR(probe_i2c_addr(PCF8574_ADDRS[i]), TAG, "PCF8574 not detected");
-        ESP_RETURN_ON_ERROR(pcf8574_init(&s_pcf8574[i], s_i2c_bus, PCF8574_ADDRS[i], ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "PCF8574 init failed");
-        s_pcf_port_state[i] = 0xFF;
+        ESP_RETURN_ON_ERROR(probe_i2c_addr(SWITCH_EXPANDER_ADDRS[i]), TAG, "switch expander not detected");
+        ESP_RETURN_ON_ERROR(switch_expander_init(&s_expanders[i],
+                                                 s_i2c_bus,
+                                                 ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE,
+                                                 SWITCH_EXPANDER_ADDRS[i],
+                                                 ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ,
+                                                 ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS),
+                            TAG,
+                            "switch expander init failed");
+        ESP_RETURN_ON_ERROR(switch_expander_write_port(&s_expanders[i], SWITCH_EXPANDER_PULLUP_MASKS[i]),
+                            TAG,
+                            "switch expander latch config failed");
+        s_expander_port_state[i] = SWITCH_EXPANDER_PULLUP_MASKS[i];
+        ESP_LOGI(TAG,
+                 "%s switch expander %u at 0x%02x pins=%u weak_pullup_mask=0x%04x",
+                 switch_expander_type_name(ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE),
+                 (unsigned)i,
+                 SWITCH_EXPANDER_ADDRS[i],
+                 s_expanders[i].pin_count,
+                 SWITCH_EXPANDER_PULLUP_MASKS[i]);
     }
 
     return ESP_OK;
@@ -342,7 +406,7 @@ static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ti
     if (pressed != debounce->stable_pressed && (now_ticks - debounce->changed_at) >= debounce_ticks) {
         debounce->stable_pressed = pressed;
         push_event(sw, pressed);
-        ESP_LOGV(TAG, "%s %s", controls_switch_name(sw), pressed ? "pressed" : "released");
+        log_switch_event(sw, pressed);
     }
 
     if (pressed == debounce->stable_pressed && SWITCH_MAP[sw].is_gpio) {
@@ -350,14 +414,22 @@ static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ti
     }
 }
 
-static esp_err_t update_pcf_switches(TickType_t now_ticks)
+static esp_err_t update_expander_switches(TickType_t now_ticks)
 {
     for (size_t i = 0; i < configured_expander_count(); ++i) {
-        esp_err_t err = pcf8574_read_port(&s_pcf8574[i], &s_pcf_port_state[i]);
+        uint16_t previous = s_expander_port_state[i];
+        uint16_t port_state = previous;
+        esp_err_t err = switch_expander_read_port(&s_expanders[i], &port_state);
         if (err != ESP_OK) {
-            log_control_io_error("PCF8574 read", err);
+            log_control_io_error("switch expander read", err);
             return err;
         }
+        s_expander_port_state[i] = port_state;
+#if ESP_POCKET_AUDIO_CONTROL_PORT_LOG_ENABLED
+        if (port_state != previous) {
+            ESP_LOGI(TAG, "switch expander %u port=0x%04x", (unsigned)i, (unsigned)port_state);
+        }
+#endif
     }
 
     for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
@@ -387,6 +459,7 @@ static void update_gpio_switches(TickType_t now_ticks)
 
 static esp_err_t update_joystick(void)
 {
+#if ESP_POCKET_AUDIO_ADS1115_ENABLED
     int16_t raw_x = 0;
     int16_t raw_y = 0;
 
@@ -406,6 +479,13 @@ static esp_err_t update_joystick(void)
     s_joystick.y.raw = raw_y;
     s_joystick.y.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_Y, raw_y);
     s_joystick.direction = controls_joystick_direction_from_axes(s_joystick.x.value, s_joystick.y.value);
+#else
+    s_joystick.x.raw = 0;
+    s_joystick.x.value = 0.0f;
+    s_joystick.y.raw = 0;
+    s_joystick.y.value = 0.0f;
+    s_joystick.direction = CONTROL_JOYSTICK_CENTER;
+#endif
     return ESP_OK;
 }
 
@@ -431,7 +511,7 @@ static void set_wheel_state(int16_t raw, float value, bool present)
 
 static esp_err_t update_wheel(void)
 {
-#if ESP_POCKET_AUDIO_WHEEL_ENABLED
+#if ESP_POCKET_AUDIO_ADS1115_ENABLED && ESP_POCKET_AUDIO_WHEEL_ENABLED
     int16_t raw = 0;
     esp_err_t err = ads1115_read_single_ended(&s_ads1115, (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_WHEEL_CH, &raw);
     if (err != ESP_OK) {
@@ -460,7 +540,7 @@ static esp_err_t update_i2c_inputs(void *ctx)
         return ESP_ERR_INVALID_ARG;
     }
 
-    update->switch_err = update_pcf_switches(update->now);
+    update->switch_err = update_expander_switches(update->now);
     update->joystick_err = update_joystick();
     update->wheel_err = update_wheel();
     if (update->switch_err != ESP_OK) {
@@ -481,7 +561,11 @@ static void log_pressed_switches(uint32_t pressed_mask)
             used += snprintf(line + used, sizeof(line) - used, " %s", controls_switch_name((control_switch_t)i));
         }
     }
+#if ESP_POCKET_AUDIO_CONTROL_EVENT_LOG_ENABLED
+    ESP_LOGI(TAG, "%s", line);
+#else
     ESP_LOGV(TAG, "%s", line);
+#endif
 }
 
 static void service_task(void *arg)
@@ -495,13 +579,16 @@ static void service_task(void *arg)
         controls_update();
 
         control_joystick_state_t joystick = {0};
-        if (controls_joystick_read(&joystick) == ESP_OK && joystick.direction != last_direction) {
-            ESP_LOGV(TAG, "joystick %s x=%d %.3f y=%d %.3f",
+        if (controls_joystick_read(&joystick) == ESP_OK) {
+            bool direction_changed = joystick.direction != last_direction;
+            if (direction_changed) {
+                ESP_LOGV(TAG, "joystick %s x=%d %.3f y=%d %.3f",
                      controls_joystick_direction_name(joystick.direction),
                      joystick.x.raw,
                      joystick.x.value,
                      joystick.y.raw,
                      joystick.y.value);
+            }
             last_direction = joystick.direction;
         }
 
@@ -563,6 +650,13 @@ esp_err_t controls_init(i2c_master_bus_handle_t bus)
     s_event_tail = 0;
     s_initialized = true;
     ESP_RETURN_ON_ERROR(controls_update(), TAG, "initial controls update failed");
+    now = xTaskGetTickCount();
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
+        bool pressed = raw_switch_pressed(&SWITCH_MAP[i]);
+        s_switches[i].stable_pressed = pressed;
+        s_switches[i].sampled_pressed = pressed;
+        s_switches[i].changed_at = now;
+    }
     ESP_RETURN_ON_ERROR(start_service_task(), TAG, "controls task failed");
 
     ESP_LOGI(TAG, "controls initialized");
@@ -592,15 +686,15 @@ esp_err_t controls_update(void)
 
 bool controls_expander_interrupt_asserted(void)
 {
-    if (ESP_POCKET_AUDIO_PCF8574_INT_GPIO == GPIO_NUM_NC) {
+    if (ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO == GPIO_NUM_NC) {
         return false;
     }
-    return gpio_get_level(ESP_POCKET_AUDIO_PCF8574_INT_GPIO) == 0;
+    return gpio_get_level(ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO) == 0;
 }
 
 gpio_num_t controls_expander_interrupt_gpio(void)
 {
-    return ESP_POCKET_AUDIO_PCF8574_INT_GPIO;
+    return ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO;
 }
 
 bool controls_switch_is_pressed(control_switch_t sw)

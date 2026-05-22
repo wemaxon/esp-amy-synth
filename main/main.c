@@ -5,9 +5,9 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 
-#include "es8388.h"
 #include "diagnostics/amy_patch_browser.h"
 #include "diagnostics/diagnostic_ui.h"
+#include "diagnostics/sine_output.h"
 #include "esp_pocket_audio.h"
 #include "esp_pocket_audio_board_config.h"
 #include "hmi/controls.h"
@@ -55,7 +55,15 @@ static void app_task(void *arg)
 
     const esp_pocket_audio_hw_t *hw = esp_pocket_audio_hw();
     ESP_ERROR_CHECK(hw != NULL ? ESP_OK : ESP_ERR_INVALID_STATE);
-    ESP_ERROR_CHECK(es8388_dump_registers((es8388_t *)&hw->codec, TAG));
+    ESP_ERROR_CHECK(audio_codec_dump_registers(&hw->codec, TAG));
+#if ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE
+    ESP_LOGI(TAG, "auto sine diagnostic enabled, starting direct I2S sine output");
+    ESP_ERROR_CHECK(diagnostics_sine_output_run(hw));
+#endif
+#if ESP_POCKET_AUDIO_AUTO_DIAGNOSTIC_MODE
+    ESP_LOGI(TAG, "auto diagnostic mode enabled, entering diagnostic UI");
+    diagnostic_ui_run(hw);
+#endif
     if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
         ESP_LOGI(TAG, "sound key held on boot, entering AMY patch browser");
         ESP_ERROR_CHECK(diagnostics_amy_patch_browser_run(hw));

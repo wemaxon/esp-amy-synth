@@ -150,11 +150,7 @@ pip install -e .
 
 ## ToDo
 - Validate remaining chord-engine edge cases against hardware/manual examples.
-- All modes
-  - ARP
-- Looper
-- Instruments
-- Sample Engine
+- ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS nötig? Umstellen auf interrupt oder langsames polling?
 
 
 - Implement different presets/instruments

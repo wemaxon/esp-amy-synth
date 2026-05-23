@@ -203,24 +203,29 @@ static const amy_sound_runtime_t SOUND_RUNTIME[SYNTH_SOUND_COUNT] = {
     [SYNTH_SOUND_SINE] = RAW_SOUND(SINE, 1.00f, 0.86f, 0.50f, 20000.0f, 0.00f, 6, 550, 0.78f, 900),
     [SYNTH_SOUND_TRIANGLE] = RAW_SOUND(TRIANGLE, 1.00f, 0.82f, 0.50f, 16000.0f, 0.08f, 8, 620, 0.72f, 900),
     [SYNTH_SOUND_SQUARE] = RAW_SOUND(PULSE, 1.00f, 0.76f, 0.50f, 14500.0f, 0.12f, 4, 460, 0.70f, 700),
-    [SYNTH_SOUND_FM_EPIANO] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.44f, "DX7 E.PIANO 1"),
-    [SYNTH_SOUND_FM_BELL] = PATCH_SOUND(153, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.46f, "DX7 TUB BELLS"),
-    [SYNTH_SOUND_FM_HX7] = PATCH_SOUND(141, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.44f, "DX7 SYN-LEAD 1"),
+
+    [SYNTH_SOUND_FM_EPIANO] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.396f, "DX7 E.PIANO 1"),
+    [SYNTH_SOUND_FM_BELL] = PATCH_SOUND(153, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.414f, "DX7 TUB BELLS"),
+    [SYNTH_SOUND_FM_HX7] = PATCH_SOUND(141, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.396f, "DX7 SYN-LEAD 1"),
+
     [SYNTH_SOUND_PIANO] = PATCH_SOUND(256, ESP_POCKET_AUDIO_AMY_PIANO_VOICES, AMY_PIANO_OSCS_PER_VOICE, 0.58f, "AMY PIANO"),
-    [SYNTH_SOUND_STRINGS] = PATCH_SOUND(64, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.24f, "JUNO B11 STRINGS"),
-    [SYNTH_SOUND_FLUTE] = PATCH_SOUND(3, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.62f, "JUNO A14 FLUTES"),
-    [SYNTH_SOUND_BRASS] = PATCH_SOUND(0, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.51f, "JUNO A11 BRASS"),
-    [SYNTH_SOUND_CLARINET] = PATCH_SOUND(105, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.58f, "JUNO B62 CLARINET"),
-    [SYNTH_SOUND_WURLI] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.38f, "DX7 E.PIANO 1"),
-    [SYNTH_SOUND_VOX_AHH] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.28f, "JUNO A17 CHOIR"),
-    [SYNTH_SOUND_VIBRAPHONE] = PATCH_SOUND(148, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.62f, "DX7 VIBE 1"),
-    [SYNTH_SOUND_ACOUSTIC] = PATCH_SOUND(139, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.04f, "DX7 GUITAR 1"),
-    [SYNTH_SOUND_HARP] = PATCH_SOUND(188, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, "DX7 HARP 1"),
-    [SYNTH_SOUND_HUMMING] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.17f, "JUNO A17 CHOIR"),
-    [SYNTH_SOUND_ROBBO] = PATCH_SOUND(142, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.50f, "DX7 BASS 1"),
-    [SYNTH_SOUND_SHUTTER] = PATCH_SOUND(61, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.58f, "JUNO A86 HAND CLAPS"),
-    [SYNTH_SOUND_JUNO_POLY] = PATCH_SOUND(47, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.21f, "JUNO A68 SYNTH PAD"),
-    [SYNTH_SOUND_OCEAN_PAD] = PATCH_SOUND(94, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.24f, "JUNO B47 PHASE ENSEMBLE"),
+
+    [SYNTH_SOUND_STRINGS] = PATCH_SOUND(64, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.216f, "JUNO B11 STRINGS"),
+    [SYNTH_SOUND_FLUTE] = PATCH_SOUND(3, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.558f, "JUNO A14 FLUTES"),
+    [SYNTH_SOUND_BRASS] = PATCH_SOUND(0, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.459f, "JUNO A11 BRASS"),
+    [SYNTH_SOUND_CLARINET] = PATCH_SOUND(105, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.522f, "JUNO B62 CLARINET"),
+
+    [SYNTH_SOUND_WURLI] = PATCH_SOUND(138, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.342f, "DX7 E.PIANO 1"),
+    [SYNTH_SOUND_VOX_AHH] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.252f, "JUNO A17 CHOIR"),
+    [SYNTH_SOUND_VIBRAPHONE] = PATCH_SOUND(148, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.558f, "DX7 VIBE 1"),
+    [SYNTH_SOUND_ACOUSTIC] = PATCH_SOUND(139, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.036f, "DX7 GUITAR 1"),
+    [SYNTH_SOUND_HARP] = PATCH_SOUND(188, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.45f, "DX7 HARP 1"),
+    [SYNTH_SOUND_HUMMING] = PATCH_SOUND(6, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.153f, "JUNO A17 CHOIR"),
+    [SYNTH_SOUND_ROBBO] = PATCH_SOUND(142, ESP_POCKET_AUDIO_AMY_DX7_VOICES, AMY_DX7_OSCS_PER_VOICE, 0.45f, "DX7 BASS 1"),
+    [SYNTH_SOUND_SHUTTER] = PATCH_SOUND(61, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.522f, "JUNO A86 HAND CLAPS"),
+    [SYNTH_SOUND_JUNO_POLY] = PATCH_SOUND(47, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.189f, "JUNO A68 SYNTH PAD"),
+    [SYNTH_SOUND_OCEAN_PAD] = PATCH_SOUND(94, ESP_POCKET_AUDIO_AMY_JUNO_VOICES, AMY_JUNO_OSCS_PER_VOICE, 0.216f, "JUNO B47 PHASE ENSEMBLE"),
+
     [SYNTH_SOUND_SAWSQUARE] = RAW_SOUND(PULSE, 1.00f, 0.78f, 0.42f, 12000.0f, 0.18f, 5, 430, 0.68f, 720),
     [SYNTH_SOUND_MIC_SAMPLE] = PCM_SOUND(0, false, 0.60f),
     [SYNTH_SOUND_USER_SAMPLE] = PCM_SOUND(1, false, 0.60f),
@@ -244,6 +249,7 @@ static synth_amy_envelope_t s_envelope = {
     .sustain_level = 0.66f,
     .release_ms = 450,
 };
+static bool s_envelope_override_enabled;
 static uint16_t s_portamento_ms;
 static synth_sound_t s_sound = SYNTH_SOUND_SAW;
 static bool s_patch_loaded;
@@ -515,6 +521,29 @@ static void set_amp_envelope(amy_event *event, const synth_amy_envelope_t *envel
     event->eg0_values[2] = 0.0f;
 }
 
+static void raw_profile_envelope(const amy_sound_runtime_t *runtime, synth_amy_envelope_t *envelope)
+{
+    if (runtime == NULL || envelope == NULL) {
+        return;
+    }
+
+    envelope->attack_ms = runtime->raw.attack_ms;
+    envelope->decay_ms = runtime->raw.decay_ms;
+    envelope->sustain_level = runtime->raw.sustain_level;
+    envelope->release_ms = runtime->raw.release_ms;
+}
+
+static const synth_amy_envelope_t *effective_raw_envelope(const amy_sound_runtime_t *runtime,
+                                                          synth_amy_envelope_t *profile_envelope)
+{
+    if (s_envelope_override_enabled) {
+        return &s_envelope;
+    }
+
+    raw_profile_envelope(runtime, profile_envelope);
+    return profile_envelope;
+}
+
 static void fill_raw_filter_event(amy_event *event, const amy_raw_profile_t *profile)
 {
     if (event == NULL || profile == NULL) {
@@ -581,7 +610,8 @@ static void amy_note_on_raw_osc(uint8_t voice,
     event.pan_coefs[COEF_CONST] = clamp_float(pan, 0.0f, 1.0f);
     event.duty_coefs[COEF_CONST] = profile->duty;
     fill_raw_filter_event(&event, profile);
-    set_amp_envelope(&event, &s_envelope);
+    synth_amy_envelope_t profile_envelope = {0};
+    set_amp_envelope(&event, effective_raw_envelope(runtime, &profile_envelope));
     amy_add_event(&event);
 }
 
@@ -696,11 +726,11 @@ static void apply_raw_lfo(uint8_t voice)
     }
 }
 
-static void apply_raw_envelope_osc(uint8_t osc)
+static void apply_raw_envelope_osc(uint8_t osc, const synth_amy_envelope_t *envelope)
 {
     amy_event event = amy_default_event();
     event.osc = osc;
-    set_amp_envelope(&event, &s_envelope);
+    set_amp_envelope(&event, envelope);
     amy_add_event(&event);
 }
 
@@ -709,9 +739,14 @@ static void apply_raw_envelope(uint8_t voice)
     if (voice >= AMY_MUSICAL_VOICE_COUNT) {
         return;
     }
-    apply_raw_envelope_osc(main_osc_for_voice(voice));
+
+    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    synth_amy_envelope_t profile_envelope = {0};
+    const synth_amy_envelope_t *envelope = effective_raw_envelope(runtime, &profile_envelope);
+
+    apply_raw_envelope_osc(main_osc_for_voice(voice), envelope);
     if (s_voices[voice].pair_active) {
-        apply_raw_envelope_osc(pair_osc_for_voice(voice));
+        apply_raw_envelope_osc(pair_osc_for_voice(voice), envelope);
     }
 }
 
@@ -832,11 +867,15 @@ static void apply_patch_filter_to_synth(uint8_t synth_id)
         event.synth = synth_id;
         event.osc = osc;
         event.filter_type = FILTER_LPF;
-        event.filter_freq_coefs[COEF_CONST] =
-            s_filter_enabled ? s_filter_cutoff_hz : FILTER_CUTOFF_MAX_HZ;
-        event.resonance = s_filter_enabled ? 0.55f : 0.2f;
+        event.filter_freq_coefs[COEF_CONST] = s_filter_cutoff_hz;
+        event.resonance = 0.55f;
         amy_add_event(&event);
     }
+}
+
+static bool patch_filter_override_active(void)
+{
+    return s_filter_enabled && s_filter_cutoff_hz < (FILTER_CUTOFF_MAX_HZ - 1.0f);
 }
 
 static void apply_patch_filter(void)
@@ -949,10 +988,11 @@ static void apply_patch_runtime_controls(bool force_filter)
         return;
     }
 
-    apply_patch_envelope();
+    if (s_envelope_override_enabled) {
+        apply_patch_envelope();
+    }
     apply_patch_portamento();
-    if (force_filter ||
-        (s_filter_enabled && s_filter_cutoff_hz < (FILTER_CUTOFF_MAX_HZ - 1.0f))) {
+    if (force_filter || patch_filter_override_active()) {
         apply_patch_filter();
     }
     if (s_lfo_enabled) {
@@ -1025,6 +1065,30 @@ static void configure_patch_synth(const amy_sound_runtime_t *runtime)
              voices,
              runtime->oscs_per_voice,
              (unsigned)allocated_patch_osc_count());
+}
+
+static void replay_active_patch_voices(const amy_sound_runtime_t *runtime)
+{
+    if (runtime == NULL || runtime->backend != AMY_SOUND_BACKEND_PATCH) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < AMY_MUSICAL_VOICE_COUNT; ++i) {
+        if (s_voices[i].active && s_voices[i].backend == AMY_SOUND_BACKEND_PATCH) {
+            s_voices[i].pair_active = amy_note_on_patch(s_voices[i].note, runtime);
+        }
+    }
+}
+
+static void reload_patch_synth_preserving_notes(void)
+{
+    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    if (!s_patch_loaded || runtime->backend != AMY_SOUND_BACKEND_PATCH) {
+        return;
+    }
+
+    configure_patch_synth(runtime);
+    replay_active_patch_voices(runtime);
 }
 
 static void release_patch_synth_instance(uint8_t synth_id)
@@ -1198,13 +1262,19 @@ esp_err_t synth_amy_set_volume(float normalized_volume)
 
 esp_err_t synth_amy_set_filter_enabled(bool enabled)
 {
+    bool old_patch_override = patch_filter_override_active();
     s_filter_enabled = enabled;
+    bool new_patch_override = patch_filter_override_active();
     if (!s_initialized) {
         return ESP_OK;
     }
 
     if (s_patch_loaded) {
-        apply_patch_filter();
+        if (new_patch_override) {
+            apply_patch_filter();
+        } else if (old_patch_override) {
+            reload_patch_synth_preserving_notes();
+        }
         return ESP_OK;
     }
 
@@ -1218,13 +1288,19 @@ esp_err_t synth_amy_set_filter_enabled(bool enabled)
 
 esp_err_t synth_amy_set_filter_cutoff(float cutoff_hz)
 {
+    bool old_patch_override = patch_filter_override_active();
     s_filter_cutoff_hz = clamp_float(cutoff_hz, FILTER_CUTOFF_MIN_HZ, FILTER_CUTOFF_MAX_HZ);
+    bool new_patch_override = patch_filter_override_active();
     if (!s_initialized) {
         return ESP_OK;
     }
 
     if (s_patch_loaded) {
-        apply_patch_filter();
+        if (new_patch_override) {
+            apply_patch_filter();
+        } else if (old_patch_override) {
+            reload_patch_synth_preserving_notes();
+        }
         return ESP_OK;
     }
 
@@ -1445,16 +1521,21 @@ esp_err_t synth_amy_set_envelope(const synth_amy_envelope_t *envelope)
         return ESP_ERR_INVALID_ARG;
     }
 
-    s_envelope.attack_ms = clamp_u32(envelope->attack_ms,
-                                     ENVELOPE_ATTACK_MIN_MS,
-                                     ENVELOPE_ATTACK_MAX_MS);
-    s_envelope.decay_ms = clamp_u32(envelope->decay_ms,
-                                    ENVELOPE_DECAY_MIN_MS,
-                                    ENVELOPE_DECAY_MAX_MS);
-    s_envelope.sustain_level = clamp_float(envelope->sustain_level, 0.0f, 1.0f);
-    s_envelope.release_ms = clamp_u32(envelope->release_ms,
-                                      ENVELOPE_RELEASE_MIN_MS,
-                                      ENVELOPE_RELEASE_MAX_MS);
+    synth_amy_envelope_t next = {
+        .attack_ms = clamp_u32(envelope->attack_ms,
+                               ENVELOPE_ATTACK_MIN_MS,
+                               ENVELOPE_ATTACK_MAX_MS),
+        .decay_ms = clamp_u32(envelope->decay_ms,
+                              ENVELOPE_DECAY_MIN_MS,
+                              ENVELOPE_DECAY_MAX_MS),
+        .sustain_level = clamp_float(envelope->sustain_level, 0.0f, 1.0f),
+        .release_ms = clamp_u32(envelope->release_ms,
+                                ENVELOPE_RELEASE_MIN_MS,
+                                ENVELOPE_RELEASE_MAX_MS),
+    };
+
+    s_envelope = next;
+    s_envelope_override_enabled = true;
 
     if (!s_initialized) {
         return ESP_OK;

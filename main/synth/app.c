@@ -21,6 +21,14 @@
 #include "synth/play_mode.h"
 #include "synth/sound.h"
 
+typedef enum {
+    APP_WHEEL_TARGET_NONE = 0,
+    APP_WHEEL_TARGET_VOLUME,
+    APP_WHEEL_TARGET_ATTACK,
+    APP_WHEEL_TARGET_RELEASE,
+    APP_WHEEL_TARGET_FILTER,
+} app_wheel_target_t;
+
 typedef struct {
     synth_key_t key;
     synth_scale_t scale;
@@ -42,6 +50,7 @@ typedef struct {
     uint8_t tremolo_level;
     uint8_t voice_level;
     uint8_t adsr_preset;
+    bool adsr_modified;
     uint32_t attack_ms;
     uint32_t release_ms;
     uint8_t glide_level;
@@ -53,6 +62,7 @@ typedef struct {
     uint8_t wheel_percent;
     uint8_t volume_percent;
     uint8_t last_applied_wheel_percent;
+    app_wheel_target_t last_applied_wheel_target;
     control_joystick_direction_t last_menu_direction;
     control_joystick_direction_t last_play_direction;
     control_joystick_direction_t last_looper_direction;
@@ -196,6 +206,7 @@ static synth_app_state_t s_app = {
         [PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0,
     },
     .adsr_preset = ADSR_PRESET_TOUCH,
+    .adsr_modified = false,
     .attack_ms = 25,
     .release_ms = 450,
     .glide_level = 0,
@@ -207,6 +218,7 @@ static synth_app_state_t s_app = {
     .wheel_percent = 100,
     .volume_percent = 100,
     .last_applied_wheel_percent = UINT8_MAX,
+    .last_applied_wheel_target = APP_WHEEL_TARGET_NONE,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
     .last_looper_direction = CONTROL_JOYSTICK_CENTER,
@@ -283,6 +295,13 @@ static void apply_current_envelope(void)
     esp_err_t err = synth_amy_set_envelope(&envelope);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to apply envelope: %s", esp_err_to_name(err));
+    }
+}
+
+static void apply_current_envelope_if_modified(void)
+{
+    if (s_app.adsr_modified) {
+        apply_current_envelope();
     }
 }
 
@@ -1191,6 +1210,26 @@ static void release_degree(uint8_t degree)
     update_ui();
 }
 
+static void sync_play_modifier_from_joystick(void)
+{
+    control_joystick_state_t joystick = {0};
+    if (controls_joystick_read(&joystick) != ESP_OK) {
+        return;
+    }
+
+    s_app.joystick_direction = joystick.direction;
+    s_app.last_play_direction = joystick.direction;
+
+    synth_chord_modifier_t modifier =
+        synth_chord_modifier_from_joystick(s_app.joystick_mode, joystick.direction);
+    if (modifier == s_app.modifier) {
+        return;
+    }
+
+    s_app.modifier = modifier;
+    ESP_LOGI(TAG, "joystick modifier=%s", synth_chord_modifier_name(modifier));
+}
+
 static void handle_chord_event(const control_event_t *event)
 {
     uint8_t degree = 0;
@@ -1203,7 +1242,7 @@ static void handle_chord_event(const control_event_t *event)
         if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
             s_app.sound = synth_sound_quick_select(degree);
             ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
-            apply_current_envelope();
+            apply_current_envelope_if_modified();
             apply_current_glide();
             set_status("SOUND SELECTED");
             refresh_held_chords();
@@ -1244,6 +1283,7 @@ static void handle_chord_event(const control_event_t *event)
             s_app.slash_bass_slot = slot;
         }
 
+        sync_play_modifier_from_joystick();
         s_app.held_mask |= 1U << slot;
         s_app.focus_slot = slot;
         play_degree(degree);
@@ -1356,7 +1396,7 @@ static void step_sound(int8_t steps)
 {
     s_app.sound = synth_sound_step(s_app.sound, steps);
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
-    apply_current_envelope();
+    apply_current_envelope_if_modified();
     apply_current_glide();
     set_status("SOUND CHANGED");
     refresh_held_chords();
@@ -1586,6 +1626,7 @@ static void step_adsr_preset(void)
     const adsr_preset_def_t *preset = current_adsr_preset();
     s_app.attack_ms = preset->envelope.attack_ms;
     s_app.release_ms = preset->envelope.release_ms;
+    s_app.adsr_modified = true;
     apply_current_envelope();
 
     ESP_LOGI(TAG,
@@ -1784,9 +1825,24 @@ static uint32_t wheel_to_range_ms(uint8_t percent, uint32_t min_ms, uint32_t max
     return min_ms + ((span * (uint32_t)percent + 50U) / 100U);
 }
 
-static bool wheel_percent_changed(uint8_t percent)
+static app_wheel_target_t current_wheel_target(void)
 {
-    if (s_app.last_applied_wheel_percent == UINT8_MAX) {
+    if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
+        return APP_WHEEL_TARGET_ATTACK;
+    }
+    if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+        return APP_WHEEL_TARGET_RELEASE;
+    }
+    if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+        return APP_WHEEL_TARGET_FILTER;
+    }
+    return APP_WHEEL_TARGET_VOLUME;
+}
+
+static bool wheel_application_changed(app_wheel_target_t target, uint8_t percent)
+{
+    if (target != s_app.last_applied_wheel_target ||
+        s_app.last_applied_wheel_percent == UINT8_MAX) {
         return true;
     }
 
@@ -1797,20 +1853,28 @@ static bool wheel_percent_changed(uint8_t percent)
 
 static bool apply_wheel(const control_wheel_state_t *wheel)
 {
-    if (wheel == NULL || !wheel->present || !wheel_percent_changed(wheel->percent)) {
+    if (wheel == NULL || !wheel->present) {
+        return false;
+    }
+
+    app_wheel_target_t target = current_wheel_target();
+    if (!wheel_application_changed(target, wheel->percent)) {
         return false;
     }
 
     s_app.last_applied_wheel_percent = wheel->percent;
-    if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
+    s_app.last_applied_wheel_target = target;
+    if (target == APP_WHEEL_TARGET_ATTACK) {
         s_app.attack_ms = wheel_to_range_ms(wheel->percent, ATTACK_MIN_MS, ATTACK_MAX_MS);
+        s_app.adsr_modified = true;
         apply_current_envelope();
         set_status("ATTACK");
-    } else if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+    } else if (target == APP_WHEEL_TARGET_RELEASE) {
         s_app.release_ms = wheel_to_range_ms(wheel->percent, RELEASE_MIN_MS, RELEASE_MAX_MS);
+        s_app.adsr_modified = true;
         apply_current_envelope();
         set_status("RELEASE");
-    } else if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+    } else if (target == APP_WHEEL_TARGET_FILTER) {
         float cutoff_hz = wheel_to_filter_cutoff_hz(wheel->percent);
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_filter_cutoff(cutoff_hz));
         set_status("FILTER");
@@ -1859,7 +1923,7 @@ static void step_mode(int8_t steps)
 
     s_app.mode = next;
     s_app.mode_bpm_submenu = false;
-    apply_current_envelope();
+    apply_current_envelope_if_modified();
     if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
         clear_arp_sources();
@@ -2230,7 +2294,6 @@ esp_err_t synth_app_start(const esp_pocket_audio_hw_t *hw)
 
     ESP_RETURN_ON_ERROR(synth_amy_init(hw), TAG, "AMY synth init failed");
     ESP_RETURN_ON_ERROR(synth_amy_set_sound(s_app.sound), TAG, "AMY sound setup failed");
-    apply_current_envelope();
     apply_current_glide();
     ESP_RETURN_ON_ERROR(play_ui_start(hw), TAG, "play UI start failed");
     update_ui();

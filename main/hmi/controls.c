@@ -676,11 +676,11 @@ esp_err_t controls_update(void)
         .joystick_err = ESP_FAIL,
         .wheel_err = ESP_FAIL,
     };
+    update_gpio_switches(now);
     esp_err_t i2c_err = control_i2c_call(update_i2c_inputs, &update, pdMS_TO_TICKS(10));
     if (i2c_err == ESP_ERR_TIMEOUT) {
         log_control_io_error("control I2C queue", i2c_err);
     }
-    update_gpio_switches(now);
     return i2c_err;
 }
 

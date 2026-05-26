@@ -1,0 +1,180 @@
+#include "synth/amy_perf.h"
+
+#include <string.h>
+
+#include "amy.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_pocket_audio_board_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+typedef struct {
+    uint32_t blocks;
+    uint32_t slow_blocks;
+    uint64_t render_us_total;
+    uint64_t render_us_max;
+    uint64_t write_us_total;
+    uint64_t write_us_max;
+    int64_t next_log_us;
+    int64_t next_profile_log_us;
+} amy_perf_stats_t;
+
+typedef struct {
+    uint16_t audible;
+    uint16_t audible_low;
+    uint16_t audible_high;
+    uint16_t aux;
+    uint16_t suspended;
+} amy_osc_stats_t;
+
+static const char *TAG = "SYNTH_AMY";
+
+static amy_perf_stats_t s_perf;
+
+static amy_osc_stats_t amy_runtime_osc_stats(void)
+{
+    amy_osc_stats_t stats = {0};
+    if (synth == NULL) {
+        return stats;
+    }
+
+    uint16_t split = (uint16_t)(AMY_OSCS / 2U);
+    for (uint16_t osc = 0; osc < AMY_OSCS; ++osc) {
+        if (synth[osc] == NULL) {
+            continue;
+        }
+
+        switch (synth[osc]->status) {
+        case SYNTH_AUDIBLE:
+            ++stats.audible;
+            if (osc < split) {
+                ++stats.audible_low;
+            } else {
+                ++stats.audible_high;
+            }
+            break;
+        case SYNTH_IS_MOD_SOURCE:
+        case SYNTH_IS_ALGO_SOURCE:
+            ++stats.aux;
+            break;
+        case SYNTH_AUDIBLE_SUSPENDED:
+            ++stats.suspended;
+            break;
+        default:
+            break;
+        }
+    }
+    return stats;
+}
+
+void synth_amy_perf_reset(void)
+{
+    memset(&s_perf, 0, sizeof(s_perf));
+}
+
+void synth_amy_perf_record_block(uint32_t render_us,
+                                 uint32_t write_us,
+                                 int64_t now_us,
+                                 uint16_t app_active_oscs,
+                                 uint16_t allocated_patch_oscs,
+                                 uint32_t audio_block_budget_us)
+{
+#if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED || ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED
+#if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED
+    if (s_perf.next_log_us == 0) {
+        s_perf.next_log_us =
+            now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS * 1000);
+    }
+
+    ++s_perf.blocks;
+    s_perf.render_us_total += render_us;
+    s_perf.write_us_total += write_us;
+    if (render_us > s_perf.render_us_max) {
+        s_perf.render_us_max = render_us;
+    }
+    if (write_us > s_perf.write_us_max) {
+        s_perf.write_us_max = write_us;
+    }
+    if (render_us > audio_block_budget_us) {
+        ++s_perf.slow_blocks;
+    }
+
+    if (now_us >= s_perf.next_log_us && s_perf.blocks > 0) {
+        uint32_t render_avg = (uint32_t)(s_perf.render_us_total / s_perf.blocks);
+        uint32_t write_avg = (uint32_t)(s_perf.write_us_total / s_perf.blocks);
+        float render_cpu_pct = audio_block_budget_us > 0 ?
+            ((float)render_avg * 100.0f) / (float)audio_block_budget_us :
+            0.0f;
+        uint32_t free_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        uint32_t min_heap = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+        uint32_t largest_heap = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        uint32_t internal_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        UBaseType_t stack_words = uxTaskGetStackHighWaterMark(NULL);
+        amy_osc_stats_t amy_oscs = amy_runtime_osc_stats();
+
+        esp_log_level_t level = s_perf.slow_blocks > 0 ? ESP_LOG_WARN : ESP_LOG_INFO;
+        ESP_LOG_LEVEL(level,
+                      TAG,
+                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u i2s_us avg=%u max=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
+                      (unsigned)s_perf.blocks,
+                      (unsigned)app_active_oscs,
+                      (unsigned)amy_oscs.audible,
+                      (unsigned)amy_oscs.audible_low,
+                      (unsigned)amy_oscs.audible_high,
+                      (unsigned)amy_oscs.aux,
+                      (unsigned)amy_oscs.suspended,
+                      (unsigned)allocated_patch_oscs,
+                      (unsigned)render_avg,
+                      (unsigned)s_perf.render_us_max,
+                      (unsigned)audio_block_budget_us,
+                      render_cpu_pct,
+                      (unsigned)s_perf.slow_blocks,
+                      (unsigned)write_avg,
+                      (unsigned)s_perf.write_us_max,
+                      (unsigned)free_heap,
+                      (unsigned)min_heap,
+                      (unsigned)largest_heap,
+                      (unsigned)internal_heap,
+                      (unsigned)stack_words);
+
+        s_perf.blocks = 0;
+        s_perf.slow_blocks = 0;
+        s_perf.render_us_total = 0;
+        s_perf.render_us_max = 0;
+        s_perf.write_us_total = 0;
+        s_perf.write_us_max = 0;
+        s_perf.next_log_us =
+            now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS * 1000);
+    }
+#else
+    (void)render_us;
+    (void)write_us;
+    (void)app_active_oscs;
+    (void)allocated_patch_oscs;
+    (void)audio_block_budget_us;
+#endif
+
+#if ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED
+    if (s_perf.next_profile_log_us == 0) {
+        s_perf.next_profile_log_us =
+            now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS * 1000);
+    }
+    if (now_us >= s_perf.next_profile_log_us) {
+        ESP_LOGI(TAG, "AMY profile window follows");
+        amy_profiles_print();
+        s_perf.next_profile_log_us =
+            now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PROFILE_LOG_INTERVAL_MS * 1000);
+    }
+#else
+    (void)now_us;
+#endif
+#else
+    (void)render_us;
+    (void)write_us;
+    (void)now_us;
+    (void)app_active_oscs;
+    (void)allocated_patch_oscs;
+    (void)audio_block_budget_us;
+#endif
+}

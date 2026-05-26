@@ -3,19 +3,20 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
-#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hmi/controls.h"
 #include "hmi/keymap.h"
 #include "hmi/play_ui.h"
 #include "synth/amy_engine.h"
+#include "synth/app_chord_tools.h"
+#include "synth/app_rhythm.h"
+#include "synth/app_settings.h"
 #include "synth/chord_engine.h"
 #include "synth/looper.h"
 #include "synth/play_mode.h"
@@ -125,69 +126,8 @@ static const uint16_t BPM_MAX = 300;
 static const uint8_t WHEEL_CHANGE_THRESHOLD_PERCENT = 2;
 static const float LFO_RATE_HZ = 5.0f;
 static const float LFO_TWO_PI = 6.283185307f;
-static const float LFO_DEPTH_SEMITONES[] = {
-    0.0f, 0.12f, 0.35f, 0.75f,
-};
-
-typedef enum {
-    ADSR_PRESET_LONG = 0,
-    ADSR_PRESET_SHORT,
-    ADSR_PRESET_SWELL,
-    ADSR_PRESET_PLUCK,
-    ADSR_PRESET_TOUCH,
-    ADSR_PRESET_SUSTAIN,
-    ADSR_PRESET_COUNT,
-} adsr_preset_t;
-
-typedef struct {
-    const char *name;
-    synth_amy_envelope_t envelope;
-} adsr_preset_def_t;
-
-static const adsr_preset_def_t ADSR_PRESETS[ADSR_PRESET_COUNT] = {
-    [ADSR_PRESET_LONG] = {"LONG", {800, 1000, 0.70f, 2000}},
-    [ADSR_PRESET_SHORT] = {"SHORT", {100, 100, 1.00f, 120}},
-    [ADSR_PRESET_SWELL] = {"SWELL", {800, 300, 0.80f, 2000}},
-    [ADSR_PRESET_PLUCK] = {"PLUCK", {5, 80, 0.00f, 180}},
-    [ADSR_PRESET_TOUCH] = {"TOUCH", {25, 260, 0.66f, 450}},
-    [ADSR_PRESET_SUSTAIN] = {"SUSTAIN", {200, 300, 0.85f, 3000}},
-};
-
-static const uint32_t ATTACK_MIN_MS = 1;
-static const uint32_t ATTACK_MAX_MS = 2000;
-static const uint32_t RELEASE_MIN_MS = 1;
-static const uint32_t RELEASE_MAX_MS = 5000;
-static const uint32_t REPEAT_RELEASE_CAP_MS = 200;
-
-static const uint16_t GLIDE_LEVEL_MS[] = {
-    0, 60, 140, 300,
-};
-static const char *GLIDE_LEVEL_NAMES[] = {
-    "OFF", "FAST", "MED", "SLOW",
-};
-
-static const char *DELAY_LEVEL_NAMES[] = {
-    "OFF", "1/4", "1/8", "1/16", "1/16T",
-};
-static const float DELAY_LEVEL_DIVISORS[] = {
-    0.0f, 1.0f, 2.0f, 4.0f, 6.0f,
-};
-static const char *TREMOLO_LEVEL_NAMES[] = {
-    "OFF", "1/4", "1/8", "1/16", "1/16T", "1/32",
-};
-static const float TREMOLO_LEVEL_DIVISORS[] = {
-    0.0f, 1.0f, 2.0f, 4.0f, 6.0f, 8.0f,
-};
-static const uint8_t VOICE_LIMITS[] = {
-    6, 4, 2, 1,
-};
-static const char *VOICE_LEVEL_NAMES[] = {
-    "8", "4", "2", "1",
-};
-static const float TREMOLO_DEPTH = 0.78f;
 static const uint8_t ARP_NO_SLOT = UINT8_MAX;
 static const TickType_t MODE_TAP_RESET_TICKS = pdMS_TO_TICKS(2000);
-static const uint8_t ARP_MAX_STEP_NOTES = 2;
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
@@ -205,10 +145,10 @@ static synth_app_state_t s_app = {
         [PLAY_UI_EFFECT_FILTER] = true,
         [PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0,
     },
-    .adsr_preset = ADSR_PRESET_TOUCH,
+    .adsr_preset = SYNTH_APP_ADSR_DEFAULT_PRESET,
     .adsr_modified = false,
-    .attack_ms = 25,
-    .release_ms = 450,
+    .attack_ms = SYNTH_APP_ADSR_DEFAULT_ATTACK_MS,
+    .release_ms = SYNTH_APP_ADSR_DEFAULT_RELEASE_MS,
     .glide_level = 0,
     .strum_speed = SYNTH_STRUM_SPEED_MEDIUM,
     .arp_pattern = SYNTH_ARP_PATTERN_UP,
@@ -269,22 +209,14 @@ static bool any_chord_locked(void)
     return false;
 }
 
-static const adsr_preset_def_t *current_adsr_preset(void)
-{
-    uint8_t preset = s_app.adsr_preset;
-    if (preset >= ADSR_PRESET_COUNT) {
-        preset = ADSR_PRESET_TOUCH;
-    }
-    return &ADSR_PRESETS[preset];
-}
-
 static synth_amy_envelope_t current_envelope(void)
 {
-    synth_amy_envelope_t envelope = current_adsr_preset()->envelope;
+    synth_amy_envelope_t envelope = synth_app_adsr_preset_envelope(s_app.adsr_preset);
     envelope.attack_ms = s_app.attack_ms;
     envelope.release_ms = s_app.release_ms;
-    if (s_app.mode == SYNTH_PLAY_MODE_REPEAT && envelope.release_ms > REPEAT_RELEASE_CAP_MS) {
-        envelope.release_ms = REPEAT_RELEASE_CAP_MS;
+    uint32_t repeat_cap_ms = synth_app_adsr_repeat_release_cap_ms();
+    if (s_app.mode == SYNTH_PLAY_MODE_REPEAT && envelope.release_ms > repeat_cap_ms) {
+        envelope.release_ms = repeat_cap_ms;
     }
     return envelope;
 }
@@ -307,11 +239,7 @@ static void apply_current_envelope_if_modified(void)
 
 static uint16_t current_glide_ms(void)
 {
-    uint8_t level = s_app.glide_level;
-    if (level >= sizeof(GLIDE_LEVEL_MS) / sizeof(GLIDE_LEVEL_MS[0])) {
-        level = 0;
-    }
-    return GLIDE_LEVEL_MS[level];
+    return synth_app_glide_ms(s_app.glide_level);
 }
 
 static void apply_current_glide(void)
@@ -372,69 +300,25 @@ static uint8_t slot_from_degree(uint8_t degree)
     return degree > 0 ? (uint8_t)(degree - 1) : 0;
 }
 
-static synth_chord_modifier_t effective_modifier_for_slot(uint8_t slot)
-{
-    if (s_app.modifier != SYNTH_CHORD_MOD_NONE &&
-        slot == s_app.focus_slot &&
-        (s_app.held_mask & (1U << slot)) != 0) {
-        return s_app.modifier;
-    }
-    if (slot < SYNTH_CHORD_BUTTON_COUNT) {
-        return s_app.locked_modifier[slot];
-    }
-    return SYNTH_CHORD_MOD_NONE;
-}
-
-static uint8_t first_held_slot_except(uint8_t excluded_slot)
-{
-    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if (slot != excluded_slot && (s_app.held_mask & (1U << slot)) != 0) {
-            return slot;
-        }
-    }
-    return UINT8_MAX;
-}
-
-static uint8_t bass_slot_for_chord(uint8_t chord_slot)
-{
-    if (s_app.bass_mode != SYNTH_BASS_MODE_SLASH) {
-        return chord_slot;
-    }
-    if (s_app.slash_bass_slot < SYNTH_CHORD_BUTTON_COUNT &&
-        s_app.slash_bass_slot != chord_slot &&
-        (s_app.held_mask & (1U << s_app.slash_bass_slot)) != 0) {
-        return s_app.slash_bass_slot;
-    }
-
-    uint8_t held_slot = first_held_slot_except(chord_slot);
-    return held_slot < SYNTH_CHORD_BUTTON_COUNT ? held_slot : chord_slot;
-}
-
 static bool build_chord(uint8_t degree, synth_chord_t *chord)
 {
-    uint8_t slot = slot_from_degree(degree);
-    uint8_t bass_slot = bass_slot_for_chord(slot);
-    synth_chord_request_t request = {
+    synth_app_chord_build_context_t context = {
         .key = s_app.key,
         .scale = s_app.scale,
-        .degree = degree,
         .global_octave_shift = s_app.global_octave_shift,
-        .button_octave_shift = s_app.button_octave_shift[slot],
-        .modifier = effective_modifier_for_slot(slot),
+        .button_octave_shift = s_app.button_octave_shift,
+        .modifier = s_app.modifier,
+        .focus_slot = s_app.focus_slot,
+        .held_mask = s_app.held_mask,
+        .locked_modifier = s_app.locked_modifier,
         .bass_mode = s_app.bass_mode,
-        .inversion = s_app.chord_inversion[slot],
-        .bass_degree = (uint8_t)(bass_slot + 1),
-        .bass_octave_shift = s_app.button_octave_shift[bass_slot],
+        .slash_bass_slot = s_app.slash_bass_slot,
+        .chord_inversion = s_app.chord_inversion,
         .voice_leading_enabled = s_app.voice_leading_enabled,
+        .voice_anchor = &s_app.voice_anchor,
+        .voice_anchor_valid = s_app.voice_anchor_valid,
     };
-    if (s_app.voice_leading_enabled && s_app.voice_anchor_valid) {
-        request.previous_note_count = s_app.voice_anchor.note_count;
-        if (request.previous_note_count > SYNTH_MAX_CHORD_NOTES) {
-            request.previous_note_count = SYNTH_MAX_CHORD_NOTES;
-        }
-        memcpy(request.previous_notes, s_app.voice_anchor.notes, request.previous_note_count);
-    }
-    return synth_build_chord(&request, chord) == 0;
+    return synth_app_build_chord_for_degree(&context, degree, chord);
 }
 
 static void remember_voice_anchor(const synth_chord_t *chord)
@@ -450,104 +334,6 @@ static void clear_voice_anchor(void)
 {
     memset(&s_app.voice_anchor, 0, sizeof(s_app.voice_anchor));
     s_app.voice_anchor_valid = false;
-}
-
-static int midi_note_octave(uint8_t midi_note)
-{
-    return ((int)midi_note / 12) - 1;
-}
-
-static void format_chord_notes(const synth_chord_t *chord, char *out, size_t out_size)
-{
-    if (out == NULL || out_size == 0) {
-        return;
-    }
-    out[0] = '\0';
-    if (chord == NULL) {
-        return;
-    }
-
-    size_t used = 0;
-    for (uint8_t i = 0; i < chord->note_count && used < out_size; ++i) {
-        uint8_t midi_note = chord->notes[i];
-        int written = snprintf(out + used,
-                               out_size - used,
-                               "%s%s%d(%u)",
-                               i == 0 ? "" : " ",
-                               synth_key_name((synth_key_t)(midi_note % 12)),
-                               midi_note_octave(midi_note),
-                               midi_note);
-        if (written < 0) {
-            out[used] = '\0';
-            return;
-        }
-        if ((size_t)written >= out_size - used) {
-            out[out_size - 1] = '\0';
-            return;
-        }
-        used += (size_t)written;
-    }
-}
-
-static uint32_t rhythm_rate_interval_ms(synth_rhythm_rate_t rate, uint32_t step_index)
-{
-    float beat_ms = 60000.0f / (float)s_app.bpm;
-    float interval_ms = beat_ms * 0.5f;
-
-    switch (rate) {
-    case SYNTH_RHYTHM_RATE_WHOLE:
-        interval_ms = beat_ms * 4.0f;
-        break;
-    case SYNTH_RHYTHM_RATE_HALF:
-        interval_ms = beat_ms * 2.0f;
-        break;
-    case SYNTH_RHYTHM_RATE_QUARTER:
-        interval_ms = beat_ms;
-        break;
-    case SYNTH_RHYTHM_RATE_EIGHTH:
-        interval_ms = beat_ms * 0.5f;
-        break;
-    case SYNTH_RHYTHM_RATE_SIXTEENTH:
-        interval_ms = beat_ms * 0.25f;
-        break;
-    case SYNTH_RHYTHM_RATE_SIXTEENTH_TRIPLET:
-        interval_ms = beat_ms / 6.0f;
-        break;
-    case SYNTH_RHYTHM_RATE_THIRTY_SECOND:
-        interval_ms = beat_ms * 0.125f;
-        break;
-    case SYNTH_RHYTHM_RATE_SWING_EIGHTH:
-        interval_ms = (step_index & 1U) == 0 ? beat_ms * (2.0f / 3.0f) : beat_ms * (1.0f / 3.0f);
-        break;
-    case SYNTH_RHYTHM_RATE_SWING_SIXTEENTH:
-        interval_ms = (step_index & 1U) == 0 ? beat_ms * (1.0f / 3.0f) : beat_ms * (1.0f / 6.0f);
-        break;
-    default:
-        break;
-    }
-
-    if (interval_ms < 20.0f) {
-        interval_ms = 20.0f;
-    }
-    return (uint32_t)(interval_ms + 0.5f);
-}
-
-static TickType_t rhythm_rate_ticks(synth_rhythm_rate_t rate, uint32_t step_index)
-{
-    return pdMS_TO_TICKS(rhythm_rate_interval_ms(rate, step_index));
-}
-
-static void sort_notes(uint8_t *notes, uint8_t note_count)
-{
-    for (uint8_t i = 1; i < note_count; ++i) {
-        uint8_t note = notes[i];
-        uint8_t j = i;
-        while (j > 0 && notes[j - 1] > note) {
-            notes[j] = notes[j - 1];
-            --j;
-        }
-        notes[j] = note;
-    }
 }
 
 static uint8_t first_valid_held_slot(const bool valid[SYNTH_CHORD_BUTTON_COUNT])
@@ -646,103 +432,6 @@ static void clear_arp_sources(void)
     s_app.arp_next_tick = xTaskGetTickCount();
 }
 
-static uint8_t arp_pattern_note_index(uint8_t note_count, uint32_t step_index)
-{
-    if (note_count <= 1) {
-        return 0;
-    }
-
-    switch (s_app.arp_pattern) {
-    case SYNTH_ARP_PATTERN_DOWN:
-        return (uint8_t)((note_count - 1U) - (step_index % note_count));
-    case SYNTH_ARP_PATTERN_UP_DOWN: {
-        uint8_t cycle = (uint8_t)((note_count * 2U) - 2U);
-        uint8_t pos = (uint8_t)(step_index % cycle);
-        return pos < note_count ? pos : (uint8_t)(cycle - pos);
-    }
-    case SYNTH_ARP_PATTERN_DOWN_UP: {
-        uint8_t cycle = (uint8_t)((note_count * 2U) - 2U);
-        uint8_t pos = (uint8_t)(step_index % cycle);
-        uint8_t up_index = pos < note_count ? pos : (uint8_t)(cycle - pos);
-        return (uint8_t)((note_count - 1U) - up_index);
-    }
-    case SYNTH_ARP_PATTERN_RANDOM:
-        return (uint8_t)(esp_random() % note_count);
-    case SYNTH_ARP_PATTERN_UP:
-    case SYNTH_ARP_PATTERN_FINGERPICK:
-    default:
-        return (uint8_t)(step_index % note_count);
-    }
-}
-
-static void build_fingerpick_step(const uint8_t *notes,
-                                  uint8_t note_count,
-                                  uint32_t step_index,
-                                  synth_chord_t *step)
-{
-    if (note_count == 0 || step == NULL) {
-        return;
-    }
-
-    uint8_t high = note_count > 2 ? 2 : (uint8_t)(note_count - 1);
-    uint8_t alt = note_count > 3 ? 3 : high;
-    uint8_t low = (step_index & 1U) != 0 && note_count > 1 ? 1 : 0;
-    uint8_t top = (step_index & 2U) != 0 ? alt : high;
-
-    step->notes[0] = notes[low];
-    step->note_count = 1;
-    if (top != low && step->note_count < ARP_MAX_STEP_NOTES) {
-        step->notes[step->note_count++] = notes[top];
-    }
-}
-
-static void append_step_notes(synth_chord_t *dest, const synth_chord_t *step)
-{
-    if (dest == NULL || step == NULL) {
-        return;
-    }
-
-    for (uint8_t i = 0; i < step->note_count && dest->note_count < SYNTH_MAX_CHORD_NOTES; ++i) {
-        bool duplicate = false;
-        for (uint8_t j = 0; j < dest->note_count; ++j) {
-            if (dest->notes[j] == step->notes[i]) {
-                duplicate = true;
-                break;
-            }
-        }
-        if (!duplicate) {
-            dest->notes[dest->note_count++] = step->notes[i];
-        }
-    }
-}
-
-static void build_arp_step_chord(const synth_chord_t *source, synth_chord_t *step)
-{
-    if (source == NULL || step == NULL || source->note_count == 0) {
-        return;
-    }
-
-    uint8_t notes[SYNTH_MAX_CHORD_NOTES] = {0};
-    uint8_t note_count = source->note_count;
-    if (note_count > SYNTH_MAX_CHORD_NOTES) {
-        note_count = SYNTH_MAX_CHORD_NOTES;
-    }
-    memcpy(notes, source->notes, note_count);
-    sort_notes(notes, note_count);
-
-    *step = *source;
-    strlcpy(step->name, "ARP", sizeof(step->name));
-    step->note_count = 0;
-
-    if (s_app.arp_pattern == SYNTH_ARP_PATTERN_FINGERPICK) {
-        build_fingerpick_step(notes, note_count, s_app.arp_step_index, step);
-        return;
-    }
-
-    step->notes[0] = notes[arp_pattern_note_index(note_count, s_app.arp_step_index)];
-    step->note_count = 1;
-}
-
 static void update_arp(void)
 {
     if (s_app.mode != SYNTH_PLAY_MODE_ARPEGGIO) {
@@ -770,16 +459,16 @@ static void update_arp(void)
     }
 
     synth_chord_t step = {0};
-    build_arp_step_chord(source, &step);
+    synth_app_build_arp_step_chord(s_app.arp_pattern, s_app.arp_step_index, source, &step);
 
     synth_chord_t output = step;
     if (s_app.arp_chord_mode == SYNTH_ARP_CHORD_MODE_CHORD_ARP) {
         output = *source;
-        append_step_notes(&output, &step);
+        synth_app_append_step_notes(&output, &step);
     } else if (s_app.arp_chord_mode == SYNTH_ARP_CHORD_MODE_RHYTHM_ARP) {
         output = (s_app.arp_step_index & 1U) == 0 ? *source : step;
         if ((s_app.arp_step_index & 1U) == 0) {
-            append_step_notes(&output, &step);
+            synth_app_append_step_notes(&output, &step);
         }
     }
 
@@ -791,7 +480,7 @@ static void update_arp(void)
     remember_voice_anchor(&output);
 
     char note_name[48];
-    format_chord_notes(&step, note_name, sizeof(note_name));
+    synth_app_format_chord_notes(&step, note_name, sizeof(note_name));
     ESP_LOGD(TAG,
              "arp %s slot=%u pattern=%s rate=%s mode=%s step=%lu notes=%s",
              source->name,
@@ -803,7 +492,10 @@ static void update_arp(void)
              note_name);
 
     s_app.arp_last_slot = slot;
-    s_app.arp_next_tick = now + rhythm_rate_ticks(s_app.arp_rate, s_app.arp_step_index);
+    s_app.arp_next_tick =
+        now + pdMS_TO_TICKS(synth_app_rhythm_interval_ms(s_app.arp_rate,
+                                                         s_app.bpm,
+                                                         s_app.arp_step_index));
     ++s_app.arp_step_index;
 }
 
@@ -834,7 +526,7 @@ static void update_repeat(void)
         return;
     }
 
-    uint32_t interval_ms = rhythm_rate_interval_ms(s_app.repeat_rate, 0);
+    uint32_t interval_ms = synth_app_rhythm_interval_ms(s_app.repeat_rate, s_app.bpm, 0);
     TickType_t gate_ticks = pdMS_TO_TICKS(interval_ms / 2U);
     if (gate_ticks < pdMS_TO_TICKS(20)) {
         gate_ticks = pdMS_TO_TICKS(20);
@@ -861,7 +553,7 @@ static void update_repeat(void)
 
 static void update_lfo(void)
 {
-    size_t level_count = sizeof(LFO_DEPTH_SEMITONES) / sizeof(LFO_DEPTH_SEMITONES[0]);
+    size_t level_count = synth_app_lfo_level_count();
     if (s_app.lfo_level == 0 || s_app.lfo_level >= level_count) {
         return;
     }
@@ -884,23 +576,14 @@ static void update_lfo(void)
         s_app.lfo_phase -= LFO_TWO_PI;
     }
 
-    float pitch_semitones = sinf(s_app.lfo_phase) * LFO_DEPTH_SEMITONES[s_app.lfo_level];
+    float pitch_semitones =
+        sinf(s_app.lfo_phase) * synth_app_lfo_depth_semitones(s_app.lfo_level);
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_lfo_pitch(pitch_semitones));
-}
-
-static float tremolo_rate_hz_for_level(uint8_t level)
-{
-    size_t level_count = sizeof(TREMOLO_LEVEL_DIVISORS) / sizeof(TREMOLO_LEVEL_DIVISORS[0]);
-    if (level == 0 || level >= level_count) {
-        return 0.0f;
-    }
-
-    return ((float)s_app.bpm / 60.0f) * TREMOLO_LEVEL_DIVISORS[level];
 }
 
 static void update_tremolo(void)
 {
-    size_t level_count = sizeof(TREMOLO_LEVEL_DIVISORS) / sizeof(TREMOLO_LEVEL_DIVISORS[0]);
+    size_t level_count = synth_app_tremolo_level_count();
     if (s_app.tremolo_level == 0 || s_app.tremolo_level >= level_count) {
         return;
     }
@@ -918,12 +601,13 @@ static void update_tremolo(void)
     }
 
     float elapsed_seconds = ((float)elapsed_ticks * (float)portTICK_PERIOD_MS) / 1000.0f;
-    s_app.tremolo_phase += LFO_TWO_PI * tremolo_rate_hz_for_level(s_app.tremolo_level) * elapsed_seconds;
+    s_app.tremolo_phase +=
+        LFO_TWO_PI * synth_app_tremolo_rate_hz(s_app.tremolo_level, s_app.bpm) * elapsed_seconds;
     while (s_app.tremolo_phase >= LFO_TWO_PI) {
         s_app.tremolo_phase -= LFO_TWO_PI;
     }
 
-    float amount = TREMOLO_DEPTH * (0.5f + 0.5f * sinf(s_app.tremolo_phase));
+    float amount = synth_app_tremolo_depth() * (0.5f + 0.5f * sinf(s_app.tremolo_phase));
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_tremolo_amount(amount));
 }
 
@@ -940,7 +624,7 @@ static void log_chord_event(const char *verb, const synth_chord_t *chord)
     }
 
     char note_names[96];
-    format_chord_notes(chord, note_names, sizeof(note_names));
+    synth_app_format_chord_notes(chord, note_names, sizeof(note_names));
     ESP_LOGI(TAG,
              "%s %s mode=%s key=%s octave=%d mod=%s notes=%u [%s]",
              verb,
@@ -953,93 +637,25 @@ static void log_chord_event(const char *verb, const synth_chord_t *chord)
              note_names);
 }
 
-static void make_root_note_chord(const synth_chord_t *source, synth_chord_t *note)
-{
-    if (source == NULL || note == NULL) {
-        return;
-    }
-
-    *note = *source;
-    note->notes[0] = source->root_midi;
-    note->note_count = 1;
-    note->bass_enabled = false;
-    note->bass_mode = SYNTH_BASS_MODE_OFF;
-    snprintf(note->name, sizeof(note->name), "%s", synth_key_name((synth_key_t)(source->root_midi % 12)));
-}
-
-static void append_unique_layer_note(synth_chord_t *layer, uint8_t note)
-{
-    if (layer == NULL || layer->note_count >= SYNTH_MAX_CHORD_NOTES) {
-        return;
-    }
-
-    for (uint8_t i = 0; i < layer->note_count; ++i) {
-        if (layer->notes[i] == note) {
-            return;
-        }
-    }
-    layer->notes[layer->note_count++] = note;
-}
-
-static uint8_t held_chord_count(void)
-{
-    uint8_t count = 0;
-    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if ((s_app.held_mask & (1U << slot)) != 0 && s_app.held_chord_valid[slot]) {
-            ++count;
-        }
-    }
-    return count;
-}
-
 static bool build_play_layer(synth_chord_t *layer)
 {
-    if (layer == NULL) {
-        return false;
-    }
-
-    memset(layer, 0, sizeof(*layer));
-    bool initialized = false;
-    uint8_t chord_count = 0;
-    uint8_t held_count = held_chord_count();
-    uint8_t slash_bass_slot = bass_slot_for_chord(UINT8_MAX);
-
-    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if ((s_app.held_mask & (1U << slot)) == 0 || !s_app.held_chord_valid[slot]) {
-            continue;
-        }
-        if (s_app.bass_mode == SYNTH_BASS_MODE_SLASH &&
-            held_count > 1 &&
-            slot == slash_bass_slot) {
-            continue;
-        }
-
-        const synth_chord_t *chord = &s_app.held_chords[slot];
-        if (!initialized) {
-            *layer = *chord;
-            layer->note_count = 0;
-            initialized = true;
-        }
-        ++chord_count;
-        for (uint8_t note_index = 0; note_index < chord->note_count; ++note_index) {
-            append_unique_layer_note(layer, chord->notes[note_index]);
-        }
-    }
-
-    if (!initialized || layer->note_count == 0) {
-        return false;
-    }
-    if (chord_count > 1) {
-        strlcpy(layer->name, "LAYER", sizeof(layer->name));
-    }
-    return true;
+    uint8_t slash_bass_slot = synth_app_bass_slot_for_chord(UINT8_MAX,
+                                                            s_app.held_mask,
+                                                            s_app.bass_mode,
+                                                            s_app.slash_bass_slot);
+    return synth_app_build_play_layer(s_app.held_chords,
+                                      s_app.held_chord_valid,
+                                      s_app.held_mask,
+                                      s_app.bass_mode,
+                                      slash_bass_slot,
+                                      layer);
 }
 
 static void render_play_layer(void)
 {
     synth_chord_t layer = {0};
     if (!build_play_layer(&layer)) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(0));
         strlcpy(s_app.chord_name, "---", sizeof(s_app.chord_name));
         set_status("READY");
         update_ui();
@@ -1101,7 +717,7 @@ static void play_degree(uint8_t degree)
 
     if (s_app.mode == SYNTH_PLAY_MODE_LEAD) {
         synth_chord_t note = {0};
-        make_root_note_chord(&chord, &note);
+        synth_app_make_root_note_chord(&chord, &note);
         esp_err_t err = synth_amy_chord_on(slot, &note);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "failed to play lead note: %s", esp_err_to_name(err));
@@ -1166,7 +782,7 @@ static void release_degree(uint8_t degree)
     s_app.held_chord_valid[slot] = false;
     s_app.arp_chord_valid[slot] = false;
     if (s_app.slash_bass_slot == slot) {
-        uint8_t replacement = first_held_slot_except(UINT8_MAX);
+        uint8_t replacement = synth_app_first_held_slot_except(s_app.held_mask, UINT8_MAX);
         s_app.slash_bass_slot = replacement < SYNTH_CHORD_BUTTON_COUNT ? replacement : UINT8_MAX;
     }
 
@@ -1521,7 +1137,7 @@ static void toggle_focused_chord_lock(void)
 
 static void step_lfo_level(void)
 {
-    size_t level_count = sizeof(LFO_DEPTH_SEMITONES) / sizeof(LFO_DEPTH_SEMITONES[0]);
+    size_t level_count = synth_app_lfo_level_count();
     s_app.lfo_level = (uint8_t)((s_app.lfo_level + 1U) % level_count);
     s_app.effects[PLAY_UI_EFFECT_LFO] = s_app.lfo_level > 0;
     s_app.lfo_phase = 0.0f;
@@ -1539,19 +1155,14 @@ static void step_lfo_level(void)
              "lfo=%s level=%u depth=%.2f semitones",
              s_app.effects[PLAY_UI_EFFECT_LFO] ? "on" : "off",
              s_app.lfo_level,
-             LFO_DEPTH_SEMITONES[s_app.lfo_level]);
+             synth_app_lfo_depth_semitones(s_app.lfo_level));
     set_status(s_app.effects[PLAY_UI_EFFECT_LFO] ? "LFO ON" : "LFO OFF");
     update_ui();
 }
 
 static float delay_ms_for_level(uint8_t level)
 {
-    size_t level_count = sizeof(DELAY_LEVEL_DIVISORS) / sizeof(DELAY_LEVEL_DIVISORS[0]);
-    if (level == 0 || level >= level_count) {
-        return 0.0f;
-    }
-
-    return (60000.0f / (float)s_app.bpm) / DELAY_LEVEL_DIVISORS[level];
+    return synth_app_delay_ms_for_level(level, s_app.bpm);
 }
 
 static void apply_delay_level(void)
@@ -1564,14 +1175,14 @@ static void apply_delay_level(void)
 
 static void step_delay_level(void)
 {
-    size_t level_count = sizeof(DELAY_LEVEL_DIVISORS) / sizeof(DELAY_LEVEL_DIVISORS[0]);
+    size_t level_count = synth_app_delay_level_count();
     s_app.delay_level = (uint8_t)((s_app.delay_level + 1U) % level_count);
     apply_delay_level();
 
     ESP_LOGI(TAG,
              "delay=%s level=%s time=%.1f ms",
              s_app.effects[PLAY_UI_EFFECT_DELAY] ? "on" : "off",
-             DELAY_LEVEL_NAMES[s_app.delay_level],
+             synth_app_delay_level_name(s_app.delay_level),
              delay_ms_for_level(s_app.delay_level));
     set_status(s_app.effects[PLAY_UI_EFFECT_DELAY] ? "DELAY ON" : "DELAY OFF");
     update_ui();
@@ -1579,7 +1190,7 @@ static void step_delay_level(void)
 
 static void step_tremolo_level(void)
 {
-    size_t level_count = sizeof(TREMOLO_LEVEL_DIVISORS) / sizeof(TREMOLO_LEVEL_DIVISORS[0]);
+    size_t level_count = synth_app_tremolo_level_count();
     s_app.tremolo_level = (uint8_t)((s_app.tremolo_level + 1U) % level_count);
     s_app.effects[PLAY_UI_EFFECT_TREMOLO] = s_app.tremolo_level > 0;
     s_app.tremolo_phase = 0.0f;
@@ -1596,25 +1207,26 @@ static void step_tremolo_level(void)
     ESP_LOGI(TAG,
              "tremolo=%s level=%s rate=%.2f Hz",
              s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "on" : "off",
-             TREMOLO_LEVEL_NAMES[s_app.tremolo_level],
-             tremolo_rate_hz_for_level(s_app.tremolo_level));
+             synth_app_tremolo_level_name(s_app.tremolo_level),
+             synth_app_tremolo_rate_hz(s_app.tremolo_level, s_app.bpm));
     set_status(s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "TREM ON" : "TREM OFF");
     update_ui();
 }
 
 static void step_voice_level(void)
 {
-    size_t level_count = sizeof(VOICE_LIMITS) / sizeof(VOICE_LIMITS[0]);
+    size_t level_count = synth_app_voice_level_count();
     s_app.voice_level = (uint8_t)((s_app.voice_level + 1U) % level_count);
-    esp_err_t err = synth_amy_set_voice_limit(VOICE_LIMITS[s_app.voice_level]);
+    uint8_t voice_limit = synth_app_voice_limit(s_app.voice_level);
+    esp_err_t err = synth_amy_set_voice_limit(voice_limit);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to apply voice count: %s", esp_err_to_name(err));
     }
 
     ESP_LOGI(TAG,
              "voices=%s limit=%u",
-             VOICE_LEVEL_NAMES[s_app.voice_level],
-             (unsigned)VOICE_LIMITS[s_app.voice_level]);
+             synth_app_voice_level_name(s_app.voice_level),
+             (unsigned)voice_limit);
     set_status("VOICES");
     refresh_held_chords();
     update_ui();
@@ -1622,34 +1234,35 @@ static void step_voice_level(void)
 
 static void step_adsr_preset(void)
 {
-    s_app.adsr_preset = (uint8_t)((s_app.adsr_preset + 1U) % ADSR_PRESET_COUNT);
-    const adsr_preset_def_t *preset = current_adsr_preset();
-    s_app.attack_ms = preset->envelope.attack_ms;
-    s_app.release_ms = preset->envelope.release_ms;
+    s_app.adsr_preset = (uint8_t)((s_app.adsr_preset + 1U) % SYNTH_APP_ADSR_PRESET_COUNT);
+    synth_amy_envelope_t preset = synth_app_adsr_preset_envelope(s_app.adsr_preset);
+    const char *preset_name = synth_app_adsr_preset_name(s_app.adsr_preset);
+    s_app.attack_ms = preset.attack_ms;
+    s_app.release_ms = preset.release_ms;
     s_app.adsr_modified = true;
     apply_current_envelope();
 
     ESP_LOGI(TAG,
              "adsr=%s attack=%lu decay=%lu sustain=%.2f release=%lu",
-             preset->name,
+             preset_name,
              (unsigned long)s_app.attack_ms,
-             (unsigned long)preset->envelope.decay_ms,
-             preset->envelope.sustain_level,
+             (unsigned long)preset.decay_ms,
+             preset.sustain_level,
              (unsigned long)s_app.release_ms);
-    set_status(preset->name);
+    set_status(preset_name);
     refresh_held_chords();
     update_ui();
 }
 
 static void step_glide_level(void)
 {
-    size_t level_count = sizeof(GLIDE_LEVEL_MS) / sizeof(GLIDE_LEVEL_MS[0]);
+    size_t level_count = synth_app_glide_level_count();
     s_app.glide_level = (uint8_t)((s_app.glide_level + 1U) % level_count);
     apply_current_glide();
 
     ESP_LOGI(TAG,
              "glide=%s portamento=%ums",
-             GLIDE_LEVEL_NAMES[s_app.glide_level],
+             synth_app_glide_level_name(s_app.glide_level),
              (unsigned)current_glide_ms());
     set_status(s_app.glide_level == 0 ? "GLIDE OFF" : "GLIDE ON");
     update_ui();
@@ -1810,21 +1423,6 @@ static void cycle_mode_param(void)
     update_ui();
 }
 
-static float wheel_to_filter_cutoff_hz(uint8_t percent)
-{
-    float t = (float)percent / 100.0f;
-    return 20.0f * powf(1000.0f, t);
-}
-
-static uint32_t wheel_to_range_ms(uint8_t percent, uint32_t min_ms, uint32_t max_ms)
-{
-    if (percent > 100) {
-        percent = 100;
-    }
-    uint32_t span = max_ms - min_ms;
-    return min_ms + ((span * (uint32_t)percent + 50U) / 100U);
-}
-
 static app_wheel_target_t current_wheel_target(void)
 {
     if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
@@ -1865,17 +1463,17 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
     s_app.last_applied_wheel_percent = wheel->percent;
     s_app.last_applied_wheel_target = target;
     if (target == APP_WHEEL_TARGET_ATTACK) {
-        s_app.attack_ms = wheel_to_range_ms(wheel->percent, ATTACK_MIN_MS, ATTACK_MAX_MS);
+        s_app.attack_ms = synth_app_attack_ms_from_wheel(wheel->percent);
         s_app.adsr_modified = true;
         apply_current_envelope();
         set_status("ATTACK");
     } else if (target == APP_WHEEL_TARGET_RELEASE) {
-        s_app.release_ms = wheel_to_range_ms(wheel->percent, RELEASE_MIN_MS, RELEASE_MAX_MS);
+        s_app.release_ms = synth_app_release_ms_from_wheel(wheel->percent);
         s_app.adsr_modified = true;
         apply_current_envelope();
         set_status("RELEASE");
     } else if (target == APP_WHEEL_TARGET_FILTER) {
-        float cutoff_hz = wheel_to_filter_cutoff_hz(wheel->percent);
+        float cutoff_hz = synth_app_filter_cutoff_hz_from_wheel(wheel->percent);
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_filter_cutoff(cutoff_hz));
         set_status("FILTER");
     } else {

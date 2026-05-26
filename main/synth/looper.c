@@ -414,6 +414,14 @@ static esp_err_t ensure_track_buffer(uint8_t track)
     return ESP_OK;
 }
 
+static esp_err_t allocate_all_track_buffers(void)
+{
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        ESP_RETURN_ON_ERROR(ensure_track_buffer(track), TAG, "looper track buffer allocation failed");
+    }
+    return ESP_OK;
+}
+
 static void start_recording_locked(uint8_t track, uint32_t target_frames)
 {
     synth_looper_track_t *slot = &s_tracks[track];
@@ -669,15 +677,17 @@ esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
     s_capacity_frames = sample_rate_hz * SYNTH_LOOPER_MAX_SECONDS;
     clear_all_locked();
     s_initialized = true;
+    ESP_RETURN_ON_ERROR(allocate_all_track_buffers(), TAG, "looper preallocation failed");
     set_message_locked("EMPTY");
 
     ESP_LOGI(TAG,
-             "looper ready tracks=%u max_seconds=%u sample_rate=%lu channels=%u storage=mono-int16 bytes_per_track=%lu",
+             "looper ready tracks=%u max_seconds=%u sample_rate=%lu channels=%u storage=mono-int16 bytes_per_track=%lu preallocated=%lu",
              (unsigned)SYNTH_LOOPER_TRACK_COUNT,
              (unsigned)SYNTH_LOOPER_MAX_SECONDS,
              (unsigned long)s_sample_rate_hz,
              (unsigned)s_channel_count,
-             (unsigned long)track_buffer_bytes());
+             (unsigned long)track_buffer_bytes(),
+             (unsigned long)(track_buffer_bytes() * SYNTH_LOOPER_TRACK_COUNT));
     return ESP_OK;
 }
 

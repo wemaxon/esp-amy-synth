@@ -412,6 +412,26 @@ static uint8_t active_arp_slot(void)
     return active_valid_held_slot(s_app.arp_chord_valid);
 }
 
+static bool arp_clock_active(void)
+{
+    return s_app.arp_last_slot != ARP_NO_SLOT;
+}
+
+static void queue_arp_source(uint8_t slot, const synth_chord_t *chord)
+{
+    if (slot >= SYNTH_CHORD_BUTTON_COUNT || chord == NULL) {
+        return;
+    }
+
+    bool start_now = !arp_clock_active();
+    s_app.arp_chords[slot] = *chord;
+    s_app.arp_chord_valid[slot] = true;
+    if (start_now) {
+        s_app.arp_step_index = 0;
+        s_app.arp_next_tick = xTaskGetTickCount();
+    }
+}
+
 static void stop_arp(void)
 {
     if (s_app.arp_last_slot != ARP_NO_SLOT) {
@@ -503,6 +523,27 @@ static void stop_repeat(void)
     s_app.repeat_active = false;
     s_app.repeat_gate_open = false;
     s_app.repeat_slot = ARP_NO_SLOT;
+}
+
+static bool repeat_clock_active(void)
+{
+    return s_app.repeat_active || s_app.repeat_gate_open || s_app.repeat_slot != ARP_NO_SLOT;
+}
+
+static void queue_repeat_source(uint8_t slot)
+{
+    if (slot >= SYNTH_CHORD_BUTTON_COUNT) {
+        return;
+    }
+
+    if (repeat_clock_active()) {
+        return;
+    }
+
+    s_app.repeat_slot = slot;
+    s_app.repeat_active = true;
+    s_app.repeat_gate_open = false;
+    s_app.repeat_next_tick = xTaskGetTickCount();
 }
 
 static void update_repeat(void)
@@ -691,10 +732,7 @@ static void play_degree(uint8_t degree)
     }
 
     if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
-        s_app.arp_chords[slot] = chord;
-        s_app.arp_chord_valid[slot] = true;
-        s_app.arp_step_index = 0;
-        s_app.arp_next_tick = xTaskGetTickCount();
+        queue_arp_source(slot, &chord);
         strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
         set_status("ARP");
         log_chord_event("arp source", &chord);
@@ -747,11 +785,7 @@ static void play_degree(uint8_t degree)
     }
 
     if (s_app.mode == SYNTH_PLAY_MODE_REPEAT) {
-        s_app.repeat_slot = slot;
-        s_app.repeat_active = true;
-        s_app.repeat_gate_open = false;
-        s_app.repeat_next_tick = xTaskGetTickCount();
-        remember_voice_anchor(&chord);
+        queue_repeat_source(slot);
         strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
         set_status("REPEAT");
         log_chord_event("repeat source", &chord);
@@ -796,11 +830,11 @@ static void release_degree(uint8_t degree)
     if (s_app.mode == SYNTH_PLAY_MODE_STRUM && s_app.strum_slot == slot) {
         stop_strum();
     } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
-        if (s_app.arp_last_slot == slot || s_app.held_mask == 0) {
+        if (s_app.held_mask == 0) {
             stop_arp();
         }
     } else if (s_app.mode == SYNTH_PLAY_MODE_REPEAT) {
-        if (s_app.repeat_slot == slot || s_app.held_mask == 0) {
+        if (s_app.held_mask == 0) {
             stop_repeat();
         }
     } else {

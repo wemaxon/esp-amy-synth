@@ -94,6 +94,7 @@ bool synth_play_mode_is_implemented(synth_play_mode_t mode)
     case SYNTH_PLAY_MODE_DRONE:
     case SYNTH_PLAY_MODE_ARPEGGIO:
     case SYNTH_PLAY_MODE_REPEAT:
+    case SYNTH_PLAY_MODE_MIXER:
         return true;
     default:
         return false;

@@ -12,10 +12,13 @@
 typedef struct {
     uint32_t blocks;
     uint32_t slow_blocks;
+    uint32_t cycle_over_budget_blocks;
     uint64_t render_us_total;
     uint64_t render_us_max;
     uint64_t write_us_total;
     uint64_t write_us_max;
+    uint64_t cycle_us_total;
+    uint64_t cycle_us_max;
     int64_t next_log_us;
     int64_t next_profile_log_us;
 } amy_perf_stats_t;
@@ -88,21 +91,30 @@ void synth_amy_perf_record_block(uint32_t render_us,
     }
 
     ++s_perf.blocks;
+    uint32_t cycle_us = render_us + write_us;
     s_perf.render_us_total += render_us;
     s_perf.write_us_total += write_us;
+    s_perf.cycle_us_total += cycle_us;
     if (render_us > s_perf.render_us_max) {
         s_perf.render_us_max = render_us;
     }
     if (write_us > s_perf.write_us_max) {
         s_perf.write_us_max = write_us;
     }
+    if (cycle_us > s_perf.cycle_us_max) {
+        s_perf.cycle_us_max = cycle_us;
+    }
     if (render_us > audio_block_budget_us) {
         ++s_perf.slow_blocks;
+    }
+    if (cycle_us > audio_block_budget_us) {
+        ++s_perf.cycle_over_budget_blocks;
     }
 
     if (now_us >= s_perf.next_log_us && s_perf.blocks > 0) {
         uint32_t render_avg = (uint32_t)(s_perf.render_us_total / s_perf.blocks);
         uint32_t write_avg = (uint32_t)(s_perf.write_us_total / s_perf.blocks);
+        uint32_t cycle_avg = (uint32_t)(s_perf.cycle_us_total / s_perf.blocks);
         float render_cpu_pct = audio_block_budget_us > 0 ?
             ((float)render_avg * 100.0f) / (float)audio_block_budget_us :
             0.0f;
@@ -116,7 +128,7 @@ void synth_amy_perf_record_block(uint32_t render_us,
         esp_log_level_t level = s_perf.slow_blocks > 0 ? ESP_LOG_WARN : ESP_LOG_INFO;
         ESP_LOG_LEVEL(level,
                       TAG,
-                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u i2s_us avg=%u max=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
+                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u i2s_us avg=%u max=%u cycle_us avg=%u max=%u over=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
                       (unsigned)s_perf.blocks,
                       (unsigned)app_active_oscs,
                       (unsigned)amy_oscs.audible,
@@ -132,6 +144,9 @@ void synth_amy_perf_record_block(uint32_t render_us,
                       (unsigned)s_perf.slow_blocks,
                       (unsigned)write_avg,
                       (unsigned)s_perf.write_us_max,
+                      (unsigned)cycle_avg,
+                      (unsigned)s_perf.cycle_us_max,
+                      (unsigned)s_perf.cycle_over_budget_blocks,
                       (unsigned)free_heap,
                       (unsigned)min_heap,
                       (unsigned)largest_heap,
@@ -140,10 +155,13 @@ void synth_amy_perf_record_block(uint32_t render_us,
 
         s_perf.blocks = 0;
         s_perf.slow_blocks = 0;
+        s_perf.cycle_over_budget_blocks = 0;
         s_perf.render_us_total = 0;
         s_perf.render_us_max = 0;
         s_perf.write_us_total = 0;
         s_perf.write_us_max = 0;
+        s_perf.cycle_us_total = 0;
+        s_perf.cycle_us_max = 0;
         s_perf.next_log_us =
             now_us + ((int64_t)ESP_POCKET_AUDIO_AMY_PERF_LOG_INTERVAL_MS * 1000);
     }

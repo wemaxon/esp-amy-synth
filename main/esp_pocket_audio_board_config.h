@@ -30,4 +30,14 @@
 #define ESP_POCKET_AUDIO_SWITCH_EXPANDER_0_PULLUP_MASK 0xFFFF
 #endif
 
+/* Enable only while diagnosing looper levels; this runs in the audio path. */
+#ifndef ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+#define ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED 0
+#endif
+
+/* Keep per-note voice-map logs off by default; repeat/arp can trigger them rapidly. */
+#ifndef ESP_POCKET_AUDIO_AMY_VOICE_MAP_LOG_ENABLED
+#define ESP_POCKET_AUDIO_AMY_VOICE_MAP_LOG_ENABLED 0
+#endif
+
 #endif

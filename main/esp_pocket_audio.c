@@ -164,6 +164,8 @@ static esp_err_t init_i2s_clocking(void)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(ESP_POCKET_AUDIO_I2S_PORT, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
+    chan_cfg.dma_desc_num = ESP_POCKET_AUDIO_I2S_DMA_DESC_NUM;
+    chan_cfg.dma_frame_num = ESP_POCKET_AUDIO_I2S_DMA_FRAME_NUM;
 
     ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_hw.i2s_tx, NULL), TAG, "I2S channel init failed");
 
@@ -184,7 +186,7 @@ static esp_err_t init_i2s_clocking(void)
         },
     };
 
-    ESP_LOGI(TAG, "I2S: port=%d mclk=%d bclk=%d ws=%d dout=%d din=%d rate=%d bits=%d",
+    ESP_LOGI(TAG, "I2S: port=%d mclk=%d bclk=%d ws=%d dout=%d din=%d rate=%d bits=%d dma=%ux%u",
              ESP_POCKET_AUDIO_I2S_PORT,
              ESP_POCKET_AUDIO_I2S_MCLK_GPIO,
              ESP_POCKET_AUDIO_I2S_BCLK_GPIO,
@@ -192,7 +194,9 @@ static esp_err_t init_i2s_clocking(void)
              ESP_POCKET_AUDIO_I2S_DOUT_GPIO,
              ESP_POCKET_AUDIO_I2S_DIN_GPIO,
              ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ,
-             ESP_POCKET_AUDIO_I2S_DATA_BITS_FOR_LOG);
+             ESP_POCKET_AUDIO_I2S_DATA_BITS_FOR_LOG,
+             (unsigned)chan_cfg.dma_desc_num,
+             (unsigned)chan_cfg.dma_frame_num);
 
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_hw.i2s_tx, &std_cfg), TAG, "I2S std mode init failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_hw.i2s_tx), TAG, "I2S enable failed");

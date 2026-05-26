@@ -25,13 +25,27 @@ typedef enum {
 } synth_looper_track_state_t;
 
 typedef struct {
+    uint8_t live_peak_percent;
+    uint8_t loop_peak_percent;
+    uint8_t output_peak_percent;
+    uint16_t limited_samples;
+    uint16_t would_clip_samples;
+} synth_looper_meter_t;
+
+typedef struct {
     synth_looper_track_state_t track_state[SYNTH_LOOPER_TRACK_COUNT];
     uint32_t track_ms[SYNTH_LOOPER_TRACK_COUNT];
     uint32_t track_position_ms[SYNTH_LOOPER_TRACK_COUNT];
+    uint8_t track_volume_percent[SYNTH_LOOPER_TRACK_COUNT];
+    bool track_muted[SYNTH_LOOPER_TRACK_COUNT];
+    bool track_soloed[SYNTH_LOOPER_TRACK_COUNT];
+    synth_looper_meter_t meter;
     uint8_t current_track;
     uint8_t page;
     uint8_t bar_count;
     bool paused;
+    bool metronome_enabled;
+    bool solo_active;
     uint32_t master_ms;
     uint32_t progress_ms;
     uint32_t progress_total_ms;
@@ -47,6 +61,11 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
 
 esp_err_t synth_looper_click(uint16_t bpm);
 esp_err_t synth_looper_select_track(int8_t steps);
+esp_err_t synth_looper_set_track_volume(uint8_t track, uint8_t percent);
+esp_err_t synth_looper_set_current_track_volume(uint8_t percent);
+esp_err_t synth_looper_toggle_track_mute(uint8_t track);
+esp_err_t synth_looper_toggle_track_solo(uint8_t track);
+esp_err_t synth_looper_toggle_metronome(void);
 esp_err_t synth_looper_adjust_bars(int8_t steps);
 esp_err_t synth_looper_toggle_pause(void);
 esp_err_t synth_looper_clear_all(void);

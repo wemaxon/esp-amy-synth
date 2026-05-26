@@ -30,6 +30,7 @@ static void log_setup(void)
     esp_log_level_set("JOYSTICK_CAL", ESP_LOG_VERBOSE);
     esp_log_level_set("SYNTH_APP", ESP_LOG_VERBOSE);
     esp_log_level_set("SYNTH_AMY", ESP_LOG_VERBOSE);
+    esp_log_level_set("SYNTH_LOOPER", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG, ESP_LOG_VERBOSE);
 }
 

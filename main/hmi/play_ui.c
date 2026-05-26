@@ -200,6 +200,10 @@ static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model
     case SYNTH_PLAY_MODE_REPEAT:
         draw_rowf(display, row, "RATE %s", synth_rhythm_rate_name(model->repeat_rate));
         break;
+    case SYNTH_PLAY_MODE_MIXER:
+        draw_rowf(display, row, "LOOP TRACK MIX");
+        draw_rowf(display, row + 1, "MET %s", model->looper.metronome_enabled ? "ON" : "OFF");
+        break;
     case SYNTH_PLAY_MODE_PLAY:
         pocket_oled_draw_text_row(display, row, "PRESS = CHORD");
         break;
@@ -373,30 +377,62 @@ static void draw_looper_track(pocket_oled_t *display,
     }
 
     const char *marker = track == model->looper.current_track ? ">" : " ";
+    char flag = model->looper.track_soloed[track] ? 'S' :
+                (model->looper.track_muted[track] ? 'M' : ' ');
     uint32_t total_seconds = model->looper.track_ms[track] / 1000U;
     draw_rowf(display,
               row,
-              "%sT%u %-4s %02lu:%02lu",
+              "%sT%u%c %-4s %02lu:%02lu V%3u",
               marker,
               (unsigned)(track + 1),
+              flag,
               synth_looper_track_state_short_name(model->looper.track_state[track]),
               (unsigned long)(total_seconds / 60U),
-              (unsigned long)(total_seconds % 60U));
+              (unsigned long)(total_seconds % 60U),
+              (unsigned)model->looper.track_volume_percent[track]);
+}
+
+static void draw_looper_meter(pocket_oled_t *display, const play_ui_model_t *model, int row)
+{
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    const synth_looper_meter_t *meter = &model->looper.meter;
+    const char *limit = meter->would_clip_samples > 0 ? "!" : "";
+    draw_rowf(display,
+              row,
+              "M IN%3u LP%3u O%3u%s",
+              (unsigned)meter->live_peak_percent,
+              (unsigned)meter->loop_peak_percent,
+              (unsigned)meter->output_peak_percent,
+              limit);
+#else
+    draw_rowf(display, row, "%.21s", model->looper.message);
+#endif
 }
 
 static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
 {
-    draw_header(display, "LOOPER");
+    bool mixer = model->mode == SYNTH_PLAY_MODE_MIXER;
+    draw_header(display, mixer ? "MIXER" : "LOOPER");
     uint8_t first_track = (uint8_t)(model->looper.page * SYNTH_LOOPER_TRACKS_PER_PAGE);
     draw_looper_track(display, model, first_track, 2);
     draw_looper_track(display, model, (uint8_t)(first_track + 1U), 3);
     bool drew_progress = draw_looper_progress(display, model);
-    if (model->looper.bar_count == 0) {
+    bool current_waiting = model->looper.track_state[model->looper.current_track] ==
+                           SYNTH_LOOPER_TRACK_WAITING;
+    if (!current_waiting) {
+        draw_looper_meter(display, model, 5);
+    } else if (model->looper.bar_count == 0) {
         pocket_oled_draw_text_row(display, 5, "BARS FREE");
     } else {
         draw_rowf(display, 5, "BARS %u", (unsigned)model->looper.bar_count);
     }
-    if (model->looper.paused) {
+    if (mixer) {
+        draw_rowf(display,
+                  6,
+                  "%s MET %s",
+                  model->looper.paused ? "PAUSED" : (model->looper.solo_active ? "SOLO" : "PLAY"),
+                  model->looper.metronome_enabled ? "ON" : "OFF");
+    } else if (model->looper.paused) {
         pocket_oled_draw_text_row(display, 6, "PAUSED");
     } else if (model->looper.master_ms > 0) {
         draw_time_ms(display, 6, "LEN", model->looper.master_ms);

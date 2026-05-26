@@ -99,6 +99,10 @@ static volatile float s_lfo_pitch_octaves;
 static bool s_tremolo_enabled;
 static volatile float s_tremolo_amp_offset;
 static bool s_stereo_enabled = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
+#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
+static bool s_output_declick_ready;
+static int16_t s_output_declick_last[AMY_NCHANS];
+#endif
 
 static float amy_external_coef(uint16_t channel)
 {
@@ -905,6 +909,12 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
         return ESP_ERR_INVALID_ARG;
     }
 
+    const amy_sound_runtime_t *runtime = runtime_for_sound(sound);
+    if (s_initialized && sound == s_sound &&
+        (runtime->backend != AMY_SOUND_BACKEND_PATCH || s_patch_loaded)) {
+        return ESP_OK;
+    }
+
     if (s_initialized) {
         amy_graph_lock();
     }
@@ -921,7 +931,6 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
     }
 
     s_sound = sound;
-    const amy_sound_runtime_t *runtime = runtime_for_sound(sound);
 
     if (s_initialized && runtime->backend == AMY_SOUND_BACKEND_PATCH) {
         configure_patch_synth(runtime);
@@ -1388,6 +1397,42 @@ static void play_voice(uint8_t slot, uint8_t role, uint8_t note, const amy_sound
     s_voices[role].age = ++s_voice_age;
 }
 
+#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
+static void output_declick_process(int16_t *block, uint32_t frames, uint8_t channels)
+{
+    if (block == NULL || frames == 0 || channels == 0 || channels > AMY_NCHANS) {
+        return;
+    }
+
+    uint32_t fade_frames = ESP_POCKET_AUDIO_OUTPUT_DECLICK_FRAMES;
+    if (fade_frames == 0) {
+        return;
+    }
+    if (fade_frames > frames) {
+        fade_frames = frames;
+    }
+
+    if (s_output_declick_ready) {
+        for (uint32_t frame = 0; frame < fade_frames; ++frame) {
+            int32_t mix = (int32_t)(frame + 1U);
+            int32_t denom = (int32_t)(fade_frames + 1U);
+            for (uint8_t channel = 0; channel < channels; ++channel) {
+                uint32_t index = frame * channels + channel;
+                int32_t previous = s_output_declick_last[channel];
+                int32_t current = block[index];
+                block[index] = (int16_t)(previous + (((current - previous) * mix) / denom));
+            }
+        }
+    }
+
+    uint32_t last_frame = frames - 1U;
+    for (uint8_t channel = 0; channel < channels; ++channel) {
+        s_output_declick_last[channel] = block[last_frame * channels + channel];
+    }
+    s_output_declick_ready = true;
+}
+#endif
+
 static void audio_task(void *arg)
 {
     (void)arg;
@@ -1399,6 +1444,9 @@ static void audio_task(void *arg)
         amy_graph_unlock();
         synth_amy_flanger_process(block);
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
+#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
+        output_declick_process(block, AMY_BLOCK_SIZE, AMY_NCHANS);
+#endif
         int64_t render_done_us = esp_timer_get_time();
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(
@@ -1529,8 +1577,10 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
     const uint8_t *priority = amy_voice_map_role_priority(runtime->backend);
     uint8_t limit = runtime_voice_limit(runtime);
     uint8_t played = 0;
+#if ESP_POCKET_AUDIO_AMY_VOICE_MAP_LOG_ENABLED
     char assignment_log[224] = {0};
     size_t used = 0;
+#endif
 
     for (uint8_t index = 0; index < AMY_MUSICAL_VOICE_COUNT; ++index) {
         uint8_t role = priority[index];
@@ -1541,24 +1591,29 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
             continue;
         }
         if (played >= limit) {
+#if ESP_POCKET_AUDIO_AMY_VOICE_MAP_LOG_ENABLED
             amy_voice_map_append_note_log(assignment_log,
                                           sizeof(assignment_log),
                                           &used,
                                           "skip-",
                                           role,
                                           assignments[role].note);
+#endif
             continue;
         }
         play_voice(slot, role, assignments[role].note, runtime);
+#if ESP_POCKET_AUDIO_AMY_VOICE_MAP_LOG_ENABLED
         amy_voice_map_append_note_log(assignment_log,
                                       sizeof(assignment_log),
                                       &used,
                                       "",
                                       role,
                                       assignments[role].note);
+#endif
         ++played;
     }
 
+#if ESP_POCKET_AUDIO_AMY_VOICE_MAP_LOG_ENABLED
     ESP_LOGI(TAG,
              "voice map slot=%u sound=%s engine=%s backend=%s voices=%u/%u active_oscs=%u alloc_oscs=%u %s",
              slot + 1,
@@ -1570,6 +1625,7 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
              (unsigned)active_osc_count(),
              (unsigned)allocated_patch_osc_count(),
              assignment_log);
+#endif
     return ESP_OK;
 }
 

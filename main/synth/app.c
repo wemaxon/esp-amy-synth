@@ -28,6 +28,7 @@ typedef enum {
     APP_WHEEL_TARGET_ATTACK,
     APP_WHEEL_TARGET_RELEASE,
     APP_WHEEL_TARGET_FILTER,
+    APP_WHEEL_TARGET_LOOPER_TRACK,
 } app_wheel_target_t;
 
 typedef struct {
@@ -41,6 +42,9 @@ typedef struct {
     synth_chord_modifier_t locked_modifier[SYNTH_CHORD_BUTTON_COUNT];
     int8_t chord_inversion[SYNTH_CHORD_BUTTON_COUNT];
     synth_sound_t sound;
+    synth_sound_t pending_sound;
+    bool sound_apply_pending;
+    TickType_t sound_apply_due_tick;
     synth_play_mode_t mode;
     uint16_t bpm;
     uint8_t effect_index;
@@ -74,6 +78,10 @@ typedef struct {
     bool looper_menu_held;
     bool looper_menu_clear_used;
     TickType_t looper_next_ui_tick;
+    uint8_t mixer_held_mask;
+    uint8_t mixer_action_mask;
+    uint8_t mixer_wheel_track;
+    uint8_t mixer_wheel_start_percent;
     bool mode_bpm_submenu;
     synth_strum_speed_t strum_speed;
     synth_arp_pattern_t arp_pattern;
@@ -127,6 +135,7 @@ static const float LFO_RATE_HZ = 5.0f;
 static const float LFO_TWO_PI = 6.283185307f;
 static const uint8_t ARP_NO_SLOT = UINT8_MAX;
 static const TickType_t MODE_TAP_RESET_TICKS = pdMS_TO_TICKS(2000);
+static const TickType_t SOUND_BROWSE_APPLY_TICKS = pdMS_TO_TICKS(180);
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
@@ -136,6 +145,7 @@ static synth_app_state_t s_app = {
     .bass_mode = SYNTH_BASS_MODE_OFF,
     .voice_leading_enabled = false,
     .sound = SYNTH_SOUND_SAW,
+    .pending_sound = SYNTH_SOUND_SAW,
     .mode = SYNTH_PLAY_MODE_PLAY,
     .bpm = 120,
     .effect_index = PLAY_UI_EFFECT_JOYSTICK,
@@ -167,11 +177,14 @@ static synth_app_state_t s_app = {
     .drone_slot = UINT8_MAX,
     .arp_last_slot = UINT8_MAX,
     .repeat_slot = UINT8_MAX,
+    .mixer_wheel_track = UINT8_MAX,
+    .mixer_wheel_start_percent = 100,
     .chord_name = "---",
     .status = "READY",
 };
 
 static void step_mode(int8_t steps);
+static void apply_pending_sound_now(void);
 
 static play_ui_screen_t active_screen(void)
 {
@@ -185,6 +198,9 @@ static play_ui_screen_t active_screen(void)
         return PLAY_UI_SCREEN_MODE;
     }
     if (s_app.looper_visible) {
+        return PLAY_UI_SCREEN_LOOPER;
+    }
+    if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
         return PLAY_UI_SCREEN_LOOPER;
     }
     return PLAY_UI_SCREEN_HOME;
@@ -656,6 +672,7 @@ static void warn_unimplemented_mode(synth_play_mode_t mode)
 
 static void log_chord_event(const char *verb, const synth_chord_t *chord)
 {
+#if ESP_POCKET_AUDIO_SYNTH_CHORD_LOG_ENABLED
     if (chord == NULL) {
         return;
     }
@@ -672,6 +689,10 @@ static void log_chord_event(const char *verb, const synth_chord_t *chord)
              synth_chord_modifier_name(chord->modifier),
              chord->note_count,
              note_names);
+#else
+    (void)verb;
+    (void)chord;
+#endif
 }
 
 static bool build_play_layer(synth_chord_t *layer)
@@ -714,6 +735,8 @@ static void render_play_layer(void)
 
 static void play_degree(uint8_t degree)
 {
+    apply_pending_sound_now();
+
     synth_chord_t chord = {0};
     if (!build_chord(degree, &chord)) {
         ESP_LOGW(TAG, "failed to build chord degree=%u", degree);
@@ -805,6 +828,126 @@ static void refresh_held_chords(void)
     }
 }
 
+static bool sound_change_should_apply_immediately(void)
+{
+    return s_app.held_mask != 0 ||
+           s_app.strum_active ||
+           s_app.drone_active ||
+           arp_clock_active() ||
+           repeat_clock_active();
+}
+
+static void apply_sound_to_engine(synth_sound_t sound)
+{
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(sound));
+    apply_current_envelope_if_modified();
+    apply_current_glide();
+}
+
+static void apply_sound_immediately(synth_sound_t sound)
+{
+    s_app.sound = sound;
+    s_app.pending_sound = sound;
+    s_app.sound_apply_pending = false;
+    s_app.sound_apply_due_tick = 0;
+    apply_sound_to_engine(sound);
+}
+
+static void schedule_sound_apply(synth_sound_t sound)
+{
+    s_app.sound = sound;
+    s_app.pending_sound = sound;
+    s_app.sound_apply_pending = true;
+    s_app.sound_apply_due_tick = xTaskGetTickCount() + SOUND_BROWSE_APPLY_TICKS;
+}
+
+static void apply_pending_sound_now(void)
+{
+    if (!s_app.sound_apply_pending) {
+        return;
+    }
+
+    apply_sound_immediately(s_app.pending_sound);
+}
+
+static void update_pending_sound(void)
+{
+    if (!s_app.sound_apply_pending || sound_change_should_apply_immediately()) {
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    if ((int32_t)(now - s_app.sound_apply_due_tick) < 0) {
+        return;
+    }
+
+    apply_pending_sound_now();
+    set_status("SOUND READY");
+    update_ui();
+}
+
+static uint8_t mixer_first_held_track(void)
+{
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        if ((s_app.mixer_held_mask & (1U << track)) != 0) {
+            return track;
+        }
+    }
+    return UINT8_MAX;
+}
+
+static void mixer_mark_action(uint8_t track)
+{
+    if (track < SYNTH_LOOPER_TRACK_COUNT) {
+        s_app.mixer_action_mask |= (uint8_t)(1U << track);
+    }
+}
+
+static bool handle_mixer_chord_event(const control_event_t *event, uint8_t degree)
+{
+    if (s_app.mode != SYNTH_PLAY_MODE_MIXER) {
+        return false;
+    }
+
+    if (degree == 7) {
+        if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
+            ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_metronome());
+            set_status("METRONOME");
+            update_ui();
+        }
+        return true;
+    }
+    if (degree == 0 || degree > SYNTH_LOOPER_TRACK_COUNT) {
+        return true;
+    }
+
+    uint8_t track = (uint8_t)(degree - 1U);
+    uint8_t bit = (uint8_t)(1U << track);
+    if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
+        s_app.mixer_held_mask |= bit;
+        s_app.mixer_action_mask &= (uint8_t)~bit;
+        s_app.mixer_wheel_track = track;
+        s_app.mixer_wheel_start_percent = s_app.wheel_percent;
+        s_app.focus_slot = track;
+        set_status("MIXER");
+        update_ui();
+        return true;
+    }
+
+    if ((s_app.mixer_held_mask & bit) != 0 &&
+        (s_app.mixer_action_mask & bit) == 0) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_track_mute(track));
+        set_status("MIX MUTE");
+    }
+    s_app.mixer_held_mask &= (uint8_t)~bit;
+    s_app.mixer_action_mask &= (uint8_t)~bit;
+    if (s_app.mixer_wheel_track == track) {
+        s_app.mixer_wheel_track = UINT8_MAX;
+    }
+    update_ui();
+    return true;
+}
+
 static void release_degree(uint8_t degree)
 {
     uint8_t slot = slot_from_degree(degree);
@@ -886,10 +1029,7 @@ static void handle_chord_event(const control_event_t *event)
     uint8_t slot = slot_from_degree(degree);
     if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
         if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
-            s_app.sound = synth_sound_quick_select(degree);
-            ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
-            apply_current_envelope_if_modified();
-            apply_current_glide();
+            apply_sound_immediately(synth_sound_quick_select(degree));
             set_status("SOUND SELECTED");
             refresh_held_chords();
             update_ui();
@@ -917,6 +1057,10 @@ static void handle_chord_event(const control_event_t *event)
             return;
         }
 
+        if (handle_mixer_chord_event(event, degree)) {
+            return;
+        }
+
         if (s_app.bass_mode == SYNTH_BASS_MODE_SLASH &&
             s_app.held_mask != 0 &&
             (s_app.held_mask & (1U << slot)) == 0) {
@@ -934,6 +1078,9 @@ static void handle_chord_event(const control_event_t *event)
         s_app.focus_slot = slot;
         play_degree(degree);
     } else {
+        if (handle_mixer_chord_event(event, degree)) {
+            return;
+        }
         release_degree(degree);
     }
 }
@@ -1030,12 +1177,18 @@ static void update_key_menu(control_joystick_direction_t direction)
 
 static void step_sound(int8_t steps)
 {
-    s_app.sound = synth_sound_step(s_app.sound, steps);
-    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_sound(s_app.sound));
-    apply_current_envelope_if_modified();
-    apply_current_glide();
+    synth_sound_t next = synth_sound_step(s_app.sound, steps);
+    if (next == s_app.sound) {
+        return;
+    }
+
+    if (sound_change_should_apply_immediately()) {
+        apply_sound_immediately(next);
+        refresh_held_chords();
+    } else {
+        schedule_sound_apply(next);
+    }
     set_status("SOUND CHANGED");
-    refresh_held_chords();
     update_ui();
 }
 
@@ -1450,6 +1603,10 @@ static app_wheel_target_t current_wheel_target(void)
     if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
         return APP_WHEEL_TARGET_FILTER;
     }
+    if (s_app.mode == SYNTH_PLAY_MODE_MIXER &&
+        mixer_first_held_track() < SYNTH_LOOPER_TRACK_COUNT) {
+        return APP_WHEEL_TARGET_LOOPER_TRACK;
+    }
     return APP_WHEEL_TARGET_VOLUME;
 }
 
@@ -1465,6 +1622,25 @@ static bool wheel_application_changed(app_wheel_target_t target, uint8_t percent
     return delta >= WHEEL_CHANGE_THRESHOLD_PERCENT;
 }
 
+static bool mixer_wheel_moved(uint8_t track, uint8_t percent)
+{
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        return false;
+    }
+    if (s_app.mixer_wheel_track != track) {
+        s_app.mixer_wheel_track = track;
+        s_app.mixer_wheel_start_percent = percent;
+        return false;
+    }
+    if ((s_app.mixer_action_mask & (1U << track)) != 0) {
+        return true;
+    }
+
+    uint8_t start = s_app.mixer_wheel_start_percent;
+    uint8_t delta = percent > start ? (uint8_t)(percent - start) : (uint8_t)(start - percent);
+    return delta >= WHEEL_CHANGE_THRESHOLD_PERCENT;
+}
+
 static bool apply_wheel(const control_wheel_state_t *wheel)
 {
     if (wheel == NULL || !wheel->present) {
@@ -1472,6 +1648,12 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
     }
 
     app_wheel_target_t target = current_wheel_target();
+    if (target == APP_WHEEL_TARGET_LOOPER_TRACK) {
+        uint8_t track = mixer_first_held_track();
+        if (!mixer_wheel_moved(track, wheel->percent)) {
+            return false;
+        }
+    }
     if (!wheel_application_changed(target, wheel->percent)) {
         return false;
     }
@@ -1492,9 +1674,18 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
         float cutoff_hz = synth_app_filter_cutoff_hz_from_wheel(wheel->percent);
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_filter_cutoff(cutoff_hz));
         set_status("FILTER");
+    } else if (target == APP_WHEEL_TARGET_LOOPER_TRACK) {
+        uint8_t track = mixer_first_held_track();
+        if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+            return false;
+        }
+        mixer_mark_action(track);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_set_track_volume(track, wheel->percent));
+        set_status("LOOP VOL");
     } else {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(wheel->value));
         s_app.volume_percent = wheel->percent;
+        ESP_LOGI(TAG, "master volume=%u%%", (unsigned)s_app.volume_percent);
         set_status("VOLUME");
     }
     return true;
@@ -1533,12 +1724,24 @@ static void step_mode(int8_t steps)
         s_app.drone_active = false;
         s_app.drone_slot = ARP_NO_SLOT;
     }
+    if (previous == SYNTH_PLAY_MODE_MIXER) {
+        s_app.mixer_held_mask = 0;
+        s_app.mixer_action_mask = 0;
+        s_app.mixer_wheel_track = UINT8_MAX;
+    }
     clear_arp_sources();
 
     s_app.mode = next;
     s_app.mode_bpm_submenu = false;
     apply_current_envelope_if_modified();
-    if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
+    if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        s_app.held_mask = 0;
+        memset(s_app.held_chord_valid, 0, sizeof(s_app.held_chord_valid));
+        memset(s_app.arp_chord_valid, 0, sizeof(s_app.arp_chord_valid));
+        s_app.looper_visible = false;
+        set_status("MIXER");
+    } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
         clear_arp_sources();
         refresh_held_chords();
@@ -1690,7 +1893,7 @@ static void update_looper_joystick(control_joystick_direction_t direction)
 
 static void update_looper_periodic_ui(void)
 {
-    if (!s_app.looper_visible) {
+    if (!s_app.looper_visible && s_app.mode != SYNTH_PLAY_MODE_MIXER) {
         return;
     }
 
@@ -1733,6 +1936,15 @@ static void update_joystick(void)
         return;
     }
     s_app.last_looper_direction = CONTROL_JOYSTICK_CENTER;
+
+    if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
+        s_app.last_play_direction = joystick.direction;
+        if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {
+            s_app.modifier = SYNTH_CHORD_MOD_NONE;
+            update_ui();
+        }
+        return;
+    }
 
     if (s_app.joystick_mode == SYNTH_JOYSTICK_MODE_CHROMATIC &&
         s_app.held_mask == 0 &&
@@ -1809,6 +2021,20 @@ static void handle_mode_button_tap(void)
     }
 }
 
+static void handle_mixer_joystick_click(void)
+{
+    uint8_t track = mixer_first_held_track();
+    if (track < SYNTH_LOOPER_TRACK_COUNT) {
+        mixer_mark_action(track);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_track_solo(track));
+        set_status("SOLO");
+    } else {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_pause());
+        set_status("MIX PAUSE");
+    }
+    update_ui();
+}
+
 static void handle_menu_event(const control_event_t *event)
 {
     if (event->type != CONTROL_EVENT_SWITCH_PRESSED) {
@@ -1837,6 +2063,8 @@ static void handle_menu_event(const control_event_t *event)
                 set_status("KEY MENU");
                 update_ui();
             }
+        } else if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
+            handle_mixer_joystick_click();
         } else {
             handle_looper_click();
         }
@@ -1887,6 +2115,7 @@ static void app_task(void *arg)
         }
 
         update_joystick();
+        update_pending_sound();
         update_strum();
         update_arp();
         update_repeat();

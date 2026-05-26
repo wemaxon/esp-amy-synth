@@ -9,6 +9,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 
 typedef struct {
@@ -22,6 +23,7 @@ typedef struct {
     uint64_t record_start_frame;
     uint32_t target_record_frames;
     uint32_t count_in_beat_frames;
+    uint8_t volume_percent;
 } synth_looper_track_t;
 
 typedef struct {
@@ -35,19 +37,35 @@ typedef struct {
     bool sync_to_master;
     uint64_t record_start_frame;
     uint32_t count_in_beat_frames;
+    uint8_t volume_percent;
+    bool audible;
 } synth_looper_process_track_t;
 
 static const char *TAG = "SYNTH_LOOPER";
 
-static const uint8_t LIVE_GAIN_NUM = 3;
-static const uint8_t LIVE_GAIN_DEN = 4;
-static const uint8_t LOOP_GAIN_NUM = 3;
-static const uint8_t LOOP_GAIN_DEN = 4;
+static const uint16_t GAIN_Q8_UNITY = 256;
+static const uint16_t LIVE_MIX_GAIN_Q8 = 192;
+static const uint8_t LOOP_TRACK_DEFAULT_VOLUME_PERCENT = 85;
 static const uint32_t MIN_RECORD_MS = 120;
 static const uint32_t LOOP_SEAM_CROSSFADE_MS = 30;
 static const uint16_t COUNT_IN_CLICK_FRAMES = 220;
 static const int32_t COUNT_IN_CLICK_AMP = 4200;
 static const int32_t COUNT_IN_CLICK_ACCENT_AMP = 6200;
+static const int32_t SOFT_LIMIT_THRESHOLD = 24576;
+static const uint32_t SOFT_LIMIT_KNEE = 8191;
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+static const uint32_t METER_LOG_INTERVAL_MS = 1000;
+static const uint32_t CLIP_LOG_INTERVAL_MS = 500;
+#endif
+static const uint16_t LOOP_BUS_GAIN_BY_TRACKS_Q8[SYNTH_LOOPER_TRACK_COUNT + 1] = {
+    0,
+    192,
+    160,
+    142,
+    128,
+    118,
+    110,
+};
 
 static synth_looper_track_t s_tracks[SYNTH_LOOPER_TRACK_COUNT];
 static uint32_t s_sample_rate_hz;
@@ -59,8 +77,18 @@ static uint8_t s_current_track;
 static uint8_t s_bar_count;
 static bool s_paused;
 static bool s_initialized;
+static bool s_metronome_enabled = true;
+static uint8_t s_mute_mask;
+static uint8_t s_solo_mask;
 static char s_message[22] = "EMPTY";
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+static synth_looper_meter_t s_meter;
+static uint64_t s_next_meter_log_frame;
+static uint64_t s_next_clip_log_frame;
+#endif
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static uint8_t track_bit(uint8_t track);
 
 static uint32_t ms_to_frames(uint32_t ms)
 {
@@ -148,6 +176,9 @@ static void clear_track_locked(uint8_t track)
     slot->record_start_frame = 0;
     slot->target_record_frames = 0;
     slot->count_in_beat_frames = 0;
+    slot->volume_percent = LOOP_TRACK_DEFAULT_VOLUME_PERCENT;
+    s_mute_mask &= (uint8_t)~track_bit(track);
+    s_solo_mask &= (uint8_t)~track_bit(track);
 }
 
 static void clear_all_locked(void)
@@ -158,6 +189,13 @@ static void clear_all_locked(void)
     s_master_length_frames = 0;
     s_paused = false;
     s_current_track = 0;
+    s_mute_mask = 0;
+    s_solo_mask = 0;
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    memset(&s_meter, 0, sizeof(s_meter));
+    s_next_meter_log_frame = 0;
+    s_next_clip_log_frame = 0;
+#endif
     set_message_locked("CLEARED");
 }
 
@@ -184,7 +222,45 @@ static int16_t encode_sample(int32_t sample)
 
 static int32_t decode_sample(int16_t sample)
 {
-    return ((int32_t)sample * LOOP_GAIN_NUM) / LOOP_GAIN_DEN;
+    return (int32_t)sample;
+}
+
+static int32_t apply_gain_q8(int32_t sample, uint16_t gain_q8)
+{
+    if (gain_q8 == GAIN_Q8_UNITY) {
+        return sample;
+    }
+    return (sample * (int32_t)gain_q8) / (int32_t)GAIN_Q8_UNITY;
+}
+
+static int32_t apply_percent_gain(int32_t sample, uint8_t percent)
+{
+    if (percent >= 100) {
+        return sample;
+    }
+    return (sample * (int32_t)percent) / 100;
+}
+
+static uint16_t loop_bus_gain_q8(uint8_t active_tracks)
+{
+    if (active_tracks > SYNTH_LOOPER_TRACK_COUNT) {
+        active_tracks = SYNTH_LOOPER_TRACK_COUNT;
+    }
+    return LOOP_BUS_GAIN_BY_TRACKS_Q8[active_tracks];
+}
+
+static uint8_t track_bit(uint8_t track)
+{
+    return (uint8_t)(1U << track);
+}
+
+static bool track_is_audible(uint8_t track)
+{
+    uint8_t bit = track_bit(track);
+    if (s_solo_mask != 0) {
+        return (s_solo_mask & bit) != 0;
+    }
+    return (s_mute_mask & bit) == 0;
 }
 
 static uint32_t seam_crossfade_frames_for_length(uint32_t length_frames)
@@ -197,16 +273,108 @@ static uint32_t seam_crossfade_frames_for_length(uint32_t length_frames)
     return frames;
 }
 
-static int16_t clamp_i16(int32_t sample)
+static uint32_t abs_sample_i32(int32_t sample)
 {
-    if (sample > 32767) {
-        return 32767;
+    if (sample < 0) {
+        return sample == INT32_MIN ? (uint32_t)INT32_MAX : (uint32_t)-sample;
     }
-    if (sample < -32768) {
-        return -32768;
-    }
-    return (int16_t)sample;
+    return (uint32_t)sample;
 }
+
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+static void meter_peak(uint32_t *peak, int32_t sample)
+{
+    uint32_t magnitude = abs_sample_i32(sample);
+    if (magnitude > *peak) {
+        *peak = magnitude;
+    }
+}
+
+static uint8_t peak_to_percent(uint32_t peak)
+{
+    if (peak >= 32767U) {
+        return 100;
+    }
+    return (uint8_t)(((peak * 100U) + 16383U) / 32767U);
+}
+
+static void increment_meter_counter(uint16_t *counter)
+{
+    if (*counter < UINT16_MAX) {
+        ++(*counter);
+    }
+}
+#endif
+
+static int16_t soft_limit_i16(int32_t sample, synth_looper_meter_t *meter)
+{
+    uint32_t magnitude = abs_sample_i32(sample);
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    if (magnitude > 32767U && meter != NULL) {
+        increment_meter_counter(&meter->would_clip_samples);
+    }
+#endif
+    if (magnitude <= (uint32_t)SOFT_LIMIT_THRESHOLD) {
+        return (int16_t)sample;
+    }
+
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    if (meter != NULL) {
+        increment_meter_counter(&meter->limited_samples);
+    }
+#endif
+
+    uint32_t over = magnitude - (uint32_t)SOFT_LIMIT_THRESHOLD;
+    uint32_t shaped = (uint32_t)SOFT_LIMIT_THRESHOLD +
+                      (uint32_t)(((uint64_t)over * SOFT_LIMIT_KNEE) /
+                                 ((uint64_t)over + SOFT_LIMIT_KNEE));
+    if (shaped > 32767U) {
+        shaped = 32767U;
+    }
+    return sample < 0 ? (int16_t)-(int32_t)shaped : (int16_t)shaped;
+}
+
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+static void log_meter_if_due(const synth_looper_meter_t *meter,
+                             uint64_t block_start_frame,
+                             uint8_t max_audible_tracks)
+{
+    if (meter == NULL || s_sample_rate_hz == 0) {
+        return;
+    }
+
+    bool would_clip = meter->would_clip_samples > 0;
+    uint64_t *next_log_frame = would_clip ? &s_next_clip_log_frame : &s_next_meter_log_frame;
+    if (block_start_frame < *next_log_frame) {
+        return;
+    }
+
+    uint32_t interval_frames = ms_to_frames(would_clip ? CLIP_LOG_INTERVAL_MS : METER_LOG_INTERVAL_MS);
+    if (interval_frames == 0) {
+        interval_frames = 1;
+    }
+    *next_log_frame = block_start_frame + interval_frames;
+
+    if (would_clip) {
+        ESP_LOGW(TAG,
+                 "mix limiter live=%u%% loop=%u%% out=%u%% limited=%u would_clip=%u audible_tracks=%u",
+                 (unsigned)meter->live_peak_percent,
+                 (unsigned)meter->loop_peak_percent,
+                 (unsigned)meter->output_peak_percent,
+                 (unsigned)meter->limited_samples,
+                 (unsigned)meter->would_clip_samples,
+                 (unsigned)max_audible_tracks);
+    } else {
+        ESP_LOGD(TAG,
+                 "mix meter live=%u%% loop=%u%% out=%u%% limited=%u audible_tracks=%u",
+                 (unsigned)meter->live_peak_percent,
+                 (unsigned)meter->loop_peak_percent,
+                 (unsigned)meter->output_peak_percent,
+                 (unsigned)meter->limited_samples,
+                 (unsigned)max_audible_tracks);
+    }
+}
+#endif
 
 static esp_err_t ensure_track_buffer(uint8_t track)
 {
@@ -414,8 +582,12 @@ static bool process_track_recording(synth_looper_process_track_t *track,
 }
 
 static int32_t count_in_click_sample(const synth_looper_process_track_t *track,
-                                     uint64_t global_frame)
+                                     uint64_t global_frame,
+                                     bool metronome_enabled)
 {
+    if (!metronome_enabled) {
+        return 0;
+    }
     if (track->state != SYNTH_LOOPER_TRACK_WAITING ||
         !track->record_armed ||
         track->sync_to_master ||
@@ -446,13 +618,13 @@ static int32_t count_in_click_sample(const synth_looper_process_track_t *track,
     return ((beat_offset / 8U) & 1U) != 0 ? -envelope : envelope;
 }
 
-static void process_track_playback(synth_looper_process_track_t *track,
+static bool process_track_playback(synth_looper_process_track_t *track,
                                    int32_t *mixed_sample)
 {
     if (track->state != SYNTH_LOOPER_TRACK_LOOPING ||
         track->samples == NULL ||
         track->length_frames == 0) {
-        return;
+        return false;
     }
 
     if (track->play_position >= track->length_frames) {
@@ -460,13 +632,16 @@ static void process_track_playback(synth_looper_process_track_t *track,
     }
 
     uint32_t position = track->play_position;
-    int32_t sample = decode_sample(track->samples[position]);
-
     track->play_position = position + 1U;
     if (track->play_position >= track->length_frames) {
         track->play_position = 0;
     }
 
+    if (!track->audible || track->volume_percent == 0) {
+        return false;
+    }
+
+    int32_t sample = decode_sample(track->samples[position]);
     uint32_t crossfade_frames = seam_crossfade_frames_for_length(track->length_frames);
     if (crossfade_frames > 0 && position >= track->length_frames - crossfade_frames) {
         uint32_t tail_offset = position - (track->length_frames - crossfade_frames);
@@ -475,7 +650,9 @@ static void process_track_playback(synth_looper_process_track_t *track,
         int32_t head_weight = (int32_t)(tail_offset + 1U);
         sample = (sample * tail_weight + head * head_weight) / (int32_t)crossfade_frames;
     }
+    sample = apply_percent_gain(sample, track->volume_percent);
     *mixed_sample += sample;
+    return true;
 }
 
 esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
@@ -515,12 +692,21 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     bool completed[SYNTH_LOOPER_TRACK_COUNT] = {0};
     bool has_active_track = false;
     bool paused = false;
+    bool metronome_enabled = true;
     uint32_t master_length_frames = 0;
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    uint32_t live_peak = 0;
+    uint32_t loop_peak = 0;
+    uint32_t output_peak = 0;
+    uint8_t max_audible_tracks = 0;
+    synth_looper_meter_t block_meter = {0};
+#endif
 
     portENTER_CRITICAL(&s_mux);
     uint64_t block_start = s_global_frame;
     s_global_frame += frames;
     paused = s_paused;
+    metronome_enabled = s_metronome_enabled;
     master_length_frames = s_master_length_frames;
     for (uint8_t i = 0; i < SYNTH_LOOPER_TRACK_COUNT; ++i) {
         process_tracks[i].samples = s_tracks[i].samples;
@@ -533,6 +719,8 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
         process_tracks[i].sync_to_master = s_tracks[i].sync_to_master;
         process_tracks[i].record_start_frame = s_tracks[i].record_start_frame;
         process_tracks[i].count_in_beat_frames = s_tracks[i].count_in_beat_frames;
+        process_tracks[i].volume_percent = s_tracks[i].volume_percent;
+        process_tracks[i].audible = track_is_audible(i);
         if (process_tracks[i].state == SYNTH_LOOPER_TRACK_RECORDING ||
             process_tracks[i].state == SYNTH_LOOPER_TRACK_LOOPING ||
             (process_tracks[i].state == SYNTH_LOOPER_TRACK_WAITING &&
@@ -543,6 +731,11 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     portEXIT_CRITICAL(&s_mux);
 
     if (paused || !has_active_track) {
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+        portENTER_CRITICAL(&s_mux);
+        memset(&s_meter, 0, sizeof(s_meter));
+        portEXIT_CRITICAL(&s_mux);
+#endif
         return;
     }
 
@@ -553,10 +746,12 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
         bool master_cycle_start = process_master_length > 0 &&
                                   process_tracks[0].state == SYNTH_LOOPER_TRACK_LOOPING &&
                                   process_tracks[0].play_position == 0;
+        int32_t click_mix = 0;
         int32_t loop_mix = 0;
+        uint8_t active_playback_tracks = 0;
 
         for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
-            loop_mix += count_in_click_sample(&process_tracks[track], global_frame);
+            click_mix += count_in_click_sample(&process_tracks[track], global_frame, metronome_enabled);
         }
 
         for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
@@ -584,22 +779,64 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
             if (just_completed[track]) {
                 continue;
             }
-            process_track_playback(&process_tracks[track], &loop_mix);
+            if (process_track_playback(&process_tracks[track], &loop_mix)) {
+                ++active_playback_tracks;
+            }
         }
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+        if (active_playback_tracks > max_audible_tracks) {
+            max_audible_tracks = active_playback_tracks;
+        }
+#endif
 
-        if (loop_mix == 0) {
+        if (active_playback_tracks > 0) {
+            loop_mix = apply_gain_q8(loop_mix, loop_bus_gain_q8(active_playback_tracks));
+        }
+        loop_mix += click_mix;
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+        meter_peak(&loop_peak, loop_mix);
+#endif
+
+        uint32_t sample_index = frame * channels;
+        bool mix_path_active = active_playback_tracks > 0 || click_mix != 0;
+        if (!mix_path_active) {
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+            for (uint8_t channel = 0; channel < channels; ++channel) {
+                int32_t live = block[sample_index + channel];
+                meter_peak(&live_peak, live);
+                meter_peak(&output_peak, live);
+            }
+#endif
             continue;
         }
 
-        uint32_t sample_index = frame * channels;
         for (uint8_t channel = 0; channel < channels; ++channel) {
-            int32_t live = ((int32_t)block[sample_index + channel] * LIVE_GAIN_NUM) / LIVE_GAIN_DEN;
+            int32_t live_input = block[sample_index + channel];
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+            meter_peak(&live_peak, live_input);
+#endif
+            int32_t live = apply_gain_q8(live_input, LIVE_MIX_GAIN_Q8);
             int32_t mixed = live + loop_mix;
-            block[sample_index + channel] = clamp_i16(mixed);
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+            block[sample_index + channel] = soft_limit_i16(mixed, &block_meter);
+            meter_peak(&output_peak, block[sample_index + channel]);
+#else
+            block[sample_index + channel] = soft_limit_i16(mixed, NULL);
+#endif
         }
     }
 
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    block_meter.live_peak_percent = peak_to_percent(live_peak);
+    block_meter.loop_peak_percent = peak_to_percent(loop_peak);
+    block_meter.output_peak_percent = peak_to_percent(output_peak);
+    log_meter_if_due(&block_meter, block_start, max_audible_tracks);
+#endif
+
     portENTER_CRITICAL(&s_mux);
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    s_meter = block_meter;
+#endif
     for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
         synth_looper_track_t *slot = &s_tracks[track];
         if (slot->samples != process_tracks[track].samples) {
@@ -748,6 +985,138 @@ esp_err_t synth_looper_select_track(int8_t steps)
     return ESP_OK;
 }
 
+esp_err_t synth_looper_set_track_volume(uint8_t track, uint8_t percent)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+
+    bool changed = false;
+    uint8_t track_number = 0;
+    uint8_t previous_percent = 0;
+    synth_looper_track_state_t state = SYNTH_LOOPER_TRACK_EMPTY;
+
+    portENTER_CRITICAL(&s_mux);
+    synth_looper_track_t *slot = &s_tracks[track];
+    s_current_track = track;
+    track_number = (uint8_t)(track + 1U);
+    previous_percent = slot->volume_percent;
+    state = slot->state;
+    if (slot->volume_percent != percent) {
+        slot->volume_percent = percent;
+        changed = true;
+        char message[sizeof(s_message)];
+        snprintf(message,
+                 sizeof(message),
+                 "T%u VOL %u",
+                 (unsigned)track_number,
+                 (unsigned)percent);
+        set_message_locked(message);
+    }
+    portEXIT_CRITICAL(&s_mux);
+    if (changed) {
+        ESP_LOGI(TAG,
+                 "track volume track=%u state=%s previous=%u%% current=%u%%",
+                 (unsigned)track_number,
+                 synth_looper_track_state_name(state),
+                 (unsigned)previous_percent,
+                 (unsigned)percent);
+    }
+    return ESP_OK;
+}
+
+esp_err_t synth_looper_set_current_track_volume(uint8_t percent)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint8_t track = 0;
+    portENTER_CRITICAL(&s_mux);
+    track = s_current_track;
+    portEXIT_CRITICAL(&s_mux);
+    return synth_looper_set_track_volume(track, percent);
+}
+
+esp_err_t synth_looper_toggle_track_mute(uint8_t track)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool muted = false;
+    uint8_t track_number = (uint8_t)(track + 1U);
+    portENTER_CRITICAL(&s_mux);
+    uint8_t bit = track_bit(track);
+    s_current_track = track;
+    s_mute_mask ^= bit;
+    muted = (s_mute_mask & bit) != 0;
+    char message[sizeof(s_message)];
+    snprintf(message, sizeof(message), "T%u %s", (unsigned)track_number, muted ? "MUTE" : "ON");
+    set_message_locked(message);
+    portEXIT_CRITICAL(&s_mux);
+
+    ESP_LOGI(TAG, "track mute track=%u muted=%s", (unsigned)track_number, muted ? "yes" : "no");
+    return ESP_OK;
+}
+
+esp_err_t synth_looper_toggle_track_solo(uint8_t track)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    bool soloed = false;
+    uint8_t solo_mask = 0;
+    uint8_t track_number = (uint8_t)(track + 1U);
+    portENTER_CRITICAL(&s_mux);
+    uint8_t bit = track_bit(track);
+    s_current_track = track;
+    s_solo_mask ^= bit;
+    soloed = (s_solo_mask & bit) != 0;
+    solo_mask = s_solo_mask;
+    char message[sizeof(s_message)];
+    snprintf(message, sizeof(message), "T%u SOLO %s", (unsigned)track_number, soloed ? "ON" : "OFF");
+    set_message_locked(message);
+    portEXIT_CRITICAL(&s_mux);
+
+    ESP_LOGI(TAG,
+             "track solo track=%u soloed=%s solo_mask=0x%02x",
+             (unsigned)track_number,
+             soloed ? "yes" : "no",
+             (unsigned)solo_mask);
+    return ESP_OK;
+}
+
+esp_err_t synth_looper_toggle_metronome(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    bool enabled = false;
+    portENTER_CRITICAL(&s_mux);
+    s_metronome_enabled = !s_metronome_enabled;
+    enabled = s_metronome_enabled;
+    set_message_locked(enabled ? "MET ON" : "MET OFF");
+    portEXIT_CRITICAL(&s_mux);
+
+    ESP_LOGI(TAG, "metronome=%s", enabled ? "on" : "off");
+    return ESP_OK;
+}
+
 esp_err_t synth_looper_adjust_bars(int8_t steps)
 {
     if (!s_initialized) {
@@ -834,15 +1203,23 @@ void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot)
         snapshot->track_state[i] = s_tracks[i].state;
         snapshot->track_ms[i] = frames_to_ms(s_tracks[i].length_frames);
         snapshot->track_position_ms[i] = frames_to_ms(s_tracks[i].play_position);
+        snapshot->track_volume_percent[i] = s_tracks[i].volume_percent;
+        snapshot->track_muted[i] = (s_mute_mask & track_bit(i)) != 0;
+        snapshot->track_soloed[i] = (s_solo_mask & track_bit(i)) != 0;
         if (s_tracks[i].state == SYNTH_LOOPER_TRACK_RECORDING) {
             snapshot->track_ms[i] = frames_to_ms(s_tracks[i].record_position);
             snapshot->track_position_ms[i] = snapshot->track_ms[i];
         }
     }
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    snapshot->meter = s_meter;
+#endif
     snapshot->current_track = s_current_track;
     snapshot->page = s_current_track / SYNTH_LOOPER_TRACKS_PER_PAGE;
     snapshot->bar_count = s_bar_count;
     snapshot->paused = s_paused;
+    snapshot->metronome_enabled = s_metronome_enabled;
+    snapshot->solo_active = s_solo_mask != 0;
     snapshot->master_ms = frames_to_ms(s_master_length_frames);
     snapshot->max_seconds = SYNTH_LOOPER_MAX_SECONDS;
     const synth_looper_track_t *current = &s_tracks[s_current_track];

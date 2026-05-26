@@ -32,7 +32,6 @@ typedef enum {
 
 typedef struct {
     synth_key_t key;
-    synth_scale_t scale;
     int8_t global_octave_shift;
     int8_t button_octave_shift[SYNTH_CHORD_BUTTON_COUNT];
     synth_chord_modifier_t modifier;
@@ -131,7 +130,6 @@ static const TickType_t MODE_TAP_RESET_TICKS = pdMS_TO_TICKS(2000);
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
-    .scale = SYNTH_SCALE_MAJOR,
     .global_octave_shift = 0,
     .modifier = SYNTH_CHORD_MOD_NONE,
     .joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT,
@@ -256,7 +254,6 @@ static void update_ui(void)
     play_ui_model_init(&model);
     model.screen = active_screen();
     model.key = s_app.key;
-    model.scale = s_app.scale;
     model.global_octave_shift = s_app.global_octave_shift;
     memcpy(model.button_octave_shift, s_app.button_octave_shift, sizeof(model.button_octave_shift));
     model.modifier = s_app.modifier;
@@ -304,7 +301,6 @@ static bool build_chord(uint8_t degree, synth_chord_t *chord)
 {
     synth_app_chord_build_context_t context = {
         .key = s_app.key,
-        .scale = s_app.scale,
         .global_octave_shift = s_app.global_octave_shift,
         .button_octave_shift = s_app.button_octave_shift,
         .modifier = s_app.modifier,
@@ -918,16 +914,6 @@ static void step_key(int8_t semitones)
     update_ui();
 }
 
-static void step_scale(int8_t steps)
-{
-    s_app.scale = synth_scale_step(s_app.scale, steps);
-    clear_voice_anchor();
-    ESP_LOGI(TAG, "scale=%s", synth_scale_name(s_app.scale));
-    set_status(synth_scale_name(s_app.scale));
-    refresh_held_chords();
-    update_ui();
-}
-
 static void step_global_octave(int8_t octaves)
 {
     int8_t next = (int8_t)(s_app.global_octave_shift + octaves);
@@ -1273,10 +1259,6 @@ static void toggle_current_effect(void)
     play_ui_effect_t effect = (play_ui_effect_t)(s_app.effect_index % PLAY_UI_EFFECT_COUNT);
     if (effect == PLAY_UI_EFFECT_JOYSTICK) {
         step_joystick_mode();
-        return;
-    }
-    if (effect == PLAY_UI_EFFECT_SCALE) {
-        step_scale(1);
         return;
     }
     if (effect == PLAY_UI_EFFECT_VOICE_LEADING) {
@@ -1861,9 +1843,7 @@ static void app_task(void *arg)
 {
     (void)arg;
 
-    ESP_LOGI(TAG, "chord synth app started key=%s scale=%s",
-             synth_key_name(s_app.key),
-             synth_scale_name(s_app.scale));
+    ESP_LOGI(TAG, "chord synth app started key=%s", synth_key_name(s_app.key));
 
     while (true) {
         control_event_t event = {0};

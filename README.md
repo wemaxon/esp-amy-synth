@@ -153,7 +153,6 @@ pip install -e .
 - ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS nötig? Umstellen auf interrupt oder langsames polling?
 
 
-- Implement different presets/instruments
 - Implement the hichord calibration flow
 - Wire and validate the ADS1115 wheel hardware (`ESP_POCKET_AUDIO_WHEEL_ENABLED`)
 - Add microphone feature

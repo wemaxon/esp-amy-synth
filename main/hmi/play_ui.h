@@ -35,7 +35,6 @@ typedef enum {
     PLAY_UI_EFFECT_FLANGER,
     PLAY_UI_EFFECT_LFO,
     PLAY_UI_EFFECT_JOYSTICK,
-    PLAY_UI_EFFECT_SCALE,
     PLAY_UI_EFFECT_VOICE_LEADING,
     PLAY_UI_EFFECT_BASS_MODE,
     PLAY_UI_EFFECT_VOICE_COUNT,
@@ -47,7 +46,6 @@ typedef enum {
 typedef struct {
     play_ui_screen_t screen;
     synth_key_t key;
-    synth_scale_t scale;
     int8_t global_octave_shift;
     int8_t button_octave_shift[SYNTH_CHORD_BUTTON_COUNT];
     synth_chord_modifier_t modifier;

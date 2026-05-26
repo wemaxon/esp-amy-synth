@@ -16,7 +16,6 @@ typedef enum {
 } base_chord_t;
 
 typedef struct {
-    const char *name;
     uint8_t note_count;
     uint8_t intervals[7];
 } scale_definition_t;
@@ -28,18 +27,7 @@ typedef struct {
     base_chord_t base;
 } chord_formula_t;
 
-static const scale_definition_t SCALE_DEFS[SYNTH_SCALE_COUNT] = {
-    [SYNTH_SCALE_MAJOR] = {"MAJOR", 7, {0, 2, 4, 5, 7, 9, 11}},
-    [SYNTH_SCALE_MINOR] = {"MINOR", 7, {0, 2, 3, 5, 7, 8, 10}},
-    [SYNTH_SCALE_HARMONIC_MINOR] = {"HARM MIN", 7, {0, 2, 3, 5, 7, 8, 11}},
-    [SYNTH_SCALE_MELODIC_MINOR] = {"MELOD MIN", 7, {0, 2, 3, 5, 7, 9, 11}},
-    [SYNTH_SCALE_MAJOR_PENTATONIC] = {"MAJ PEN", 5, {0, 2, 4, 7, 9}},
-    [SYNTH_SCALE_MINOR_PENTATONIC] = {"MIN PEN", 5, {0, 3, 5, 7, 10}},
-    [SYNTH_SCALE_BLUES] = {"BLUES", 6, {0, 3, 5, 6, 7, 10}},
-    [SYNTH_SCALE_DORIAN] = {"DORIAN", 7, {0, 2, 3, 5, 7, 9, 10}},
-    [SYNTH_SCALE_MIXOLYDIAN] = {"MIXOLYD", 7, {0, 2, 4, 5, 7, 9, 10}},
-    [SYNTH_SCALE_LYDIAN] = {"LYDIAN", 7, {0, 2, 4, 6, 7, 9, 11}},
-};
+static const scale_definition_t DIATONIC_MAJOR_SCALE = {7, {0, 2, 4, 5, 7, 9, 11}};
 
 static const char *KEY_NAMES[SYNTH_KEY_COUNT] = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
@@ -67,11 +55,6 @@ const char *synth_key_name(synth_key_t key)
     return key < SYNTH_KEY_COUNT ? KEY_NAMES[key] : "?";
 }
 
-const char *synth_scale_name(synth_scale_t scale)
-{
-    return scale < SYNTH_SCALE_COUNT ? SCALE_DEFS[scale].name : "?";
-}
-
 const char *synth_bass_mode_name(synth_bass_mode_t mode)
 {
     return mode < SYNTH_BASS_MODE_COUNT ? BASS_MODE_NAMES[mode] : "?";
@@ -93,8 +76,6 @@ const char *synth_chord_modifier_name(synth_chord_modifier_t modifier)
         return "dom7";
     case SYNTH_CHORD_MOD_MAJ7_MIN7:
         return "7";
-    case SYNTH_CHORD_MOD_MAJ9_MIN9:
-        return "9";
     case SYNTH_CHORD_MOD_ADD9:
         return "add9";
     case SYNTH_CHORD_MOD_SUS4:
@@ -143,15 +124,6 @@ synth_key_t synth_key_step(synth_key_t key, int8_t semitones)
         value += SYNTH_KEY_COUNT;
     }
     return (synth_key_t)(value % SYNTH_KEY_COUNT);
-}
-
-synth_scale_t synth_scale_step(synth_scale_t scale, int8_t steps)
-{
-    int value = (int)scale + steps;
-    while (value < 0) {
-        value += SYNTH_SCALE_COUNT;
-    }
-    return (synth_scale_t)(value % SYNTH_SCALE_COUNT);
 }
 
 synth_bass_mode_t synth_bass_mode_step(synth_bass_mode_t mode, int8_t steps)
@@ -384,9 +356,6 @@ static chord_formula_t formula_for_modifier(synth_chord_modifier_t modifier, con
     static const int16_t MAJ7[] = {0, 4, 7, 11};
     static const int16_t MIN7[] = {0, 3, 7, 10};
     static const int16_t HALF_DIM7[] = {0, 3, 6, 10};
-    static const int16_t MAJ9[] = {0, 4, 7, 11, 14};
-    static const int16_t MIN9[] = {0, 3, 7, 10, 14};
-    static const int16_t HALF_DIM9[] = {0, 3, 6, 10, 14};
     static const int16_t ADD9_MAJOR[] = {0, 4, 7, 14};
     static const int16_t ADD9_MINOR[] = {0, 3, 7, 14};
     static const int16_t ADD9_DIM[] = {0, 3, 6, 14};
@@ -433,15 +402,6 @@ static chord_formula_t formula_for_modifier(synth_chord_modifier_t modifier, con
             formula_set(&formula, MAJ7, 4, "maj7", BASE_MAJOR);
         }
         return formula;
-    case SYNTH_CHORD_MOD_MAJ9_MIN9:
-        if (base_formula->base == BASE_DIMINISHED) {
-            formula_set(&formula, HALF_DIM9, 5, "m9b5", BASE_DIMINISHED);
-        } else if (base_is_minorish(base_formula->base)) {
-            formula_set(&formula, MIN9, 5, "m9", BASE_MINOR);
-        } else {
-            formula_set(&formula, MAJ9, 5, "maj9", BASE_MAJOR);
-        }
-        return formula;
     case SYNTH_CHORD_MOD_ADD9:
         if (base_formula->base == BASE_DIMINISHED) {
             formula_set(&formula, ADD9_DIM, 4, "dimadd9", BASE_DIMINISHED);
@@ -466,7 +426,11 @@ static chord_formula_t formula_for_modifier(synth_chord_modifier_t modifier, con
         }
         return formula;
     case SYNTH_CHORD_MOD_DIM_OR_MINOR:
-        formula_set(&formula, DIM_TRIAD, 3, "dim", BASE_DIMINISHED);
+        if (base_is_majorish(base_formula->base)) {
+            formula_set(&formula, MINOR_TRIAD, 3, "m", BASE_MINOR);
+        } else {
+            formula_set(&formula, DIM_TRIAD, 3, "dim", BASE_DIMINISHED);
+        }
         return formula;
     case SYNTH_CHORD_MOD_AUGMENTED:
         formula_set(&formula, AUG_TRIAD, 3, "aug", BASE_AUGMENTED);
@@ -701,7 +665,6 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
 {
     if (request == NULL || chord == NULL ||
         request->key >= SYNTH_KEY_COUNT ||
-        request->scale >= SYNTH_SCALE_COUNT ||
         request->degree == 0 ||
         request->degree > SYNTH_CHORD_BUTTON_COUNT ||
         request->modifier >= SYNTH_CHORD_MOD_COUNT ||
@@ -717,14 +680,13 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
     memset(chord, 0, sizeof(*chord));
     chord->degree = request->degree;
     chord->key = request->key;
-    chord->scale = request->scale;
     chord->modifier = request->modifier;
     chord->bass_mode = request->bass_mode;
     chord->inversion = request->inversion;
     chord->bass_degree = request->bass_degree;
     chord->voice_leading_enabled = request->voice_leading_enabled;
 
-    const scale_definition_t *scale = &SCALE_DEFS[request->scale];
+    const scale_definition_t *scale = &DIATONIC_MAJOR_SCALE;
     int root_degree = (int)request->degree - 1;
     int16_t root = SYNTH_DEFAULT_ROOT_MIDI +
                    (int16_t)request->key +

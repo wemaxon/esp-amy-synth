@@ -9,7 +9,6 @@
 
 typedef struct {
     synth_key_t key;
-    synth_scale_t scale;
     int8_t global_octave_shift;
     const int8_t *button_octave_shift;
     synth_chord_modifier_t modifier;

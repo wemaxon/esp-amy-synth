@@ -110,7 +110,6 @@ bool synth_app_build_chord_for_degree(const synth_app_chord_build_context_t *con
 
     synth_chord_request_t request = {
         .key = context->key,
-        .scale = context->scale,
         .degree = degree,
         .global_octave_shift = context->global_octave_shift,
         .button_octave_shift = context->button_octave_shift[slot],

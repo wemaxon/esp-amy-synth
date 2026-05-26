@@ -15,7 +15,6 @@ static const synth_sound_def_t SOUNDS[SYNTH_SOUND_COUNT] = {
     [SYNTH_SOUND_FM_EPIANO] = {.name = "FM E.PIANO", .engine = SYNTH_ENGINE_DX7},
     [SYNTH_SOUND_FM_BELL] = {.name = "FM BELL", .engine = SYNTH_ENGINE_DX7},
     [SYNTH_SOUND_FM_HX7] = {.name = "FM HX7", .engine = SYNTH_ENGINE_DX7},
-    [SYNTH_SOUND_PIANO] = {.name = "PIANO", .engine = SYNTH_ENGINE_PIANO},
     [SYNTH_SOUND_STRINGS] = {.name = "STRINGS", .engine = SYNTH_ENGINE_JUNO},
     [SYNTH_SOUND_FLUTE] = {.name = "FLUTE", .engine = SYNTH_ENGINE_JUNO},
     [SYNTH_SOUND_BRASS] = {.name = "BRASS", .engine = SYNTH_ENGINE_JUNO},
@@ -54,8 +53,6 @@ const char *synth_sound_engine_name(synth_sound_t sound)
         return "JUNO";
     case SYNTH_ENGINE_DX7:
         return "DX7";
-    case SYNTH_ENGINE_PIANO:
-        return "PIANO";
     case SYNTH_ENGINE_PCM:
         return "PCM";
     case SYNTH_ENGINE_SPECIAL:

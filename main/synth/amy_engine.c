@@ -21,7 +21,6 @@
 #include "synth/looper.h"
 
 
-#define AMY_STEREO_MIN_OSCS ((AMY_MUSICAL_VOICE_COUNT * AMY_PIANO_OSCS_PER_VOICE * 2U) + 20U)
 #define SYNTH_DELAY_MAX_SAMPLES 32768U
 #define SYNTH_DELAY_MAX_MS      (((float)SYNTH_DELAY_MAX_SAMPLES * 1000.0f) / (float)AMY_SAMPLE_RATE)
 #define SYNTH_AUDIO_BLOCK_US    (((uint32_t)AMY_BLOCK_SIZE * 1000000U) / (uint32_t)AMY_SAMPLE_RATE)
@@ -68,7 +67,7 @@ static const uint32_t ENVELOPE_RELEASE_MIN_MS = 1;
 static const uint32_t ENVELOPE_RELEASE_MAX_MS = 5000;
 static const uint16_t PORTAMENTO_MAX_MS = 1000;
 static const uint32_t AUDIO_TASK_STACK_SIZE = 8192;
-static const UBaseType_t AUDIO_TASK_PRIORITY = 7;
+static const UBaseType_t AUDIO_TASK_PRIORITY = configMAX_PRIORITIES - 1;
 static const BaseType_t AUDIO_TASK_CORE = 1;
 
 static const esp_pocket_audio_hw_t *s_hw;
@@ -242,11 +241,29 @@ static float raw_amp_scale_for_runtime(const amy_sound_runtime_t *runtime)
     return runtime_supports_stereo_pairs(runtime) ? RAW_STEREO_PAIR_AMP_SCALE : 1.0f;
 }
 
+static uint16_t patch_osc_capacity(uint8_t voices, uint8_t oscs_per_voice)
+{
+    return (uint16_t)voices * (uint16_t)oscs_per_voice * (uint16_t)AMY_PATCH_SYNTH_COUNT;
+}
+
+static uint16_t required_patch_osc_capacity(void)
+{
+    uint16_t max_oscs = patch_osc_capacity(ESP_POCKET_AUDIO_AMY_JUNO_VOICES,
+                                           AMY_JUNO_OSCS_PER_VOICE);
+    uint16_t dx7_oscs = patch_osc_capacity(ESP_POCKET_AUDIO_AMY_DX7_VOICES,
+                                           AMY_DX7_OSCS_PER_VOICE);
+    if (dx7_oscs > max_oscs) {
+        max_oscs = dx7_oscs;
+    }
+    return (uint16_t)(max_oscs + 20U);
+}
+
 static uint16_t amy_config_max_oscs(void)
 {
     uint16_t configured = ESP_POCKET_AUDIO_AMY_MAX_OSCS;
-    if (ESP_POCKET_AUDIO_AMY_STEREO_PAIRS && configured < AMY_STEREO_MIN_OSCS) {
-        return AMY_STEREO_MIN_OSCS;
+    uint16_t required = required_patch_osc_capacity();
+    if (configured < required) {
+        return required;
     }
     return configured;
 }
@@ -1442,8 +1459,11 @@ static void audio_task(void *arg)
         amy_graph_lock();
         int16_t *block = amy_update();
         amy_graph_unlock();
+        int64_t amy_done_us = esp_timer_get_time();
         synth_amy_flanger_process(block);
+        int64_t flanger_done_us = esp_timer_get_time();
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
+        int64_t looper_done_us = esp_timer_get_time();
 #if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
         output_declick_process(block, AMY_BLOCK_SIZE, AMY_NCHANS);
 #endif
@@ -1458,6 +1478,9 @@ static void audio_task(void *arg)
         );
         int64_t write_done_us = esp_timer_get_time();
         synth_amy_perf_record_block((uint32_t)(render_done_us - render_start_us),
+                                    (uint32_t)(amy_done_us - render_start_us),
+                                    (uint32_t)(flanger_done_us - amy_done_us),
+                                    (uint32_t)(looper_done_us - flanger_done_us),
                                     (uint32_t)(write_done_us - render_done_us),
                                     write_done_us,
                                     active_osc_count(),
@@ -1528,7 +1551,7 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
 
     s_initialized = true;
     ESP_LOGI(TAG,
-             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u juno=%u dx7=%u piano=%u pcm=%u stereo_pairs=%s multicore=%s perf_log=%s",
+             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u juno=%u dx7=%u pcm=%u stereo_pairs=%s multicore=%s perf_log=%s",
              AMY_SAMPLE_RATE,
              AMY_NCHANS,
              AMY_BLOCK_SIZE,
@@ -1537,7 +1560,6 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
              (unsigned)config.max_voices,
              (unsigned)ESP_POCKET_AUDIO_AMY_JUNO_VOICES,
              (unsigned)ESP_POCKET_AUDIO_AMY_DX7_VOICES,
-             (unsigned)ESP_POCKET_AUDIO_AMY_PIANO_VOICES,
              (unsigned)ESP_POCKET_AUDIO_AMY_PCM_VOICES,
              s_stereo_enabled ? "on" : "off",
              config.platform.multicore ? "on" : "off",

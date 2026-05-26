@@ -36,6 +36,7 @@ typedef struct {
 static const char *TAG = "CONTROLS";
 static const TickType_t SERVICE_PERIOD_TICKS = pdMS_TO_TICKS(20);
 static const TickType_t HELD_LOG_TICKS = pdMS_TO_TICKS(500);
+static const TickType_t EXPANDER_SLOW_POLL_TICKS = pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_EXPANDER_SLOW_POLL_MS);
 static const float DIRECTION_AXIS_DEADZONE = 0.75f;
 static const float DIRECTION_DIAGONAL_AXIS_MIN = 0.55f;
 
@@ -94,10 +95,15 @@ static size_t s_event_tail;
 static control_joystick_state_t s_joystick;
 static control_wheel_state_t s_wheel;
 static volatile uint32_t s_gpio_irq_pending_mask;
+static volatile bool s_expander_irq_pending;
 static uint32_t s_gpio_debounce_pending_mask;
+static bool s_expander_debounce_pending;
+static TickType_t s_expander_debounce_due_tick;
+static TickType_t s_next_expander_poll_tick;
 static TickType_t s_next_io_error_log;
 static portMUX_TYPE s_event_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_gpio_irq_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_expander_irq_mux = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_service_task;
 
 static size_t configured_expander_count(void)
@@ -222,6 +228,11 @@ static uint64_t gpio_bit(gpio_num_t gpio)
     return gpio == GPIO_NUM_NC ? 0 : 1ULL << gpio;
 }
 
+static TickType_t expander_slow_poll_ticks(void)
+{
+    return EXPANDER_SLOW_POLL_TICKS > 0 ? EXPANDER_SLOW_POLL_TICKS : 1;
+}
+
 static esp_err_t init_interrupt_pin(void)
 {
     if (ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO == GPIO_NUM_NC) {
@@ -233,7 +244,7 @@ static esp_err_t init_interrupt_pin(void)
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
     };
     return gpio_config(&cfg);
 }
@@ -269,6 +280,23 @@ static void IRAM_ATTR gpio_switch_isr(void *arg)
     portEXIT_CRITICAL_ISR(&s_gpio_irq_mux);
 }
 
+static void IRAM_ATTR expander_interrupt_isr(void *arg)
+{
+    (void)arg;
+    portENTER_CRITICAL_ISR(&s_expander_irq_mux);
+    s_expander_irq_pending = true;
+    portEXIT_CRITICAL_ISR(&s_expander_irq_mux);
+}
+
+static bool take_expander_irq_pending(void)
+{
+    portENTER_CRITICAL(&s_expander_irq_mux);
+    bool pending = s_expander_irq_pending;
+    s_expander_irq_pending = false;
+    portEXIT_CRITICAL(&s_expander_irq_mux);
+    return pending;
+}
+
 static esp_err_t init_gpio_interrupts(void)
 {
     esp_err_t err = gpio_install_isr_service(0);
@@ -286,6 +314,17 @@ static esp_err_t init_gpio_interrupts(void)
             return err;
         }
         ESP_LOGI(TAG, "GPIO%d interrupt enabled for %s", mapping->gpio, controls_switch_name((control_switch_t)i));
+    }
+
+    if (ESP_POCKET_AUDIO_SWITCH_EXPANDER_COUNT > 0 &&
+        ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO != GPIO_NUM_NC) {
+        err = gpio_isr_handler_add(ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO, expander_interrupt_isr, NULL);
+        if (err != ESP_OK) {
+            return err;
+        }
+        ESP_LOGI(TAG,
+                 "GPIO%d interrupt enabled for switch expander",
+                 ESP_POCKET_AUDIO_SWITCH_EXPANDER_INT_GPIO);
     }
 
     return ESP_OK;
@@ -393,16 +432,19 @@ static esp_err_t init_i2c_peripherals(void *ctx)
 static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ticks)
 {
     switch_debounce_t *debounce = &s_switches[sw];
+    TickType_t debounce_ticks = pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS);
     if (pressed != debounce->sampled_pressed) {
         debounce->sampled_pressed = pressed;
         debounce->changed_at = now_ticks;
         if (SWITCH_MAP[sw].is_gpio) {
             s_gpio_debounce_pending_mask |= 1UL << sw;
+        } else if (!s_expander_debounce_pending) {
+            s_expander_debounce_pending = true;
+            s_expander_debounce_due_tick = now_ticks + debounce_ticks;
         }
         return;
     }
 
-    TickType_t debounce_ticks = pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS);
     if (pressed != debounce->stable_pressed && (now_ticks - debounce->changed_at) >= debounce_ticks) {
         debounce->stable_pressed = pressed;
         push_event(sw, pressed);
@@ -411,6 +453,27 @@ static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ti
 
     if (pressed == debounce->stable_pressed && SWITCH_MAP[sw].is_gpio) {
         s_gpio_debounce_pending_mask &= ~(1UL << sw);
+    }
+}
+
+static void refresh_expander_debounce_state(TickType_t now_ticks)
+{
+    bool pending = false;
+    for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
+        if (!SWITCH_MAP[i].is_gpio &&
+            s_switches[i].sampled_pressed != s_switches[i].stable_pressed) {
+            pending = true;
+            break;
+        }
+    }
+
+    if (pending) {
+        if (!s_expander_debounce_pending) {
+            s_expander_debounce_due_tick = now_ticks + pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS);
+        }
+        s_expander_debounce_pending = true;
+    } else {
+        s_expander_debounce_pending = false;
     }
 }
 
@@ -437,6 +500,7 @@ static esp_err_t update_expander_switches(TickType_t now_ticks)
             debounce_switch((control_switch_t)i, raw_switch_pressed(&SWITCH_MAP[i]), now_ticks);
         }
     }
+    refresh_expander_debounce_state(now_ticks);
     return ESP_OK;
 }
 
@@ -528,6 +592,7 @@ static esp_err_t update_wheel(void)
 
 typedef struct {
     TickType_t now;
+    bool read_expanders;
     esp_err_t switch_err;
     esp_err_t joystick_err;
     esp_err_t wheel_err;
@@ -540,7 +605,10 @@ static esp_err_t update_i2c_inputs(void *ctx)
         return ESP_ERR_INVALID_ARG;
     }
 
-    update->switch_err = update_expander_switches(update->now);
+    update->switch_err = ESP_OK;
+    if (update->read_expanders) {
+        update->switch_err = update_expander_switches(update->now);
+    }
     update->joystick_err = update_joystick();
     update->wheel_err = update_wheel();
     if (update->switch_err != ESP_OK) {
@@ -670,14 +738,29 @@ esp_err_t controls_update(void)
     }
 
     TickType_t now = xTaskGetTickCount();
+    bool expander_irq = configured_expander_count() > 0 &&
+                        (take_expander_irq_pending() || controls_expander_interrupt_asserted());
+    bool expander_debounce_due = configured_expander_count() > 0 &&
+                                  s_expander_debounce_pending &&
+                                  (int32_t)(now - s_expander_debounce_due_tick) >= 0;
+    bool expander_poll_due = configured_expander_count() > 0 &&
+                             (int32_t)(now - s_next_expander_poll_tick) >= 0;
+    bool read_expanders = expander_irq || expander_debounce_due || expander_poll_due;
+    if (expander_poll_due) {
+        s_next_expander_poll_tick = now + expander_slow_poll_ticks();
+    }
+
     controls_i2c_update_t update = {
         .now = now,
+        .read_expanders = read_expanders,
         .switch_err = ESP_FAIL,
         .joystick_err = ESP_FAIL,
         .wheel_err = ESP_FAIL,
     };
     update_gpio_switches(now);
-    esp_err_t i2c_err = control_i2c_call(update_i2c_inputs, &update, pdMS_TO_TICKS(10));
+    control_i2c_priority_t priority = (expander_irq || expander_debounce_due) ?
+        CONTROL_I2C_PRIORITY_HIGH : CONTROL_I2C_PRIORITY_LOW;
+    esp_err_t i2c_err = control_i2c_call_priority(priority, update_i2c_inputs, &update, pdMS_TO_TICKS(10));
     if (i2c_err == ESP_ERR_TIMEOUT) {
         log_control_io_error("control I2C queue", i2c_err);
     }

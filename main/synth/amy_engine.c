@@ -6,14 +6,12 @@
 #include <stdint.h>
 
 #include "amy.h"
-#include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "freertos/task.h"
+#include "synth/amy_audio.h"
 #include "synth/amy_flanger.h"
 #include "synth/amy_perf.h"
 #include "synth/amy_runtime.h"
@@ -23,7 +21,6 @@
 
 #define SYNTH_DELAY_MAX_SAMPLES 32768U
 #define SYNTH_DELAY_MAX_MS      (((float)SYNTH_DELAY_MAX_SAMPLES * 1000.0f) / (float)AMY_SAMPLE_RATE)
-#define SYNTH_AUDIO_BLOCK_US    (((uint32_t)AMY_BLOCK_SIZE * 1000000U) / (uint32_t)AMY_SAMPLE_RATE)
 
 typedef struct {
     bool active;
@@ -66,12 +63,7 @@ static const uint32_t ENVELOPE_DECAY_MAX_MS = 5000;
 static const uint32_t ENVELOPE_RELEASE_MIN_MS = 1;
 static const uint32_t ENVELOPE_RELEASE_MAX_MS = 5000;
 static const uint16_t PORTAMENTO_MAX_MS = 1000;
-static const uint32_t AUDIO_TASK_STACK_SIZE = 8192;
-static const UBaseType_t AUDIO_TASK_PRIORITY = configMAX_PRIORITIES - 1;
-static const BaseType_t AUDIO_TASK_CORE = 1;
 
-static const esp_pocket_audio_hw_t *s_hw;
-static TaskHandle_t s_audio_task;
 static SemaphoreHandle_t s_amy_graph_lock;
 static bool s_initialized;
 static amy_voice_t s_voices[AMY_MUSICAL_VOICE_COUNT];
@@ -98,10 +90,6 @@ static volatile float s_lfo_pitch_octaves;
 static bool s_tremolo_enabled;
 static volatile float s_tremolo_amp_offset;
 static bool s_stereo_enabled = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
-#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
-static bool s_output_declick_ready;
-static int16_t s_output_declick_last[AMY_NCHANS];
-#endif
 
 static float amy_external_coef(uint16_t channel)
 {
@@ -1414,85 +1402,12 @@ static void play_voice(uint8_t slot, uint8_t role, uint8_t note, const amy_sound
     s_voices[role].age = ++s_voice_age;
 }
 
-#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
-static void output_declick_process(int16_t *block, uint32_t frames, uint8_t channels)
+static int16_t *render_audio_block(void)
 {
-    if (block == NULL || frames == 0 || channels == 0 || channels > AMY_NCHANS) {
-        return;
-    }
-
-    uint32_t fade_frames = ESP_POCKET_AUDIO_OUTPUT_DECLICK_FRAMES;
-    if (fade_frames == 0) {
-        return;
-    }
-    if (fade_frames > frames) {
-        fade_frames = frames;
-    }
-
-    if (s_output_declick_ready) {
-        for (uint32_t frame = 0; frame < fade_frames; ++frame) {
-            int32_t mix = (int32_t)(frame + 1U);
-            int32_t denom = (int32_t)(fade_frames + 1U);
-            for (uint8_t channel = 0; channel < channels; ++channel) {
-                uint32_t index = frame * channels + channel;
-                int32_t previous = s_output_declick_last[channel];
-                int32_t current = block[index];
-                block[index] = (int16_t)(previous + (((current - previous) * mix) / denom));
-            }
-        }
-    }
-
-    uint32_t last_frame = frames - 1U;
-    for (uint8_t channel = 0; channel < channels; ++channel) {
-        s_output_declick_last[channel] = block[last_frame * channels + channel];
-    }
-    s_output_declick_ready = true;
-}
-#endif
-
-static void audio_task(void *arg)
-{
-    (void)arg;
-
-    while (true) {
-        int64_t render_start_us = esp_timer_get_time();
-        amy_graph_lock();
-        int16_t *block = amy_update();
-        amy_graph_unlock();
-        int64_t amy_done_us = esp_timer_get_time();
-        synth_amy_flanger_process(block);
-        int64_t flanger_done_us = esp_timer_get_time();
-        synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
-        int64_t looper_done_us = esp_timer_get_time();
-#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
-        output_declick_process(block, AMY_BLOCK_SIZE, AMY_NCHANS);
-#endif
-        int64_t render_done_us = esp_timer_get_time();
-        size_t bytes_written = 0;
-        esp_err_t err = i2s_channel_write(
-            s_hw->i2s_tx,
-            block,
-            AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t),
-            &bytes_written,
-            portMAX_DELAY
-        );
-        int64_t write_done_us = esp_timer_get_time();
-        synth_amy_perf_record_block((uint32_t)(render_done_us - render_start_us),
-                                    (uint32_t)(amy_done_us - render_start_us),
-                                    (uint32_t)(flanger_done_us - amy_done_us),
-                                    (uint32_t)(looper_done_us - flanger_done_us),
-                                    (uint32_t)(write_done_us - render_done_us),
-                                    write_done_us,
-                                    active_osc_count(),
-                                    allocated_patch_osc_count(),
-                                    SYNTH_AUDIO_BLOCK_US);
-        if (err != ESP_OK || bytes_written != AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t)) {
-            ESP_LOGW(TAG, "AMY I2S write failed: %s bytes=%u",
-                     esp_err_to_name(err),
-                     (unsigned)bytes_written);
-            vTaskDelay(pdMS_TO_TICKS(5));
-        }
-    }
+    amy_graph_lock();
+    int16_t *block = amy_update();
+    amy_graph_unlock();
+    return block;
 }
 
 esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
@@ -1503,8 +1418,6 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     if (hw == NULL || hw->i2s_tx == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-
-    s_hw = hw;
 
     amy_config_t config = amy_default_config();
     config.audio = AMY_AUDIO_IS_NONE;
@@ -1536,18 +1449,13 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
         return ESP_ERR_NO_MEM;
     }
 
-    BaseType_t task_created = xTaskCreatePinnedToCore(
-        audio_task,
-        "amy_audio",
-        AUDIO_TASK_STACK_SIZE,
-        NULL,
-        AUDIO_TASK_PRIORITY,
-        &s_audio_task,
-        AUDIO_TASK_CORE
-    );
-    if (task_created != pdPASS) {
-        return ESP_FAIL;
-    }
+    const synth_amy_audio_config_t audio_config = {
+        .hw = hw,
+        .render = render_audio_block,
+        .active_osc_count = active_osc_count,
+        .allocated_patch_osc_count = allocated_patch_osc_count,
+    };
+    ESP_RETURN_ON_ERROR(synth_amy_audio_start(&audio_config), TAG, "audio task start failed");
 
     s_initialized = true;
     ESP_LOGI(TAG,
@@ -1555,7 +1463,7 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
              AMY_SAMPLE_RATE,
              AMY_NCHANS,
              AMY_BLOCK_SIZE,
-             SYNTH_AUDIO_BLOCK_US,
+             synth_amy_audio_block_us(),
              (unsigned)config.max_oscs,
              (unsigned)config.max_voices,
              (unsigned)ESP_POCKET_AUDIO_AMY_JUNO_VOICES,

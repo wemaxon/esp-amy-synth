@@ -1,6 +1,5 @@
 #include "synth/app.h"
 
-#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -15,21 +14,20 @@
 #include "hmi/play_ui.h"
 #include "synth/amy_engine.h"
 #include "synth/app_chord_tools.h"
+#include "synth/app_chords.h"
+#include "synth/app_looper.h"
+#include "synth/app_mixer.h"
+#include "synth/app_modulation.h"
+#include "synth/app_play_state.h"
 #include "synth/app_rhythm.h"
 #include "synth/app_settings.h"
+#include "synth/app_sound.h"
+#include "synth/app_tempo.h"
+#include "synth/app_wheel.h"
 #include "synth/chord_engine.h"
 #include "synth/looper.h"
 #include "synth/play_mode.h"
 #include "synth/sound.h"
-
-typedef enum {
-    APP_WHEEL_TARGET_NONE = 0,
-    APP_WHEEL_TARGET_VOLUME,
-    APP_WHEEL_TARGET_ATTACK,
-    APP_WHEEL_TARGET_RELEASE,
-    APP_WHEEL_TARGET_FILTER,
-    APP_WHEEL_TARGET_LOOPER_TRACK,
-} app_wheel_target_t;
 
 typedef struct {
     synth_key_t key;
@@ -39,14 +37,10 @@ typedef struct {
     synth_joystick_mode_t joystick_mode;
     synth_bass_mode_t bass_mode;
     bool voice_leading_enabled;
-    synth_chord_modifier_t locked_modifier[SYNTH_CHORD_BUTTON_COUNT];
-    int8_t chord_inversion[SYNTH_CHORD_BUTTON_COUNT];
-    synth_sound_t sound;
-    synth_sound_t pending_sound;
-    bool sound_apply_pending;
-    TickType_t sound_apply_due_tick;
+    synth_app_chord_state_t chords;
+    synth_app_sound_t sound;
     synth_play_mode_t mode;
-    uint16_t bpm;
+    synth_app_tempo_t tempo;
     uint8_t effect_index;
     bool effects[PLAY_UI_EFFECT_COUNT];
     uint8_t lfo_level;
@@ -58,59 +52,19 @@ typedef struct {
     uint32_t attack_ms;
     uint32_t release_ms;
     uint8_t glide_level;
-    float lfo_phase;
-    TickType_t lfo_last_tick;
-    float tremolo_phase;
-    TickType_t tremolo_last_tick;
-    bool wheel_present;
-    uint8_t wheel_percent;
-    uint8_t volume_percent;
-    uint8_t last_applied_wheel_percent;
-    app_wheel_target_t last_applied_wheel_target;
+    synth_app_modulation_t lfo;
+    synth_app_modulation_t tremolo;
+    synth_app_wheel_t wheel;
     control_joystick_direction_t last_menu_direction;
     control_joystick_direction_t last_play_direction;
-    control_joystick_direction_t last_looper_direction;
     control_joystick_direction_t joystick_direction;
-    uint8_t held_mask;
-    uint8_t focus_slot;
     uint8_t slash_bass_slot;
-    bool looper_visible;
-    bool looper_menu_held;
-    bool looper_menu_clear_used;
-    TickType_t looper_next_ui_tick;
-    uint8_t mixer_held_mask;
-    uint8_t mixer_action_mask;
-    uint8_t mixer_wheel_track;
-    uint8_t mixer_wheel_start_percent;
+    synth_app_looper_t looper;
+    synth_app_mixer_t mixer;
     bool mode_bpm_submenu;
-    synth_strum_speed_t strum_speed;
-    synth_arp_pattern_t arp_pattern;
-    synth_rhythm_rate_t arp_rate;
-    synth_arp_chord_mode_t arp_chord_mode;
-    synth_rhythm_rate_t repeat_rate;
-    synth_chord_t held_chords[SYNTH_CHORD_BUTTON_COUNT];
-    bool held_chord_valid[SYNTH_CHORD_BUTTON_COUNT];
-    synth_chord_t strum_chord;
-    bool strum_active;
-    uint8_t strum_slot;
-    uint8_t strum_voice_index;
-    TickType_t strum_next_tick;
+    synth_app_play_state_t play;
     bool drone_active;
     uint8_t drone_slot;
-    synth_chord_t arp_chords[SYNTH_CHORD_BUTTON_COUNT];
-    bool arp_chord_valid[SYNTH_CHORD_BUTTON_COUNT];
-    synth_chord_t voice_anchor;
-    bool voice_anchor_valid;
-    uint32_t arp_step_index;
-    uint8_t arp_last_slot;
-    TickType_t arp_next_tick;
-    bool repeat_active;
-    bool repeat_gate_open;
-    uint8_t repeat_slot;
-    TickType_t repeat_next_tick;
-    uint8_t mode_tap_count;
-    TickType_t mode_tap_first_tick;
-    TickType_t mode_tap_last_tick;
     char chord_name[16];
     char status[22];
     TaskHandle_t task;
@@ -128,13 +82,7 @@ static const int8_t BUTTON_OCTAVE_MIN = -2;
 static const int8_t BUTTON_OCTAVE_MAX = 1;
 static const int8_t CHORD_INVERSION_MIN = 0;
 static const int8_t CHORD_INVERSION_MAX = SYNTH_CHORD_INVERSION_COUNT - 1;
-static const uint16_t BPM_MIN = 40;
-static const uint16_t BPM_MAX = 300;
 static const uint8_t WHEEL_CHANGE_THRESHOLD_PERCENT = 2;
-static const float LFO_RATE_HZ = 5.0f;
-static const float LFO_TWO_PI = 6.283185307f;
-static const uint8_t ARP_NO_SLOT = UINT8_MAX;
-static const TickType_t MODE_TAP_RESET_TICKS = pdMS_TO_TICKS(2000);
 static const TickType_t SOUND_BROWSE_APPLY_TICKS = pdMS_TO_TICKS(180);
 
 static synth_app_state_t s_app = {
@@ -144,10 +92,10 @@ static synth_app_state_t s_app = {
     .joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT,
     .bass_mode = SYNTH_BASS_MODE_OFF,
     .voice_leading_enabled = false,
-    .sound = SYNTH_SOUND_SAW,
-    .pending_sound = SYNTH_SOUND_SAW,
+    .chords = SYNTH_APP_CHORD_STATE_INITIALIZER,
+    .sound = SYNTH_APP_SOUND_INITIALIZER(SYNTH_SOUND_SAW),
     .mode = SYNTH_PLAY_MODE_PLAY,
-    .bpm = 120,
+    .tempo = SYNTH_APP_TEMPO_INITIALIZER,
     .effect_index = PLAY_UI_EFFECT_JOYSTICK,
     .effects = {
         [PLAY_UI_EFFECT_FILTER] = true,
@@ -158,32 +106,27 @@ static synth_app_state_t s_app = {
     .attack_ms = SYNTH_APP_ADSR_DEFAULT_ATTACK_MS,
     .release_ms = SYNTH_APP_ADSR_DEFAULT_RELEASE_MS,
     .glide_level = 0,
-    .strum_speed = SYNTH_STRUM_SPEED_MEDIUM,
-    .arp_pattern = SYNTH_ARP_PATTERN_UP,
-    .arp_rate = SYNTH_RHYTHM_RATE_EIGHTH,
-    .arp_chord_mode = SYNTH_ARP_CHORD_MODE_ARP_ONLY,
-    .repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH,
-    .wheel_percent = 100,
-    .volume_percent = 100,
-    .last_applied_wheel_percent = UINT8_MAX,
-    .last_applied_wheel_target = APP_WHEEL_TARGET_NONE,
+    .play = SYNTH_APP_PLAY_STATE_INITIALIZER,
+    .wheel = SYNTH_APP_WHEEL_INITIALIZER,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
-    .last_looper_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
-    .focus_slot = 0,
     .slash_bass_slot = UINT8_MAX,
-    .strum_slot = UINT8_MAX,
     .drone_slot = UINT8_MAX,
-    .arp_last_slot = UINT8_MAX,
-    .repeat_slot = UINT8_MAX,
-    .mixer_wheel_track = UINT8_MAX,
-    .mixer_wheel_start_percent = 100,
+    .looper = SYNTH_APP_LOOPER_INITIALIZER,
+    .mixer = SYNTH_APP_MIXER_INITIALIZER,
+    .lfo = SYNTH_APP_MODULATION_INITIALIZER,
+    .tremolo = SYNTH_APP_MODULATION_INITIALIZER,
     .chord_name = "---",
     .status = "READY",
 };
 
 static void step_mode(int8_t steps);
+
+static uint16_t current_bpm(void)
+{
+    return synth_app_tempo_bpm(&s_app.tempo);
+}
 static void apply_pending_sound_now(void);
 
 static play_ui_screen_t active_screen(void)
@@ -197,7 +140,7 @@ static play_ui_screen_t active_screen(void)
     if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
         return PLAY_UI_SCREEN_MODE;
     }
-    if (s_app.looper_visible) {
+    if (synth_app_looper_visible(&s_app.looper)) {
         return PLAY_UI_SCREEN_LOOPER;
     }
     if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
@@ -216,7 +159,7 @@ static void set_status(const char *status)
 static bool any_chord_locked(void)
 {
     for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if (s_app.locked_modifier[slot] != SYNTH_CHORD_MOD_NONE) {
+        if (s_app.chords.locked_modifier[slot] != SYNTH_CHORD_MOD_NONE) {
             return true;
         }
     }
@@ -277,17 +220,17 @@ static void update_ui(void)
     model.bass_mode = s_app.bass_mode;
     model.voice_leading_enabled = s_app.voice_leading_enabled;
     model.chord_lock_enabled = any_chord_locked();
-    model.sound = s_app.sound;
+    model.sound = synth_app_sound_current(&s_app.sound);
     model.mode = s_app.mode;
-    model.bpm = s_app.bpm;
+    model.bpm = current_bpm();
     model.mode_bpm_submenu = s_app.mode_bpm_submenu;
-    model.strum_speed = s_app.strum_speed;
-    model.arp_pattern = s_app.arp_pattern;
-    model.arp_rate = s_app.arp_rate;
-    model.arp_chord_mode = s_app.arp_chord_mode;
-    model.repeat_rate = s_app.repeat_rate;
-    model.held_mask = s_app.held_mask;
-    model.focus_slot = s_app.focus_slot;
+    model.strum_speed = s_app.play.strum_speed;
+    model.arp_pattern = s_app.play.arp_pattern;
+    model.arp_rate = s_app.play.arp_rate;
+    model.arp_chord_mode = s_app.play.arp_chord_mode;
+    model.repeat_rate = s_app.play.repeat_rate;
+    model.held_mask = s_app.chords.held_mask;
+    model.focus_slot = s_app.chords.focus_slot;
     model.effect_index = s_app.effect_index;
     memcpy(model.effects, s_app.effects, sizeof(model.effects));
     model.lfo_level = s_app.lfo_level;
@@ -298,9 +241,9 @@ static void update_ui(void)
     model.attack_ms = s_app.attack_ms;
     model.release_ms = s_app.release_ms;
     model.glide_level = s_app.glide_level;
-    model.wheel_present = s_app.wheel_present;
-    model.wheel_percent = s_app.wheel_percent;
-    model.volume_percent = s_app.volume_percent;
+    model.wheel_present = synth_app_wheel_present(&s_app.wheel);
+    model.wheel_percent = synth_app_wheel_percent(&s_app.wheel);
+    model.volume_percent = synth_app_wheel_volume_percent(&s_app.wheel);
     model.joystick_direction = s_app.joystick_direction;
     synth_looper_get_snapshot(&model.looper);
     strlcpy(model.chord_name, s_app.chord_name, sizeof(model.chord_name));
@@ -320,60 +263,25 @@ static bool build_chord(uint8_t degree, synth_chord_t *chord)
         .global_octave_shift = s_app.global_octave_shift,
         .button_octave_shift = s_app.button_octave_shift,
         .modifier = s_app.modifier,
-        .focus_slot = s_app.focus_slot,
-        .held_mask = s_app.held_mask,
-        .locked_modifier = s_app.locked_modifier,
+        .focus_slot = s_app.chords.focus_slot,
+        .held_mask = s_app.chords.held_mask,
+        .locked_modifier = s_app.chords.locked_modifier,
         .bass_mode = s_app.bass_mode,
         .slash_bass_slot = s_app.slash_bass_slot,
-        .chord_inversion = s_app.chord_inversion,
+        .chord_inversion = s_app.chords.chord_inversion,
         .voice_leading_enabled = s_app.voice_leading_enabled,
-        .voice_anchor = &s_app.voice_anchor,
-        .voice_anchor_valid = s_app.voice_anchor_valid,
+        .voice_anchor = &s_app.chords.voice_anchor,
+        .voice_anchor_valid = s_app.chords.voice_anchor_valid,
     };
     return synth_app_build_chord_for_degree(&context, degree, chord);
 }
 
-static void remember_voice_anchor(const synth_chord_t *chord)
-{
-    if (chord == NULL || chord->note_count == 0) {
-        return;
-    }
-    s_app.voice_anchor = *chord;
-    s_app.voice_anchor_valid = true;
-}
-
-static void clear_voice_anchor(void)
-{
-    memset(&s_app.voice_anchor, 0, sizeof(s_app.voice_anchor));
-    s_app.voice_anchor_valid = false;
-}
-
-static uint8_t first_valid_held_slot(const bool valid[SYNTH_CHORD_BUTTON_COUNT])
-{
-    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if ((s_app.held_mask & (1U << slot)) != 0 && valid[slot]) {
-            return slot;
-        }
-    }
-    return ARP_NO_SLOT;
-}
-
-static uint8_t active_valid_held_slot(const bool valid[SYNTH_CHORD_BUTTON_COUNT])
-{
-    if ((s_app.held_mask & (1U << s_app.focus_slot)) != 0 && valid[s_app.focus_slot]) {
-        return s_app.focus_slot;
-    }
-    return first_valid_held_slot(valid);
-}
-
 static void stop_strum(void)
 {
-    if (s_app.strum_slot != ARP_NO_SLOT) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.strum_slot));
+    if (s_app.play.strum_slot != SYNTH_APP_PLAY_NO_SLOT) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.play.strum_slot));
     }
-    s_app.strum_active = false;
-    s_app.strum_slot = ARP_NO_SLOT;
-    s_app.strum_voice_index = 0;
+    synth_app_play_stop_strum(&s_app.play);
 }
 
 static void start_strum(uint8_t slot, const synth_chord_t *chord)
@@ -383,85 +291,53 @@ static void start_strum(uint8_t slot, const synth_chord_t *chord)
     }
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
-    s_app.strum_chord = *chord;
-    s_app.strum_slot = slot;
-    s_app.strum_voice_index = 0;
-    s_app.strum_next_tick = xTaskGetTickCount();
-    s_app.strum_active = true;
+    synth_app_play_start_strum(&s_app.play, slot, chord, xTaskGetTickCount());
     set_status("STRUM");
 }
 
 static void update_strum(void)
 {
-    if (s_app.mode != SYNTH_PLAY_MODE_STRUM || !s_app.strum_active) {
+    if (s_app.mode != SYNTH_PLAY_MODE_STRUM || !s_app.play.strum_active) {
         return;
     }
-    if ((s_app.held_mask & (1U << s_app.strum_slot)) == 0) {
+    if ((s_app.chords.held_mask & (1U << s_app.play.strum_slot)) == 0) {
         stop_strum();
         return;
     }
 
     TickType_t now = xTaskGetTickCount();
-    if ((int32_t)(now - s_app.strum_next_tick) < 0) {
+    if ((int32_t)(now - s_app.play.strum_next_tick) < 0) {
         return;
     }
 
-    esp_err_t err = synth_amy_chord_voice_on(s_app.strum_slot, &s_app.strum_chord, s_app.strum_voice_index);
+    esp_err_t err = synth_amy_chord_voice_on(s_app.play.strum_slot, &s_app.play.strum_chord, s_app.play.strum_voice_index);
     if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_NOT_SUPPORTED) {
-        s_app.strum_active = false;
+        s_app.play.strum_active = false;
         return;
     }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to strum voice %u: %s",
-                 s_app.strum_voice_index,
+                 s_app.play.strum_voice_index,
                  esp_err_to_name(err));
-        s_app.strum_active = false;
+        s_app.play.strum_active = false;
         return;
     }
 
-    ++s_app.strum_voice_index;
-    s_app.strum_next_tick = now + pdMS_TO_TICKS(synth_strum_speed_delay_ms(s_app.strum_speed));
+    ++s_app.play.strum_voice_index;
+    s_app.play.strum_next_tick = now + pdMS_TO_TICKS(synth_strum_speed_delay_ms(s_app.play.strum_speed));
 }
 
 static uint8_t active_arp_slot(void)
 {
-    return active_valid_held_slot(s_app.arp_chord_valid);
-}
-
-static bool arp_clock_active(void)
-{
-    return s_app.arp_last_slot != ARP_NO_SLOT;
-}
-
-static void queue_arp_source(uint8_t slot, const synth_chord_t *chord)
-{
-    if (slot >= SYNTH_CHORD_BUTTON_COUNT || chord == NULL) {
-        return;
-    }
-
-    bool start_now = !arp_clock_active();
-    s_app.arp_chords[slot] = *chord;
-    s_app.arp_chord_valid[slot] = true;
-    if (start_now) {
-        s_app.arp_step_index = 0;
-        s_app.arp_next_tick = xTaskGetTickCount();
-    }
+    return synth_app_chord_state_active_valid_slot(&s_app.chords, s_app.play.arp_chord_valid);
 }
 
 static void stop_arp(void)
 {
-    if (s_app.arp_last_slot != ARP_NO_SLOT) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.arp_last_slot));
+    if (s_app.play.arp_last_slot != SYNTH_APP_PLAY_NO_SLOT) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.play.arp_last_slot));
     }
-    s_app.arp_last_slot = ARP_NO_SLOT;
-    s_app.arp_step_index = 0;
-}
-
-static void clear_arp_sources(void)
-{
-    memset(s_app.arp_chord_valid, 0, sizeof(s_app.arp_chord_valid));
-    s_app.arp_step_index = 0;
-    s_app.arp_next_tick = xTaskGetTickCount();
+    synth_app_play_stop_arp(&s_app.play);
 }
 
 static void update_arp(void)
@@ -471,35 +347,35 @@ static void update_arp(void)
     }
 
     uint8_t slot = active_arp_slot();
-    if (slot == ARP_NO_SLOT) {
+    if (slot == SYNTH_APP_PLAY_NO_SLOT) {
         stop_arp();
         return;
     }
 
     TickType_t now = xTaskGetTickCount();
-    if ((int32_t)(now - s_app.arp_next_tick) < 0) {
+    if ((int32_t)(now - s_app.play.arp_next_tick) < 0) {
         return;
     }
 
-    const synth_chord_t *source = &s_app.arp_chords[slot];
+    const synth_chord_t *source = &s_app.play.arp_chords[slot];
     if (source->note_count == 0) {
         return;
     }
 
-    if (s_app.arp_last_slot != ARP_NO_SLOT && s_app.arp_last_slot != slot) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.arp_last_slot));
+    if (s_app.play.arp_last_slot != SYNTH_APP_PLAY_NO_SLOT && s_app.play.arp_last_slot != slot) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.play.arp_last_slot));
     }
 
     synth_chord_t step = {0};
-    synth_app_build_arp_step_chord(s_app.arp_pattern, s_app.arp_step_index, source, &step);
+    synth_app_build_arp_step_chord(s_app.play.arp_pattern, s_app.play.arp_step_index, source, &step);
 
     synth_chord_t output = step;
-    if (s_app.arp_chord_mode == SYNTH_ARP_CHORD_MODE_CHORD_ARP) {
+    if (s_app.play.arp_chord_mode == SYNTH_ARP_CHORD_MODE_CHORD_ARP) {
         output = *source;
         synth_app_append_step_notes(&output, &step);
-    } else if (s_app.arp_chord_mode == SYNTH_ARP_CHORD_MODE_RHYTHM_ARP) {
-        output = (s_app.arp_step_index & 1U) == 0 ? *source : step;
-        if ((s_app.arp_step_index & 1U) == 0) {
+    } else if (s_app.play.arp_chord_mode == SYNTH_ARP_CHORD_MODE_RHYTHM_ARP) {
+        output = (s_app.play.arp_step_index & 1U) == 0 ? *source : step;
+        if ((s_app.play.arp_step_index & 1U) == 0) {
             synth_app_append_step_notes(&output, &step);
         }
     }
@@ -509,7 +385,7 @@ static void update_arp(void)
         ESP_LOGW(TAG, "failed to play arp step: %s", esp_err_to_name(err));
         return;
     }
-    remember_voice_anchor(&output);
+    synth_app_chord_state_remember_voice_anchor(&s_app.chords, &output);
 
     char note_name[48];
     synth_app_format_chord_notes(&step, note_name, sizeof(note_name));
@@ -517,49 +393,26 @@ static void update_arp(void)
              "arp %s slot=%u pattern=%s rate=%s mode=%s step=%lu notes=%s",
              source->name,
              (unsigned)(slot + 1),
-             synth_arp_pattern_name(s_app.arp_pattern),
-             synth_rhythm_rate_name(s_app.arp_rate),
-             synth_arp_chord_mode_name(s_app.arp_chord_mode),
-             (unsigned long)s_app.arp_step_index,
+             synth_arp_pattern_name(s_app.play.arp_pattern),
+             synth_rhythm_rate_name(s_app.play.arp_rate),
+             synth_arp_chord_mode_name(s_app.play.arp_chord_mode),
+             (unsigned long)s_app.play.arp_step_index,
              note_name);
 
-    s_app.arp_last_slot = slot;
-    s_app.arp_next_tick =
-        now + pdMS_TO_TICKS(synth_app_rhythm_interval_ms(s_app.arp_rate,
-                                                         s_app.bpm,
-                                                         s_app.arp_step_index));
-    ++s_app.arp_step_index;
+    s_app.play.arp_last_slot = slot;
+    s_app.play.arp_next_tick =
+        now + pdMS_TO_TICKS(synth_app_rhythm_interval_ms(s_app.play.arp_rate,
+                                                         current_bpm(),
+                                                         s_app.play.arp_step_index));
+    ++s_app.play.arp_step_index;
 }
 
 static void stop_repeat(void)
 {
-    if (s_app.repeat_active && s_app.repeat_slot != ARP_NO_SLOT) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.repeat_slot));
+    if (s_app.play.repeat_active && s_app.play.repeat_slot != SYNTH_APP_PLAY_NO_SLOT) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.play.repeat_slot));
     }
-    s_app.repeat_active = false;
-    s_app.repeat_gate_open = false;
-    s_app.repeat_slot = ARP_NO_SLOT;
-}
-
-static bool repeat_clock_active(void)
-{
-    return s_app.repeat_active || s_app.repeat_gate_open || s_app.repeat_slot != ARP_NO_SLOT;
-}
-
-static void queue_repeat_source(uint8_t slot)
-{
-    if (slot >= SYNTH_CHORD_BUTTON_COUNT) {
-        return;
-    }
-
-    if (repeat_clock_active()) {
-        return;
-    }
-
-    s_app.repeat_slot = slot;
-    s_app.repeat_active = true;
-    s_app.repeat_gate_open = false;
-    s_app.repeat_next_tick = xTaskGetTickCount();
+    synth_app_play_stop_repeat(&s_app.play);
 }
 
 static void update_repeat(void)
@@ -568,99 +421,61 @@ static void update_repeat(void)
         return;
     }
 
-    uint8_t slot = active_valid_held_slot(s_app.held_chord_valid);
-    if (slot == ARP_NO_SLOT) {
+    uint8_t slot = synth_app_chord_state_active_valid_slot(&s_app.chords, s_app.chords.held_chord_valid);
+    if (slot == SYNTH_APP_PLAY_NO_SLOT) {
         stop_repeat();
         return;
     }
 
     TickType_t now = xTaskGetTickCount();
-    if ((int32_t)(now - s_app.repeat_next_tick) < 0) {
+    if ((int32_t)(now - s_app.play.repeat_next_tick) < 0) {
         return;
     }
 
-    uint32_t interval_ms = synth_app_rhythm_interval_ms(s_app.repeat_rate, s_app.bpm, 0);
+    uint32_t interval_ms = synth_app_rhythm_interval_ms(s_app.play.repeat_rate, current_bpm(), 0);
     TickType_t gate_ticks = pdMS_TO_TICKS(interval_ms / 2U);
     if (gate_ticks < pdMS_TO_TICKS(20)) {
         gate_ticks = pdMS_TO_TICKS(20);
     }
 
-    if (s_app.repeat_gate_open) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.repeat_slot));
-        s_app.repeat_gate_open = false;
-        s_app.repeat_next_tick = now + gate_ticks;
+    if (s_app.play.repeat_gate_open) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.play.repeat_slot));
+        s_app.play.repeat_gate_open = false;
+        s_app.play.repeat_next_tick = now + gate_ticks;
         return;
     }
 
-    s_app.repeat_slot = slot;
-    esp_err_t err = synth_amy_chord_on(slot, &s_app.held_chords[slot]);
+    s_app.play.repeat_slot = slot;
+    esp_err_t err = synth_amy_chord_on(slot, &s_app.chords.held_chords[slot]);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to repeat chord: %s", esp_err_to_name(err));
         return;
     }
-    remember_voice_anchor(&s_app.held_chords[slot]);
-    s_app.repeat_active = true;
-    s_app.repeat_gate_open = true;
-    s_app.repeat_next_tick = now + gate_ticks;
+    synth_app_chord_state_remember_voice_anchor(&s_app.chords, &s_app.chords.held_chords[slot]);
+    s_app.play.repeat_active = true;
+    s_app.play.repeat_gate_open = true;
+    s_app.play.repeat_next_tick = now + gate_ticks;
 }
 
 static void update_lfo(void)
 {
-    size_t level_count = synth_app_lfo_level_count();
-    if (s_app.lfo_level == 0 || s_app.lfo_level >= level_count) {
+    float pitch_semitones = 0.0f;
+    if (!synth_app_lfo_pitch(&s_app.lfo, s_app.lfo_level, xTaskGetTickCount(), &pitch_semitones)) {
         return;
     }
-
-    TickType_t now = xTaskGetTickCount();
-    if (s_app.lfo_last_tick == 0) {
-        s_app.lfo_last_tick = now;
-        return;
-    }
-
-    TickType_t elapsed_ticks = now - s_app.lfo_last_tick;
-    s_app.lfo_last_tick = now;
-    if (elapsed_ticks == 0) {
-        return;
-    }
-
-    float elapsed_seconds = ((float)elapsed_ticks * (float)portTICK_PERIOD_MS) / 1000.0f;
-    s_app.lfo_phase += LFO_TWO_PI * LFO_RATE_HZ * elapsed_seconds;
-    while (s_app.lfo_phase >= LFO_TWO_PI) {
-        s_app.lfo_phase -= LFO_TWO_PI;
-    }
-
-    float pitch_semitones =
-        sinf(s_app.lfo_phase) * synth_app_lfo_depth_semitones(s_app.lfo_level);
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_lfo_pitch(pitch_semitones));
 }
 
 static void update_tremolo(void)
 {
-    size_t level_count = synth_app_tremolo_level_count();
-    if (s_app.tremolo_level == 0 || s_app.tremolo_level >= level_count) {
+    float amount = 0.0f;
+    if (!synth_app_tremolo_amount(&s_app.tremolo,
+                                  s_app.tremolo_level,
+                                  current_bpm(),
+                                  xTaskGetTickCount(),
+                                  &amount)) {
         return;
     }
-
-    TickType_t now = xTaskGetTickCount();
-    if (s_app.tremolo_last_tick == 0) {
-        s_app.tremolo_last_tick = now;
-        return;
-    }
-
-    TickType_t elapsed_ticks = now - s_app.tremolo_last_tick;
-    s_app.tremolo_last_tick = now;
-    if (elapsed_ticks == 0) {
-        return;
-    }
-
-    float elapsed_seconds = ((float)elapsed_ticks * (float)portTICK_PERIOD_MS) / 1000.0f;
-    s_app.tremolo_phase +=
-        LFO_TWO_PI * synth_app_tremolo_rate_hz(s_app.tremolo_level, s_app.bpm) * elapsed_seconds;
-    while (s_app.tremolo_phase >= LFO_TWO_PI) {
-        s_app.tremolo_phase -= LFO_TWO_PI;
-    }
-
-    float amount = synth_app_tremolo_depth() * (0.5f + 0.5f * sinf(s_app.tremolo_phase));
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_tremolo_amount(amount));
 }
 
@@ -698,12 +513,12 @@ static void log_chord_event(const char *verb, const synth_chord_t *chord)
 static bool build_play_layer(synth_chord_t *layer)
 {
     uint8_t slash_bass_slot = synth_app_bass_slot_for_chord(UINT8_MAX,
-                                                            s_app.held_mask,
+                                                            s_app.chords.held_mask,
                                                             s_app.bass_mode,
                                                             s_app.slash_bass_slot);
-    return synth_app_build_play_layer(s_app.held_chords,
-                                      s_app.held_chord_valid,
-                                      s_app.held_mask,
+    return synth_app_build_play_layer(s_app.chords.held_chords,
+                                      s_app.chords.held_chord_valid,
+                                      s_app.chords.held_mask,
                                       s_app.bass_mode,
                                       slash_bass_slot,
                                       layer);
@@ -725,7 +540,7 @@ static void render_play_layer(void)
         ESP_LOGW(TAG, "failed to play layer: %s", esp_err_to_name(err));
         return;
     }
-    remember_voice_anchor(&layer);
+    synth_app_chord_state_remember_voice_anchor(&s_app.chords, &layer);
 
     log_chord_event("play", &layer);
     strlcpy(s_app.chord_name, layer.name, sizeof(s_app.chord_name));
@@ -744,8 +559,8 @@ static void play_degree(uint8_t degree)
     }
 
     uint8_t slot = slot_from_degree(degree);
-    s_app.held_chords[slot] = chord;
-    s_app.held_chord_valid[slot] = true;
+    s_app.chords.held_chords[slot] = chord;
+    s_app.chords.held_chord_valid[slot] = true;
 
     if (!synth_play_mode_is_implemented(s_app.mode)) {
         warn_unimplemented_mode(s_app.mode);
@@ -755,7 +570,7 @@ static void play_degree(uint8_t degree)
     }
 
     if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
-        queue_arp_source(slot, &chord);
+        synth_app_play_queue_arp_source(&s_app.play, slot, &chord, xTaskGetTickCount());
         strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
         set_status("ARP");
         log_chord_event("arp source", &chord);
@@ -767,7 +582,7 @@ static void play_degree(uint8_t degree)
         strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
         log_chord_event("strum", &chord);
         start_strum(slot, &chord);
-        remember_voice_anchor(&chord);
+        synth_app_chord_state_remember_voice_anchor(&s_app.chords, &chord);
         update_ui();
         return;
     }
@@ -780,7 +595,7 @@ static void play_degree(uint8_t degree)
             ESP_LOGW(TAG, "failed to play lead note: %s", esp_err_to_name(err));
             return;
         }
-        remember_voice_anchor(&note);
+        synth_app_chord_state_remember_voice_anchor(&s_app.chords, &note);
         log_chord_event("lead", &note);
         strlcpy(s_app.chord_name, note.name, sizeof(s_app.chord_name));
         set_status("LEAD");
@@ -799,7 +614,7 @@ static void play_degree(uint8_t degree)
         }
         s_app.drone_active = true;
         s_app.drone_slot = slot;
-        remember_voice_anchor(&chord);
+        synth_app_chord_state_remember_voice_anchor(&s_app.chords, &chord);
         log_chord_event("drone", &chord);
         strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
         set_status("DRONE");
@@ -808,7 +623,7 @@ static void play_degree(uint8_t degree)
     }
 
     if (s_app.mode == SYNTH_PLAY_MODE_REPEAT) {
-        queue_repeat_source(slot);
+        synth_app_play_queue_repeat_source(&s_app.play, slot, xTaskGetTickCount());
         strlcpy(s_app.chord_name, chord.name, sizeof(s_app.chord_name));
         set_status("REPEAT");
         log_chord_event("repeat source", &chord);
@@ -822,7 +637,7 @@ static void play_degree(uint8_t degree)
 static void refresh_held_chords(void)
 {
     for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if ((s_app.held_mask & (1U << slot)) != 0) {
+        if ((s_app.chords.held_mask & (1U << slot)) != 0) {
             play_degree((uint8_t)(slot + 1));
         }
     }
@@ -830,11 +645,11 @@ static void refresh_held_chords(void)
 
 static bool sound_change_should_apply_immediately(void)
 {
-    return s_app.held_mask != 0 ||
-           s_app.strum_active ||
+    return s_app.chords.held_mask != 0 ||
+           s_app.play.strum_active ||
            s_app.drone_active ||
-           arp_clock_active() ||
-           repeat_clock_active();
+           synth_app_play_arp_clock_active(&s_app.play) ||
+           synth_app_play_repeat_clock_active(&s_app.play);
 }
 
 static void apply_sound_to_engine(synth_sound_t sound)
@@ -846,38 +661,34 @@ static void apply_sound_to_engine(synth_sound_t sound)
 
 static void apply_sound_immediately(synth_sound_t sound)
 {
-    s_app.sound = sound;
-    s_app.pending_sound = sound;
-    s_app.sound_apply_pending = false;
-    s_app.sound_apply_due_tick = 0;
+    synth_app_sound_mark_applied(&s_app.sound, sound);
     apply_sound_to_engine(sound);
 }
 
 static void schedule_sound_apply(synth_sound_t sound)
 {
-    s_app.sound = sound;
-    s_app.pending_sound = sound;
-    s_app.sound_apply_pending = true;
-    s_app.sound_apply_due_tick = xTaskGetTickCount() + SOUND_BROWSE_APPLY_TICKS;
+    synth_app_sound_schedule(&s_app.sound,
+                             sound,
+                             xTaskGetTickCount(),
+                             SOUND_BROWSE_APPLY_TICKS);
 }
 
 static void apply_pending_sound_now(void)
 {
-    if (!s_app.sound_apply_pending) {
+    if (!synth_app_sound_has_pending(&s_app.sound)) {
         return;
     }
 
-    apply_sound_immediately(s_app.pending_sound);
+    apply_sound_immediately(synth_app_sound_pending(&s_app.sound));
 }
 
 static void update_pending_sound(void)
 {
-    if (!s_app.sound_apply_pending || sound_change_should_apply_immediately()) {
+    if (!synth_app_sound_has_pending(&s_app.sound) || sound_change_should_apply_immediately()) {
         return;
     }
 
-    TickType_t now = xTaskGetTickCount();
-    if ((int32_t)(now - s_app.sound_apply_due_tick) < 0) {
+    if (!synth_app_sound_pending_due(&s_app.sound, xTaskGetTickCount())) {
         return;
     }
 
@@ -886,20 +697,39 @@ static void update_pending_sound(void)
     update_ui();
 }
 
-static uint8_t mixer_first_held_track(void)
+static void apply_mixer_result(const synth_app_mixer_result_t *result)
 {
-    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
-        if ((s_app.mixer_held_mask & (1U << track)) != 0) {
-            return track;
-        }
+    if (result == NULL || !result->handled) {
+        return;
     }
-    return UINT8_MAX;
-}
 
-static void mixer_mark_action(uint8_t track)
-{
-    if (track < SYNTH_LOOPER_TRACK_COUNT) {
-        s_app.mixer_action_mask |= (uint8_t)(1U << track);
+    if (result->focus_track < SYNTH_LOOPER_TRACK_COUNT) {
+        s_app.chords.focus_slot = result->focus_track;
+    }
+
+    switch (result->action) {
+    case SYNTH_APP_MIXER_ACTION_TOGGLE_METRONOME:
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_metronome());
+        break;
+    case SYNTH_APP_MIXER_ACTION_TOGGLE_MUTE:
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_track_mute(result->action_track));
+        break;
+    case SYNTH_APP_MIXER_ACTION_TOGGLE_SOLO:
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_track_solo(result->action_track));
+        break;
+    case SYNTH_APP_MIXER_ACTION_TOGGLE_PAUSE:
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_pause());
+        break;
+    case SYNTH_APP_MIXER_ACTION_NONE:
+    default:
+        break;
+    }
+
+    if (result->status != NULL) {
+        set_status(result->status);
+    }
+    if (result->ui_dirty) {
+        update_ui();
     }
 }
 
@@ -909,53 +739,62 @@ static bool handle_mixer_chord_event(const control_event_t *event, uint8_t degre
         return false;
     }
 
-    if (degree == 7) {
-        if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
-            ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_metronome());
-            set_status("METRONOME");
-            update_ui();
-        }
-        return true;
-    }
-    if (degree == 0 || degree > SYNTH_LOOPER_TRACK_COUNT) {
-        return true;
+    synth_app_mixer_result_t result =
+        synth_app_mixer_handle_chord_event(&s_app.mixer,
+                                           event,
+                                           degree,
+                                           synth_app_wheel_percent(&s_app.wheel));
+    apply_mixer_result(&result);
+    return result.handled;
+}
+
+static void apply_looper_result(const synth_app_looper_result_t *result)
+{
+    if (result == NULL || (!result->ui_dirty && result->action == SYNTH_APP_LOOPER_ACTION_NONE)) {
+        return;
     }
 
-    uint8_t track = (uint8_t)(degree - 1U);
-    uint8_t bit = (uint8_t)(1U << track);
-    if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
-        s_app.mixer_held_mask |= bit;
-        s_app.mixer_action_mask &= (uint8_t)~bit;
-        s_app.mixer_wheel_track = track;
-        s_app.mixer_wheel_start_percent = s_app.wheel_percent;
-        s_app.focus_slot = track;
-        set_status("MIXER");
+    esp_err_t err = ESP_OK;
+    switch (result->action) {
+    case SYNTH_APP_LOOPER_ACTION_CLICK:
+        err = synth_looper_click(current_bpm());
+        break;
+    case SYNTH_APP_LOOPER_ACTION_CLEAR_ALL:
+        err = synth_looper_clear_all();
+        break;
+    case SYNTH_APP_LOOPER_ACTION_SELECT_TRACK:
+        err = synth_looper_select_track(result->action_steps);
+        break;
+    case SYNTH_APP_LOOPER_ACTION_ADJUST_BARS:
+        err = synth_looper_adjust_bars(result->action_steps);
+        break;
+    case SYNTH_APP_LOOPER_ACTION_TOGGLE_PAUSE:
+        err = synth_looper_toggle_pause();
+        break;
+    case SYNTH_APP_LOOPER_ACTION_NONE:
+    default:
+        break;
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "looper action failed: %s", esp_err_to_name(err));
+        set_status("LOOPER ERR");
+    } else if (result->status != NULL) {
+        set_status(result->status);
+    }
+    if (result->ui_dirty) {
         update_ui();
-        return true;
     }
-
-    if ((s_app.mixer_held_mask & bit) != 0 &&
-        (s_app.mixer_action_mask & bit) == 0) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_track_mute(track));
-        set_status("MIX MUTE");
-    }
-    s_app.mixer_held_mask &= (uint8_t)~bit;
-    s_app.mixer_action_mask &= (uint8_t)~bit;
-    if (s_app.mixer_wheel_track == track) {
-        s_app.mixer_wheel_track = UINT8_MAX;
-    }
-    update_ui();
-    return true;
 }
 
 static void release_degree(uint8_t degree)
 {
     uint8_t slot = slot_from_degree(degree);
-    s_app.held_mask &= (uint8_t)~(1U << slot);
-    s_app.held_chord_valid[slot] = false;
-    s_app.arp_chord_valid[slot] = false;
+    s_app.chords.held_mask &= (uint8_t)~(1U << slot);
+    s_app.chords.held_chord_valid[slot] = false;
+    synth_app_play_clear_arp_source(&s_app.play, slot);
     if (s_app.slash_bass_slot == slot) {
-        uint8_t replacement = synth_app_first_held_slot_except(s_app.held_mask, UINT8_MAX);
+        uint8_t replacement = synth_app_first_held_slot_except(s_app.chords.held_mask, UINT8_MAX);
         s_app.slash_bass_slot = replacement < SYNTH_CHORD_BUTTON_COUNT ? replacement : UINT8_MAX;
     }
 
@@ -970,29 +809,29 @@ static void release_degree(uint8_t degree)
         return;
     }
 
-    if (s_app.mode == SYNTH_PLAY_MODE_STRUM && s_app.strum_slot == slot) {
+    if (s_app.mode == SYNTH_PLAY_MODE_STRUM && s_app.play.strum_slot == slot) {
         stop_strum();
     } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
-        if (s_app.held_mask == 0) {
+        if (s_app.chords.held_mask == 0) {
             stop_arp();
         }
     } else if (s_app.mode == SYNTH_PLAY_MODE_REPEAT) {
-        if (s_app.held_mask == 0) {
+        if (s_app.chords.held_mask == 0) {
             stop_repeat();
         }
     } else {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(slot));
     }
 
-    if (s_app.held_mask == 0) {
+    if (s_app.chords.held_mask == 0) {
         stop_arp();
         if (s_app.mode != SYNTH_PLAY_MODE_DRONE) {
             stop_repeat();
         }
         set_status("READY");
     } else if (s_app.mode == SYNTH_PLAY_MODE_PLAY) {
-        uint8_t next_slot = active_valid_held_slot(s_app.held_chord_valid);
-        if (next_slot != ARP_NO_SLOT) {
+        uint8_t next_slot = synth_app_chord_state_active_valid_slot(&s_app.chords, s_app.chords.held_chord_valid);
+        if (next_slot != SYNTH_APP_PLAY_NO_SLOT) {
             play_degree((uint8_t)(next_slot + 1));
         }
     }
@@ -1037,15 +876,15 @@ static void handle_chord_event(const control_event_t *event)
         }
         if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
             if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree <= 6) {
-                s_app.arp_pattern = (synth_arp_pattern_t)(degree - 1);
-                s_app.arp_step_index = 0;
-                ESP_LOGI(TAG, "arp pattern=%s", synth_arp_pattern_name(s_app.arp_pattern));
-                set_status(synth_arp_pattern_name(s_app.arp_pattern));
+                s_app.play.arp_pattern = (synth_arp_pattern_t)(degree - 1);
+                s_app.play.arp_step_index = 0;
+                ESP_LOGI(TAG, "arp pattern=%s", synth_arp_pattern_name(s_app.play.arp_pattern));
+                set_status(synth_arp_pattern_name(s_app.play.arp_pattern));
             } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree == 7) {
-                s_app.arp_chord_mode = (synth_arp_chord_mode_t)((s_app.arp_chord_mode + 1U) %
+                s_app.play.arp_chord_mode = (synth_arp_chord_mode_t)((s_app.play.arp_chord_mode + 1U) %
                                                                 SYNTH_ARP_CHORD_MODE_COUNT);
-                ESP_LOGI(TAG, "arp chord mode=%s", synth_arp_chord_mode_name(s_app.arp_chord_mode));
-                set_status(synth_arp_chord_mode_name(s_app.arp_chord_mode));
+                ESP_LOGI(TAG, "arp chord mode=%s", synth_arp_chord_mode_name(s_app.play.arp_chord_mode));
+                set_status(synth_arp_chord_mode_name(s_app.play.arp_chord_mode));
             } else {
                 synth_play_mode_t next = synth_play_mode_quick_select(degree);
                 step_mode((int8_t)((int)next - (int)s_app.mode));
@@ -1062,20 +901,20 @@ static void handle_chord_event(const control_event_t *event)
         }
 
         if (s_app.bass_mode == SYNTH_BASS_MODE_SLASH &&
-            s_app.held_mask != 0 &&
-            (s_app.held_mask & (1U << slot)) == 0) {
-            uint8_t bass_slot = active_valid_held_slot(s_app.held_chord_valid);
+            s_app.chords.held_mask != 0 &&
+            (s_app.chords.held_mask & (1U << slot)) == 0) {
+            uint8_t bass_slot = synth_app_chord_state_active_valid_slot(&s_app.chords, s_app.chords.held_chord_valid);
             if (bass_slot < SYNTH_CHORD_BUTTON_COUNT) {
                 s_app.slash_bass_slot = bass_slot;
             }
         } else if (s_app.bass_mode == SYNTH_BASS_MODE_SLASH &&
-                   s_app.held_mask == 0) {
+                   s_app.chords.held_mask == 0) {
             s_app.slash_bass_slot = slot;
         }
 
         sync_play_modifier_from_joystick();
-        s_app.held_mask |= 1U << slot;
-        s_app.focus_slot = slot;
+        s_app.chords.held_mask |= 1U << slot;
+        s_app.chords.focus_slot = slot;
         play_degree(degree);
     } else {
         if (handle_mixer_chord_event(event, degree)) {
@@ -1088,7 +927,7 @@ static void handle_chord_event(const control_event_t *event)
 static void step_key(int8_t semitones)
 {
     s_app.key = synth_key_step(s_app.key, semitones);
-    clear_voice_anchor();
+    synth_app_chord_state_clear_voice_anchor(&s_app.chords);
     ESP_LOGI(TAG, "key=%s", synth_key_name(s_app.key));
     set_status("KEY CHANGED");
     refresh_held_chords();
@@ -1109,7 +948,7 @@ static void step_global_octave(int8_t octaves)
     }
 
     s_app.global_octave_shift = next;
-    clear_voice_anchor();
+    synth_app_chord_state_clear_voice_anchor(&s_app.chords);
     ESP_LOGI(TAG, "global octave=%d", s_app.global_octave_shift);
     set_status("OCTAVE CHANGED");
     refresh_held_chords();
@@ -1118,26 +957,26 @@ static void step_global_octave(int8_t octaves)
 
 static void step_focused_button_octave(int8_t octaves)
 {
-    if ((s_app.held_mask & (1U << s_app.focus_slot)) == 0) {
+    if ((s_app.chords.held_mask & (1U << s_app.chords.focus_slot)) == 0) {
         return;
     }
 
-    int8_t next = (int8_t)(s_app.button_octave_shift[s_app.focus_slot] + octaves);
+    int8_t next = (int8_t)(s_app.button_octave_shift[s_app.chords.focus_slot] + octaves);
     if (next < BUTTON_OCTAVE_MIN) {
         next = BUTTON_OCTAVE_MIN;
     } else if (next > BUTTON_OCTAVE_MAX) {
         next = BUTTON_OCTAVE_MAX;
     }
 
-    if (next == s_app.button_octave_shift[s_app.focus_slot]) {
+    if (next == s_app.button_octave_shift[s_app.chords.focus_slot]) {
         return;
     }
 
-    s_app.button_octave_shift[s_app.focus_slot] = next;
-    clear_voice_anchor();
-    ESP_LOGI(TAG, "chord %u octave=%d", (unsigned)(s_app.focus_slot + 1), next);
+    s_app.button_octave_shift[s_app.chords.focus_slot] = next;
+    synth_app_chord_state_clear_voice_anchor(&s_app.chords);
+    ESP_LOGI(TAG, "chord %u octave=%d", (unsigned)(s_app.chords.focus_slot + 1), next);
     set_status("BUTTON OCTAVE");
-    play_degree((uint8_t)(s_app.focus_slot + 1));
+    play_degree((uint8_t)(s_app.chords.focus_slot + 1));
     update_ui();
 }
 
@@ -1156,14 +995,14 @@ static void update_key_menu(control_joystick_direction_t direction)
         step_key(1);
         break;
     case CONTROL_JOYSTICK_UP:
-        if (s_app.held_mask != 0) {
+        if (s_app.chords.held_mask != 0) {
             step_focused_button_octave(1);
         } else {
             step_global_octave(1);
         }
         break;
     case CONTROL_JOYSTICK_DOWN:
-        if (s_app.held_mask != 0) {
+        if (s_app.chords.held_mask != 0) {
             step_focused_button_octave(-1);
         } else {
             step_global_octave(-1);
@@ -1177,8 +1016,9 @@ static void update_key_menu(control_joystick_direction_t direction)
 
 static void step_sound(int8_t steps)
 {
-    synth_sound_t next = synth_sound_step(s_app.sound, steps);
-    if (next == s_app.sound) {
+    synth_sound_t current = synth_app_sound_current(&s_app.sound);
+    synth_sound_t next = synth_sound_step(current, steps);
+    if (next == current) {
         return;
     }
 
@@ -1206,7 +1046,7 @@ static void step_effect(int8_t steps)
 static void step_joystick_mode(void)
 {
     s_app.joystick_mode = synth_joystick_mode_step(s_app.joystick_mode, 1);
-    s_app.modifier = s_app.held_mask != 0 ?
+    s_app.modifier = s_app.chords.held_mask != 0 ?
         synth_chord_modifier_from_joystick(s_app.joystick_mode, s_app.joystick_direction) :
         SYNTH_CHORD_MOD_NONE;
     ESP_LOGI(TAG, "joystick mode=%s", synth_joystick_mode_name(s_app.joystick_mode));
@@ -1234,7 +1074,7 @@ static void toggle_voice_leading(void)
 {
     s_app.voice_leading_enabled = !s_app.voice_leading_enabled;
     if (!s_app.voice_leading_enabled) {
-        clear_voice_anchor();
+        synth_app_chord_state_clear_voice_anchor(&s_app.chords);
     }
     ESP_LOGI(TAG, "voice leading=%s", s_app.voice_leading_enabled ? "on" : "off");
     set_status(s_app.voice_leading_enabled ? "VOICE LEAD ON" : "VOICE LEAD OFF");
@@ -1242,40 +1082,27 @@ static void toggle_voice_leading(void)
     update_ui();
 }
 
-static uint8_t focused_held_slot(void)
-{
-    uint8_t slot = s_app.focus_slot;
-    if ((s_app.held_mask & (1U << slot)) == 0) {
-        slot = active_valid_held_slot(s_app.held_chord_valid);
-        if (slot == ARP_NO_SLOT) {
-            return UINT8_MAX;
-        }
-        s_app.focus_slot = slot;
-    }
-    return slot;
-}
-
 static void cycle_focused_chord_inversion(void)
 {
-    if (s_app.held_mask == 0) {
+    if (s_app.chords.held_mask == 0) {
         return;
     }
 
-    uint8_t slot = focused_held_slot();
+    uint8_t slot = synth_app_chord_state_focused_slot(&s_app.chords);
     if (slot >= SYNTH_CHORD_BUTTON_COUNT) {
         return;
     }
 
-    int8_t next = (int8_t)(s_app.chord_inversion[slot] + 1);
+    int8_t next = (int8_t)(s_app.chords.chord_inversion[slot] + 1);
     if (next > CHORD_INVERSION_MAX) {
         next = CHORD_INVERSION_MIN;
     }
-    s_app.chord_inversion[slot] = next;
-    clear_voice_anchor();
+    s_app.chords.chord_inversion[slot] = next;
+    synth_app_chord_state_clear_voice_anchor(&s_app.chords);
     ESP_LOGI(TAG,
              "chord %u inversion=%d",
              (unsigned)(slot + 1),
-             s_app.chord_inversion[slot]);
+             s_app.chords.chord_inversion[slot]);
     set_status("INVERSION");
     play_degree((uint8_t)(slot + 1));
     update_ui();
@@ -1283,21 +1110,21 @@ static void cycle_focused_chord_inversion(void)
 
 static void toggle_focused_chord_lock(void)
 {
-    if (s_app.held_mask == 0 || s_app.modifier == SYNTH_CHORD_MOD_NONE) {
+    if (s_app.chords.held_mask == 0 || s_app.modifier == SYNTH_CHORD_MOD_NONE) {
         return;
     }
 
-    uint8_t slot = focused_held_slot();
+    uint8_t slot = synth_app_chord_state_focused_slot(&s_app.chords);
     if (slot >= SYNTH_CHORD_BUTTON_COUNT) {
         return;
     }
 
-    if (s_app.locked_modifier[slot] == s_app.modifier) {
-        s_app.locked_modifier[slot] = SYNTH_CHORD_MOD_NONE;
+    if (s_app.chords.locked_modifier[slot] == s_app.modifier) {
+        s_app.chords.locked_modifier[slot] = SYNTH_CHORD_MOD_NONE;
         ESP_LOGI(TAG, "chord %u lock cleared", (unsigned)(slot + 1));
         set_status("LOCK OFF");
     } else {
-        s_app.locked_modifier[slot] = s_app.modifier;
+        s_app.chords.locked_modifier[slot] = s_app.modifier;
         ESP_LOGI(TAG,
                  "chord %u lock=%s",
                  (unsigned)(slot + 1),
@@ -1313,8 +1140,7 @@ static void step_lfo_level(void)
     size_t level_count = synth_app_lfo_level_count();
     s_app.lfo_level = (uint8_t)((s_app.lfo_level + 1U) % level_count);
     s_app.effects[PLAY_UI_EFFECT_LFO] = s_app.lfo_level > 0;
-    s_app.lfo_phase = 0.0f;
-    s_app.lfo_last_tick = xTaskGetTickCount();
+    synth_app_modulation_reset(&s_app.lfo, xTaskGetTickCount());
 
     esp_err_t err = synth_amy_set_lfo_enabled(s_app.effects[PLAY_UI_EFFECT_LFO]);
     if (err == ESP_OK) {
@@ -1335,7 +1161,7 @@ static void step_lfo_level(void)
 
 static float delay_ms_for_level(uint8_t level)
 {
-    return synth_app_delay_ms_for_level(level, s_app.bpm);
+    return synth_app_delay_ms_for_level(level, current_bpm());
 }
 
 static void apply_delay_level(void)
@@ -1366,8 +1192,7 @@ static void step_tremolo_level(void)
     size_t level_count = synth_app_tremolo_level_count();
     s_app.tremolo_level = (uint8_t)((s_app.tremolo_level + 1U) % level_count);
     s_app.effects[PLAY_UI_EFFECT_TREMOLO] = s_app.tremolo_level > 0;
-    s_app.tremolo_phase = 0.0f;
-    s_app.tremolo_last_tick = xTaskGetTickCount();
+    synth_app_modulation_reset(&s_app.tremolo, xTaskGetTickCount());
 
     esp_err_t err = synth_amy_set_tremolo_enabled(s_app.effects[PLAY_UI_EFFECT_TREMOLO]);
     if (err == ESP_OK) {
@@ -1381,7 +1206,7 @@ static void step_tremolo_level(void)
              "tremolo=%s level=%s rate=%.2f Hz",
              s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "on" : "off",
              synth_app_tremolo_level_name(s_app.tremolo_level),
-             synth_app_tremolo_rate_hz(s_app.tremolo_level, s_app.bpm));
+             synth_app_tremolo_rate_hz(s_app.tremolo_level, current_bpm()));
     set_status(s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "TREM ON" : "TREM OFF");
     update_ui();
 }
@@ -1538,19 +1363,11 @@ static void update_sound_menu(control_joystick_direction_t direction)
 
 static void step_bpm(int16_t delta)
 {
-    int next = (int)s_app.bpm + delta;
-    if (next < BPM_MIN) {
-        next = BPM_MIN;
-    } else if (next > BPM_MAX) {
-        next = BPM_MAX;
-    }
-
-    if (next == s_app.bpm) {
+    if (!synth_app_tempo_step(&s_app.tempo, delta)) {
         return;
     }
 
-    s_app.bpm = (uint16_t)next;
-    ESP_LOGI(TAG, "bpm=%u", s_app.bpm);
+    ESP_LOGI(TAG, "bpm=%u", current_bpm());
     if (s_app.effects[PLAY_UI_EFFECT_DELAY]) {
         apply_delay_level();
     }
@@ -1562,24 +1379,24 @@ static void cycle_mode_param(void)
 {
     switch (s_app.mode) {
     case SYNTH_PLAY_MODE_STRUM:
-        s_app.strum_speed = (synth_strum_speed_t)((s_app.strum_speed + 1U) % SYNTH_STRUM_SPEED_COUNT);
+        s_app.play.strum_speed = (synth_strum_speed_t)((s_app.play.strum_speed + 1U) % SYNTH_STRUM_SPEED_COUNT);
         ESP_LOGI(TAG,
                  "strum speed=%s delay=%ums",
-                 synth_strum_speed_name(s_app.strum_speed),
-                 synth_strum_speed_delay_ms(s_app.strum_speed));
-        set_status(synth_strum_speed_name(s_app.strum_speed));
+                 synth_strum_speed_name(s_app.play.strum_speed),
+                 synth_strum_speed_delay_ms(s_app.play.strum_speed));
+        set_status(synth_strum_speed_name(s_app.play.strum_speed));
         break;
     case SYNTH_PLAY_MODE_ARPEGGIO:
-        s_app.arp_rate = (synth_rhythm_rate_t)((s_app.arp_rate + 1U) % SYNTH_RHYTHM_RATE_COUNT);
-        s_app.arp_step_index = 0;
-        ESP_LOGI(TAG, "arp rate=%s", synth_rhythm_rate_name(s_app.arp_rate));
-        set_status(synth_rhythm_rate_name(s_app.arp_rate));
+        s_app.play.arp_rate = (synth_rhythm_rate_t)((s_app.play.arp_rate + 1U) % SYNTH_RHYTHM_RATE_COUNT);
+        s_app.play.arp_step_index = 0;
+        ESP_LOGI(TAG, "arp rate=%s", synth_rhythm_rate_name(s_app.play.arp_rate));
+        set_status(synth_rhythm_rate_name(s_app.play.arp_rate));
         break;
     case SYNTH_PLAY_MODE_REPEAT:
-        s_app.repeat_rate = (synth_rhythm_rate_t)((s_app.repeat_rate + 1U) % SYNTH_RHYTHM_RATE_COUNT);
-        s_app.repeat_next_tick = xTaskGetTickCount();
-        ESP_LOGI(TAG, "repeat rate=%s", synth_rhythm_rate_name(s_app.repeat_rate));
-        set_status(synth_rhythm_rate_name(s_app.repeat_rate));
+        s_app.play.repeat_rate = (synth_rhythm_rate_t)((s_app.play.repeat_rate + 1U) % SYNTH_RHYTHM_RATE_COUNT);
+        s_app.play.repeat_next_tick = xTaskGetTickCount();
+        ESP_LOGI(TAG, "repeat rate=%s", synth_rhythm_rate_name(s_app.play.repeat_rate));
+        set_status(synth_rhythm_rate_name(s_app.play.repeat_rate));
         break;
     default:
         if (!synth_play_mode_is_implemented(s_app.mode)) {
@@ -1592,53 +1409,22 @@ static void cycle_mode_param(void)
     update_ui();
 }
 
-static app_wheel_target_t current_wheel_target(void)
+static synth_app_wheel_target_t current_wheel_target(void)
 {
     if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
-        return APP_WHEEL_TARGET_ATTACK;
+        return SYNTH_APP_WHEEL_TARGET_ATTACK;
     }
     if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
-        return APP_WHEEL_TARGET_RELEASE;
+        return SYNTH_APP_WHEEL_TARGET_RELEASE;
     }
     if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
-        return APP_WHEEL_TARGET_FILTER;
+        return SYNTH_APP_WHEEL_TARGET_FILTER;
     }
     if (s_app.mode == SYNTH_PLAY_MODE_MIXER &&
-        mixer_first_held_track() < SYNTH_LOOPER_TRACK_COUNT) {
-        return APP_WHEEL_TARGET_LOOPER_TRACK;
+        synth_app_mixer_first_held_track(&s_app.mixer) < SYNTH_LOOPER_TRACK_COUNT) {
+        return SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK;
     }
-    return APP_WHEEL_TARGET_VOLUME;
-}
-
-static bool wheel_application_changed(app_wheel_target_t target, uint8_t percent)
-{
-    if (target != s_app.last_applied_wheel_target ||
-        s_app.last_applied_wheel_percent == UINT8_MAX) {
-        return true;
-    }
-
-    uint8_t last = s_app.last_applied_wheel_percent;
-    uint8_t delta = percent > last ? (uint8_t)(percent - last) : (uint8_t)(last - percent);
-    return delta >= WHEEL_CHANGE_THRESHOLD_PERCENT;
-}
-
-static bool mixer_wheel_moved(uint8_t track, uint8_t percent)
-{
-    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
-        return false;
-    }
-    if (s_app.mixer_wheel_track != track) {
-        s_app.mixer_wheel_track = track;
-        s_app.mixer_wheel_start_percent = percent;
-        return false;
-    }
-    if ((s_app.mixer_action_mask & (1U << track)) != 0) {
-        return true;
-    }
-
-    uint8_t start = s_app.mixer_wheel_start_percent;
-    uint8_t delta = percent > start ? (uint8_t)(percent - start) : (uint8_t)(start - percent);
-    return delta >= WHEEL_CHANGE_THRESHOLD_PERCENT;
+    return SYNTH_APP_WHEEL_TARGET_VOLUME;
 }
 
 static bool apply_wheel(const control_wheel_state_t *wheel)
@@ -1647,45 +1433,51 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
         return false;
     }
 
-    app_wheel_target_t target = current_wheel_target();
-    if (target == APP_WHEEL_TARGET_LOOPER_TRACK) {
-        uint8_t track = mixer_first_held_track();
-        if (!mixer_wheel_moved(track, wheel->percent)) {
+    synth_app_wheel_target_t target = current_wheel_target();
+    if (target == SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK) {
+        uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
+        if (!synth_app_mixer_wheel_moved(&s_app.mixer,
+                                         track,
+                                         wheel->percent,
+                                         WHEEL_CHANGE_THRESHOLD_PERCENT)) {
             return false;
         }
     }
-    if (!wheel_application_changed(target, wheel->percent)) {
+    if (!synth_app_wheel_should_apply(&s_app.wheel,
+                                      target,
+                                      wheel->percent,
+                                      WHEEL_CHANGE_THRESHOLD_PERCENT)) {
         return false;
     }
 
-    s_app.last_applied_wheel_percent = wheel->percent;
-    s_app.last_applied_wheel_target = target;
-    if (target == APP_WHEEL_TARGET_ATTACK) {
+    if (target == SYNTH_APP_WHEEL_TARGET_ATTACK) {
         s_app.attack_ms = synth_app_attack_ms_from_wheel(wheel->percent);
         s_app.adsr_modified = true;
         apply_current_envelope();
         set_status("ATTACK");
-    } else if (target == APP_WHEEL_TARGET_RELEASE) {
+    } else if (target == SYNTH_APP_WHEEL_TARGET_RELEASE) {
         s_app.release_ms = synth_app_release_ms_from_wheel(wheel->percent);
         s_app.adsr_modified = true;
         apply_current_envelope();
         set_status("RELEASE");
-    } else if (target == APP_WHEEL_TARGET_FILTER) {
+    } else if (target == SYNTH_APP_WHEEL_TARGET_FILTER) {
         float cutoff_hz = synth_app_filter_cutoff_hz_from_wheel(wheel->percent);
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_filter_cutoff(cutoff_hz));
         set_status("FILTER");
-    } else if (target == APP_WHEEL_TARGET_LOOPER_TRACK) {
-        uint8_t track = mixer_first_held_track();
+    } else if (target == SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK) {
+        uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
         if (track >= SYNTH_LOOPER_TRACK_COUNT) {
             return false;
         }
-        mixer_mark_action(track);
+        synth_app_mixer_mark_action(&s_app.mixer, track);
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_set_track_volume(track, wheel->percent));
         set_status("LOOP VOL");
     } else {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(wheel->value));
-        s_app.volume_percent = wheel->percent;
-        ESP_LOGI(TAG, "master volume=%u%%", (unsigned)s_app.volume_percent);
+        synth_app_wheel_set_volume_percent(&s_app.wheel, wheel->percent);
+        ESP_LOGI(TAG,
+                 "master volume=%u%%",
+                 (unsigned)synth_app_wheel_volume_percent(&s_app.wheel));
         set_status("VOLUME");
     }
     return true;
@@ -1698,10 +1490,7 @@ static void update_wheel(void)
         return;
     }
 
-    bool display_changed = s_app.wheel_present != wheel.present ||
-        s_app.wheel_percent != wheel.percent;
-    s_app.wheel_present = wheel.present;
-    s_app.wheel_percent = wheel.percent;
+    bool display_changed = synth_app_wheel_update(&s_app.wheel, wheel.present, wheel.percent);
     bool applied = apply_wheel(&wheel);
     if (display_changed || applied) {
         update_ui();
@@ -1722,30 +1511,27 @@ static void step_mode(int8_t steps)
     if (previous == SYNTH_PLAY_MODE_DRONE && s_app.drone_active) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_chord_off(s_app.drone_slot));
         s_app.drone_active = false;
-        s_app.drone_slot = ARP_NO_SLOT;
+        s_app.drone_slot = SYNTH_APP_PLAY_NO_SLOT;
     }
     if (previous == SYNTH_PLAY_MODE_MIXER) {
-        s_app.mixer_held_mask = 0;
-        s_app.mixer_action_mask = 0;
-        s_app.mixer_wheel_track = UINT8_MAX;
+        synth_app_mixer_reset(&s_app.mixer);
     }
-    clear_arp_sources();
+    synth_app_play_clear_arp_sources(&s_app.play, xTaskGetTickCount());
 
     s_app.mode = next;
     s_app.mode_bpm_submenu = false;
     apply_current_envelope_if_modified();
     if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
-        s_app.held_mask = 0;
-        memset(s_app.held_chord_valid, 0, sizeof(s_app.held_chord_valid));
-        memset(s_app.arp_chord_valid, 0, sizeof(s_app.arp_chord_valid));
-        s_app.looper_visible = false;
+        synth_app_chord_state_clear_held(&s_app.chords);
+        synth_app_play_clear_arp_sources(&s_app.play, xTaskGetTickCount());
+        synth_app_looper_hide(&s_app.looper);
         set_status("MIXER");
     } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
-        clear_arp_sources();
+        synth_app_play_clear_arp_sources(&s_app.play, xTaskGetTickCount());
         refresh_held_chords();
-    } else if (synth_play_mode_is_implemented(s_app.mode) && s_app.held_mask != 0) {
+    } else if (synth_play_mode_is_implemented(s_app.mode) && s_app.chords.held_mask != 0) {
         refresh_held_chords();
     } else if (!synth_play_mode_is_implemented(s_app.mode)) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
@@ -1808,101 +1594,36 @@ static void update_mode_menu(control_joystick_direction_t direction)
     }
 }
 
-static void open_looper(void)
-{
-    s_app.looper_visible = true;
-    s_app.last_looper_direction = CONTROL_JOYSTICK_CENTER;
-    s_app.looper_next_ui_tick = xTaskGetTickCount();
-    set_status("LOOPER");
-    update_ui();
-}
-
 static void handle_looper_click(void)
 {
-    if (!s_app.looper_visible) {
-        open_looper();
-        return;
-    }
-
-    esp_err_t err = synth_looper_click(s_app.bpm);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "looper click failed: %s", esp_err_to_name(err));
-        set_status("LOOPER ERR");
-    } else {
-        set_status("LOOPER");
-    }
-    update_ui();
+    synth_app_looper_result_t result =
+        synth_app_looper_click(&s_app.looper, xTaskGetTickCount());
+    apply_looper_result(&result);
 }
 
 static void handle_looper_clear_all(void)
 {
-    esp_err_t err = synth_looper_clear_all();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "looper clear failed: %s", esp_err_to_name(err));
-        set_status("LOOPER ERR");
-    } else {
-        set_status("LOOPER CLR");
-    }
-    update_ui();
+    synth_app_looper_result_t result = synth_app_looper_clear_all();
+    apply_looper_result(&result);
 }
 
 static void update_looper_joystick(control_joystick_direction_t direction)
 {
-    if (direction == s_app.last_looper_direction) {
-        return;
-    }
-    s_app.last_looper_direction = direction;
-
-    esp_err_t err = ESP_OK;
-    switch (direction) {
-    case CONTROL_JOYSTICK_LEFT:
-        if (synth_looper_current_track_is_waiting()) {
-            err = synth_looper_adjust_bars(-1);
-        } else {
-            err = synth_looper_select_track(-1);
-        }
-        break;
-    case CONTROL_JOYSTICK_RIGHT:
-        if (synth_looper_current_track_is_waiting()) {
-            err = synth_looper_adjust_bars(1);
-        } else {
-            err = synth_looper_select_track(1);
-        }
-        break;
-    case CONTROL_JOYSTICK_DOWN:
-        err = synth_looper_toggle_pause();
-        break;
-    case CONTROL_JOYSTICK_CENTER:
-    case CONTROL_JOYSTICK_UP:
-    case CONTROL_JOYSTICK_UP_RIGHT:
-    case CONTROL_JOYSTICK_DOWN_RIGHT:
-    case CONTROL_JOYSTICK_DOWN_LEFT:
-    case CONTROL_JOYSTICK_UP_LEFT:
-    default:
-        break;
-    }
-
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "looper joystick failed: %s", esp_err_to_name(err));
-        set_status("LOOPER ERR");
-    } else if (direction != CONTROL_JOYSTICK_CENTER) {
-        set_status("LOOPER");
-    }
-    update_ui();
+    synth_app_looper_result_t result =
+        synth_app_looper_handle_joystick(&s_app.looper,
+                                         direction,
+                                         synth_looper_current_track_is_waiting());
+    apply_looper_result(&result);
 }
 
 static void update_looper_periodic_ui(void)
 {
-    if (!s_app.looper_visible && s_app.mode != SYNTH_PLAY_MODE_MIXER) {
-        return;
-    }
-
     TickType_t now = xTaskGetTickCount();
-    if ((int32_t)(now - s_app.looper_next_ui_tick) < 0) {
-        return;
+    bool screen_visible = synth_app_looper_visible(&s_app.looper) ||
+                          s_app.mode == SYNTH_PLAY_MODE_MIXER;
+    if (synth_app_looper_periodic_due(&s_app.looper, screen_visible, now)) {
+        update_ui();
     }
-    s_app.looper_next_ui_tick = now + pdMS_TO_TICKS(250);
-    update_ui();
 }
 
 static void update_joystick(void)
@@ -1930,12 +1651,12 @@ static void update_joystick(void)
     }
     s_app.last_menu_direction = CONTROL_JOYSTICK_CENTER;
 
-    if (s_app.looper_visible && s_app.held_mask == 0) {
+    if (synth_app_looper_visible(&s_app.looper) && s_app.chords.held_mask == 0) {
         update_looper_joystick(joystick.direction);
         s_app.last_play_direction = CONTROL_JOYSTICK_CENTER;
         return;
     }
-    s_app.last_looper_direction = CONTROL_JOYSTICK_CENTER;
+    synth_app_looper_reset_direction(&s_app.looper);
 
     if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
         s_app.last_play_direction = joystick.direction;
@@ -1947,7 +1668,7 @@ static void update_joystick(void)
     }
 
     if (s_app.joystick_mode == SYNTH_JOYSTICK_MODE_CHROMATIC &&
-        s_app.held_mask == 0 &&
+        s_app.chords.held_mask == 0 &&
         (joystick.direction == CONTROL_JOYSTICK_LEFT ||
          joystick.direction == CONTROL_JOYSTICK_RIGHT)) {
         if (joystick.direction != s_app.last_play_direction) {
@@ -1961,7 +1682,7 @@ static void update_joystick(void)
         return;
     }
 
-    if (s_app.held_mask == 0) {
+    if (s_app.chords.held_mask == 0) {
         s_app.last_play_direction = joystick.direction;
         if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {
             s_app.modifier = SYNTH_CHORD_MOD_NONE;
@@ -1984,66 +1705,32 @@ static void update_joystick(void)
 
 static void handle_mode_button_tap(void)
 {
-    TickType_t now = xTaskGetTickCount();
-    if (s_app.mode_tap_count == 0 ||
-        (int32_t)(now - s_app.mode_tap_last_tick) > (int32_t)MODE_TAP_RESET_TICKS) {
-        s_app.mode_tap_count = 1;
-        s_app.mode_tap_first_tick = now;
-        s_app.mode_tap_last_tick = now;
+    synth_app_tempo_tap_result_t tap =
+        synth_app_tempo_tap(&s_app.tempo, xTaskGetTickCount());
+    if (!tap.changed) {
         return;
     }
 
-    ++s_app.mode_tap_count;
-    s_app.mode_tap_last_tick = now;
-    if (s_app.mode_tap_count < 3) {
-        return;
+    if (s_app.effects[PLAY_UI_EFFECT_DELAY]) {
+        apply_delay_level();
     }
-
-    TickType_t span_ticks = s_app.mode_tap_last_tick - s_app.mode_tap_first_tick;
-    uint32_t span_ms = (uint32_t)span_ticks * (uint32_t)portTICK_PERIOD_MS;
-    if (span_ms > 0) {
-        uint32_t beat_ms = span_ms / (uint32_t)(s_app.mode_tap_count - 1U);
-        if (beat_ms > 0) {
-            uint16_t bpm = (uint16_t)(60000UL / beat_ms);
-            if (bpm < BPM_MIN) {
-                bpm = BPM_MIN;
-            } else if (bpm > BPM_MAX) {
-                bpm = BPM_MAX;
-            }
-            s_app.bpm = bpm;
-            if (s_app.effects[PLAY_UI_EFFECT_DELAY]) {
-                apply_delay_level();
-            }
-            ESP_LOGI(TAG, "tap tempo bpm=%u taps=%u", s_app.bpm, s_app.mode_tap_count);
-            set_status("TAP TEMPO");
-            update_ui();
-        }
-    }
+    ESP_LOGI(TAG, "tap tempo bpm=%u taps=%u", tap.bpm, tap.tap_count);
+    set_status("TAP TEMPO");
+    update_ui();
 }
 
 static void handle_mixer_joystick_click(void)
 {
-    uint8_t track = mixer_first_held_track();
-    if (track < SYNTH_LOOPER_TRACK_COUNT) {
-        mixer_mark_action(track);
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_track_solo(track));
-        set_status("SOLO");
-    } else {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_pause());
-        set_status("MIX PAUSE");
-    }
-    update_ui();
+    synth_app_mixer_result_t result =
+        synth_app_mixer_handle_joystick_click(&s_app.mixer);
+    apply_mixer_result(&result);
 }
 
 static void handle_menu_event(const control_event_t *event)
 {
     if (event->type != CONTROL_EVENT_SWITCH_PRESSED) {
-        if (event->sw == CONTROL_KEY_MENU && s_app.looper_menu_held) {
-            if (!s_app.looper_menu_clear_used) {
-                s_app.looper_visible = false;
-            }
-            s_app.looper_menu_held = false;
-            s_app.looper_menu_clear_used = false;
+        if (event->sw == CONTROL_KEY_MENU) {
+            synth_app_looper_finish_menu_hold(&s_app.looper);
         }
         update_ui();
         return;
@@ -2056,8 +1743,8 @@ static void handle_menu_event(const control_event_t *event)
             set_status("MODE MENU");
             update_ui();
         } else if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
-            if (s_app.looper_visible) {
-                s_app.looper_menu_clear_used = true;
+            if (synth_app_looper_visible(&s_app.looper)) {
+                synth_app_looper_mark_menu_clear_used(&s_app.looper);
                 handle_looper_clear_all();
             } else {
                 set_status("KEY MENU");
@@ -2071,7 +1758,7 @@ static void handle_menu_event(const control_event_t *event)
     } else if (event->sw == CONTROL_KEY_MENU ||
                event->sw == CONTROL_SOUND_MENU ||
                event->sw == CONTROL_MODE_MENU) {
-        if (s_app.held_mask != 0) {
+        if (s_app.chords.held_mask != 0) {
             if (event->sw == CONTROL_KEY_MENU) {
                 step_focused_button_octave(-1);
             } else if (event->sw == CONTROL_SOUND_MENU) {
@@ -2086,13 +1773,10 @@ static void handle_menu_event(const control_event_t *event)
             return;
         }
 
-        if (event->sw == CONTROL_KEY_MENU && s_app.looper_visible) {
-            s_app.looper_menu_held = true;
-            s_app.looper_menu_clear_used = false;
+        if (event->sw == CONTROL_KEY_MENU && synth_app_looper_visible(&s_app.looper)) {
+            synth_app_looper_begin_menu_hold(&s_app.looper);
         } else {
-            s_app.looper_visible = false;
-            s_app.looper_menu_held = false;
-            s_app.looper_menu_clear_used = false;
+            synth_app_looper_hide(&s_app.looper);
         }
         if (event->sw == CONTROL_MODE_MENU) {
             handle_mode_button_tap();
@@ -2134,7 +1818,9 @@ esp_err_t synth_app_start(const esp_pocket_audio_hw_t *hw)
     }
 
     ESP_RETURN_ON_ERROR(synth_amy_init(hw), TAG, "AMY synth init failed");
-    ESP_RETURN_ON_ERROR(synth_amy_set_sound(s_app.sound), TAG, "AMY sound setup failed");
+    ESP_RETURN_ON_ERROR(synth_amy_set_sound(synth_app_sound_current(&s_app.sound)),
+                        TAG,
+                        "AMY sound setup failed");
     apply_current_glide();
     ESP_RETURN_ON_ERROR(play_ui_start(hw), TAG, "play UI start failed");
     update_ui();

@@ -271,13 +271,14 @@ def assert_app_and_api_invariants(
     play_ui_h: str,
 ) -> None:
     joystick_body = function_body(app_c, "update_joystick")
-    idle_clear = (
-        "if (s_app.held_mask == 0) {\n"
-        "        s_app.last_play_direction = joystick.direction;\n"
-        "        if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {\n"
-        "            s_app.modifier = SYNTH_CHORD_MOD_NONE;"
+    idle_clear = re.search(
+        r"if \(s_app(?:\.chords)?\.held_mask == 0\) \{\s*"
+        r"s_app\.last_play_direction = joystick\.direction;\s*"
+        r"if \(s_app\.modifier != SYNTH_CHORD_MOD_NONE\) \{\s*"
+        r"s_app\.modifier = SYNTH_CHORD_MOD_NONE;",
+        joystick_body,
     )
-    idle_index = joystick_body.find(idle_clear)
+    idle_index = idle_clear.start() if idle_clear is not None else -1
     modifier_index = joystick_body.find("synth_chord_modifier_from_joystick")
     combined_public_sources = chord_h + chord_c + app_c + play_ui_c + play_ui_h
 

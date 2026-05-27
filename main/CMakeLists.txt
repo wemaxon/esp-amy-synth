@@ -23,6 +23,7 @@ idf_component_register(
         "synth/app.c"
         "synth/app_chord_tools.c"
         "synth/app_chords.c"
+        "synth/app_key.c"
         "synth/app_looper.c"
         "synth/app_mixer.c"
         "synth/app_modulation.c"

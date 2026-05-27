@@ -15,6 +15,7 @@
 #include "synth/amy_engine.h"
 #include "synth/app_chord_tools.h"
 #include "synth/app_chords.h"
+#include "synth/app_key.h"
 #include "synth/app_looper.h"
 #include "synth/app_mixer.h"
 #include "synth/app_modulation.h"
@@ -76,10 +77,6 @@ static const uint32_t APP_TASK_STACK_SIZE = 4096;
 static const UBaseType_t APP_TASK_PRIORITY = 5;
 static const BaseType_t APP_TASK_CORE = 0;
 static const TickType_t APP_UPDATE_TICKS = pdMS_TO_TICKS(20);
-static const int8_t GLOBAL_OCTAVE_MIN = -1;
-static const int8_t GLOBAL_OCTAVE_MAX = 2;
-static const int8_t BUTTON_OCTAVE_MIN = -2;
-static const int8_t BUTTON_OCTAVE_MAX = 1;
 static const int8_t CHORD_INVERSION_MIN = 0;
 static const int8_t CHORD_INVERSION_MAX = SYNTH_CHORD_INVERSION_COUNT - 1;
 static const uint8_t WHEEL_CHANGE_THRESHOLD_PERCENT = 2;
@@ -87,7 +84,7 @@ static const TickType_t SOUND_BROWSE_APPLY_TICKS = pdMS_TO_TICKS(180);
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
-    .global_octave_shift = 0,
+    .global_octave_shift = SYNTH_APP_GLOBAL_OCTAVE_DEFAULT,
     .modifier = SYNTH_CHORD_MOD_NONE,
     .joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT,
     .bass_mode = SYNTH_BASS_MODE_OFF,
@@ -926,9 +923,20 @@ static void handle_chord_event(const control_event_t *event)
 
 static void step_key(int8_t semitones)
 {
-    s_app.key = synth_key_step(s_app.key, semitones);
+    synth_key_t next_key = s_app.key;
+    int8_t next_octave = s_app.global_octave_shift;
+    if (!synth_app_key_step(s_app.key,
+                            s_app.global_octave_shift,
+                            semitones,
+                            &next_key,
+                            &next_octave)) {
+        return;
+    }
+
+    s_app.key = next_key;
+    s_app.global_octave_shift = next_octave;
     synth_app_chord_state_clear_voice_anchor(&s_app.chords);
-    ESP_LOGI(TAG, "key=%s", synth_key_name(s_app.key));
+    ESP_LOGI(TAG, "key=%s octave=%d", synth_key_name(s_app.key), s_app.global_octave_shift);
     set_status("KEY CHANGED");
     refresh_held_chords();
     update_ui();
@@ -936,14 +944,8 @@ static void step_key(int8_t semitones)
 
 static void step_global_octave(int8_t octaves)
 {
-    int8_t next = (int8_t)(s_app.global_octave_shift + octaves);
-    if (next < GLOBAL_OCTAVE_MIN) {
-        next = GLOBAL_OCTAVE_MIN;
-    } else if (next > GLOBAL_OCTAVE_MAX) {
-        next = GLOBAL_OCTAVE_MAX;
-    }
-
-    if (next == s_app.global_octave_shift) {
+    int8_t next = s_app.global_octave_shift;
+    if (!synth_app_global_octave_step(s_app.global_octave_shift, octaves, &next)) {
         return;
     }
 
@@ -961,14 +963,10 @@ static void step_focused_button_octave(int8_t octaves)
         return;
     }
 
-    int8_t next = (int8_t)(s_app.button_octave_shift[s_app.chords.focus_slot] + octaves);
-    if (next < BUTTON_OCTAVE_MIN) {
-        next = BUTTON_OCTAVE_MIN;
-    } else if (next > BUTTON_OCTAVE_MAX) {
-        next = BUTTON_OCTAVE_MAX;
-    }
-
-    if (next == s_app.button_octave_shift[s_app.chords.focus_slot]) {
+    int8_t next = s_app.button_octave_shift[s_app.chords.focus_slot];
+    if (!synth_app_button_octave_step(s_app.button_octave_shift[s_app.chords.focus_slot],
+                                      octaves,
+                                      &next)) {
         return;
     }
 

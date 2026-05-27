@@ -13,6 +13,8 @@ CHORD_C = ROOT / "main" / "synth" / "chord_engine.c"
 CHORD_H = ROOT / "main" / "synth" / "chord_engine.h"
 APP_C = ROOT / "main" / "synth" / "app.c"
 APP_CHORD_TOOLS_C = ROOT / "main" / "synth" / "app_chord_tools.c"
+APP_KEY_C = ROOT / "main" / "synth" / "app_key.c"
+APP_KEY_H = ROOT / "main" / "synth" / "app_key.h"
 APP_SETTINGS_C = ROOT / "main" / "synth" / "app_settings.c"
 AMY_C = ROOT / "main" / "synth" / "amy_engine.c"
 AMY_H = ROOT / "main" / "synth" / "amy_engine.h"
@@ -267,6 +269,8 @@ def assert_app_and_api_invariants(
     chord_h: str,
     app_c: str,
     app_chord_tools_c: str,
+    app_key_c: str,
+    app_key_h: str,
     play_ui_c: str,
     play_ui_h: str,
 ) -> None:
@@ -283,10 +287,15 @@ def assert_app_and_api_invariants(
     combined_public_sources = chord_h + chord_c + app_c + play_ui_c + play_ui_h
 
     require("#define SYNTH_CHORD_INVERSION_COUNT 3" in chord_h, "inversion count must be 3")
-    require("static const int8_t GLOBAL_OCTAVE_MIN = -1;" in app_c, "global octave min must be -1")
-    require("static const int8_t GLOBAL_OCTAVE_MAX = 2;" in app_c, "global octave max must be +2")
-    require("static const int8_t BUTTON_OCTAVE_MIN = -2;" in app_c, "button octave min must be -2")
-    require("static const int8_t BUTTON_OCTAVE_MAX = 1;" in app_c, "button octave max must be +1")
+    require("#define SYNTH_APP_GLOBAL_OCTAVE_DEFAULT 0" in app_key_h, "global octave default must be 0")
+    require("#define SYNTH_APP_GLOBAL_OCTAVE_MIN -1" in app_key_h, "global octave min must be -1")
+    require("#define SYNTH_APP_GLOBAL_OCTAVE_MAX 2" in app_key_h, "global octave max must be +2")
+    require("#define SYNTH_APP_BUTTON_OCTAVE_MIN -2" in app_key_h, "button octave min must be -2")
+    require("#define SYNTH_APP_BUTTON_OCTAVE_MAX 1" in app_key_h, "button octave max must be +1")
+    require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in app_c, "app must use shared global octave default")
+    require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in play_ui_c, "play UI must use shared global octave default")
+    require("synth_app_key_step" in app_key_c and "--octave_value" in app_key_c and "++octave_value" in app_key_c,
+            "key stepping must carry octave across B/C wraps")
     require("root - 24" in chord_c, "ROOT bass must be two octaves below the chord root")
     require("bass_degree" in chord_h and "bass_degree" in chord_c, "slash bass must use bass degree")
     require(
@@ -450,6 +459,8 @@ def main() -> int:
     chord_h = read(CHORD_H)
     app_c = read(APP_C)
     app_chord_tools_c = read(APP_CHORD_TOOLS_C)
+    app_key_c = read(APP_KEY_C)
+    app_key_h = read(APP_KEY_H)
     app_settings_c = read(APP_SETTINGS_C)
     amy_c = read(AMY_C)
     amy_h = read(AMY_H)
@@ -462,7 +473,14 @@ def main() -> int:
     assert_c_major_buttons(chord_c)
     assert_formula_arrays(chord_c)
     assert_formula_routes(chord_c)
-    assert_app_and_api_invariants(chord_c, chord_h, app_c, app_chord_tools_c, play_ui_c, play_ui_h)
+    assert_app_and_api_invariants(chord_c,
+                                  chord_h,
+                                  app_c,
+                                  app_chord_tools_c,
+                                  app_key_c,
+                                  app_key_h,
+                                  play_ui_c,
+                                  play_ui_h)
     assert_amy_voice_architecture(amy_voice_map_c)
     assert_voice_count_control(app_c, app_settings_c, amy_c, amy_h, amy_runtime_c, play_ui_c, play_ui_h)
     assert_adsr_control(app_c, app_settings_c, amy_c, amy_h, play_ui_c, play_ui_h)

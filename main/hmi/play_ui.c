@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "hmi/oled_display.h"
 #include "pocket_oled.h"
+#include "synth/app_key.h"
 
 static const char *TAG = "PLAY_UI";
 
@@ -83,6 +84,7 @@ void play_ui_model_init(play_ui_model_t *model)
     memset(model, 0, sizeof(*model));
     model->screen = PLAY_UI_SCREEN_HOME;
     model->key = SYNTH_KEY_C;
+    model->global_octave_shift = SYNTH_APP_GLOBAL_OCTAVE_DEFAULT;
     model->modifier = SYNTH_CHORD_MOD_NONE;
     model->joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT;
     model->bass_mode = SYNTH_BASS_MODE_OFF;

@@ -681,7 +681,7 @@ static void apply_mixer_result(const synth_app_mixer_result_t *result)
 
     switch (result->action) {
     case SYNTH_APP_MIXER_ACTION_TOGGLE_METRONOME:
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_metronome());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_metronome(current_bpm()));
         break;
     case SYNTH_APP_MIXER_ACTION_TOGGLE_MUTE:
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_toggle_track_mute(result->action_track));
@@ -742,6 +742,9 @@ static void apply_looper_result(const synth_app_looper_result_t *result)
         break;
     case SYNTH_APP_LOOPER_ACTION_TOGGLE_PAUSE:
         err = synth_looper_toggle_pause();
+        break;
+    case SYNTH_APP_LOOPER_ACTION_TOGGLE_RECORD_METRONOME:
+        err = synth_looper_toggle_record_metronome(current_bpm());
         break;
     case SYNTH_APP_LOOPER_ACTION_NONE:
     default:
@@ -1327,6 +1330,7 @@ static void step_bpm(int16_t delta)
     }
 
     ESP_LOGI(TAG, "bpm=%u", current_bpm());
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_set_metronome_bpm(current_bpm()));
     if (s_app.fx.enabled[PLAY_UI_EFFECT_DELAY]) {
         apply_delay_level();
     }
@@ -1671,6 +1675,7 @@ static void handle_mode_button_tap(void)
     if (s_app.fx.enabled[PLAY_UI_EFFECT_DELAY]) {
         apply_delay_level();
     }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_set_metronome_bpm(current_bpm()));
     ESP_LOGI(TAG, "tap tempo bpm=%u taps=%u", tap.bpm, tap.tap_count);
     set_status("TAP TEMPO");
     update_ui();

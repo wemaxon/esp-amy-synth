@@ -36,7 +36,9 @@ idf_component_register(
         "synth/app/wheel.c"
         "synth/amy_engine.c"
         "synth/chord_engine.c"
+        "synth/crossfade.c"
         "synth/looper.c"
+        "synth/metronome.c"
         "synth/play_mode.c"
         "synth/sound.c"
 

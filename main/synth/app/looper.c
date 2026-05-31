@@ -134,6 +134,10 @@ synth_app_looper_result_t synth_app_looper_handle_joystick(synth_app_looper_t *l
     case CONTROL_JOYSTICK_DOWN:
         result.action = SYNTH_APP_LOOPER_ACTION_TOGGLE_PAUSE;
         break;
+    case CONTROL_JOYSTICK_UP:
+        result.action = SYNTH_APP_LOOPER_ACTION_TOGGLE_RECORD_METRONOME;
+        result.status = "REC MET";
+        break;
     default:
         break;
     }

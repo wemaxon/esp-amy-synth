@@ -424,9 +424,16 @@ static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
     if (!current_waiting) {
         draw_looper_meter(display, model, 5);
     } else if (model->looper.bar_count == 0) {
-        pocket_oled_draw_text_row(display, 5, "BARS FREE");
+        draw_rowf(display,
+                  5,
+                  "BARS FREE MET %s",
+                  model->looper.record_metronome_enabled ? "ON" : "OFF");
     } else {
-        draw_rowf(display, 5, "BARS %u", (unsigned)model->looper.bar_count);
+        draw_rowf(display,
+                  5,
+                  "BARS %u MET %s",
+                  (unsigned)model->looper.bar_count,
+                  model->looper.record_metronome_enabled ? "ON" : "OFF");
     }
     if (mixer) {
         draw_rowf(display,
@@ -434,6 +441,11 @@ static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
                   "%s MET %s",
                   model->looper.paused ? "PAUSED" : (model->looper.solo_active ? "SOLO" : "PLAY"),
                   model->looper.metronome_enabled ? "ON" : "OFF");
+    } else if (current_waiting) {
+        draw_rowf(display,
+                  6,
+                  "REC MET %s",
+                  model->looper.record_metronome_enabled ? "ON" : "OFF");
     } else if (model->looper.paused) {
         pocket_oled_draw_text_row(display, 6, "PAUSED");
     } else if (model->looper.master_ms > 0) {

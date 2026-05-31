@@ -150,8 +150,6 @@ pip install -e .
 
 ## ToDo
 - Validate remaining chord-engine edge cases against hardware/manual examples.
-- ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS nötig? Umstellen auf interrupt oder langsames polling?
-
 
 - Implement the hichord calibration flow
 - Wire and validate the ADS1115 wheel hardware (`ESP_POCKET_AUDIO_WHEEL_ENABLED`)

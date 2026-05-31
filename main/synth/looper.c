@@ -11,6 +11,8 @@
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
+#include "synth/crossfade.h"
+#include "synth/metronome.h"
 
 typedef struct {
     int16_t *samples;
@@ -47,10 +49,7 @@ static const uint16_t GAIN_Q8_UNITY = 256;
 static const uint16_t LIVE_MIX_GAIN_Q8 = 192;
 static const uint8_t LOOP_TRACK_DEFAULT_VOLUME_PERCENT = 85;
 static const uint32_t MIN_RECORD_MS = 120;
-static const uint32_t LOOP_SEAM_CROSSFADE_MS = 30;
-static const uint16_t COUNT_IN_CLICK_FRAMES = 220;
-static const int32_t COUNT_IN_CLICK_AMP = 4200;
-static const int32_t COUNT_IN_CLICK_ACCENT_AMP = 6200;
+static const uint32_t LOOP_SEAM_CROSSFADE_MS = 50;
 static const int32_t SOFT_LIMIT_THRESHOLD = 24576;
 static const uint32_t SOFT_LIMIT_KNEE = 8191;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
@@ -77,7 +76,10 @@ static uint8_t s_current_track;
 static uint8_t s_bar_count;
 static bool s_paused;
 static bool s_initialized;
-static bool s_metronome_enabled = true;
+static uint16_t s_current_bpm = 120;
+static synth_metronome_t s_global_metronome;
+static synth_metronome_t s_record_metronome;
+static bool s_record_metronome_enabled;
 static uint8_t s_mute_mask;
 static uint8_t s_solo_mask;
 static char s_message[22] = "EMPTY";
@@ -121,20 +123,9 @@ static uint32_t bars_to_frames(uint8_t bars, uint16_t bpm)
     return (uint32_t)((beats * 60ULL * (uint64_t)s_sample_rate_hz) / (uint64_t)bpm);
 }
 
-static uint32_t count_in_frames(uint16_t bpm)
+static void set_current_bpm_locked(uint16_t bpm)
 {
-    if (bpm == 0) {
-        bpm = 120;
-    }
-    return (uint32_t)((4ULL * 60ULL * (uint64_t)s_sample_rate_hz) / (uint64_t)bpm);
-}
-
-static uint32_t beat_frames(uint16_t bpm)
-{
-    if (bpm == 0) {
-        bpm = 120;
-    }
-    return (uint32_t)((60ULL * (uint64_t)s_sample_rate_hz) / (uint64_t)bpm);
+    s_current_bpm = bpm == 0 ? 120 : bpm;
 }
 
 static size_t track_buffer_bytes(void)
@@ -154,6 +145,33 @@ static bool has_any_loop_locked(void)
 {
     for (uint8_t i = 0; i < SYNTH_LOOPER_TRACK_COUNT; ++i) {
         if (s_tracks[i].state == SYNTH_LOOPER_TRACK_LOOPING) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool record_metronome_should_run_for_track(synth_looper_track_state_t state,
+                                                  bool record_armed,
+                                                  bool sync_to_master,
+                                                  uint32_t count_in_beat_frames)
+{
+    if (state == SYNTH_LOOPER_TRACK_RECORDING) {
+        return true;
+    }
+    return state == SYNTH_LOOPER_TRACK_WAITING &&
+           record_armed &&
+           !sync_to_master &&
+           count_in_beat_frames > 0;
+}
+
+static bool record_metronome_should_run_locked(void)
+{
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        if (record_metronome_should_run_for_track(s_tracks[track].state,
+                                                  s_tracks[track].record_armed,
+                                                  s_tracks[track].sync_to_master,
+                                                  s_tracks[track].count_in_beat_frames)) {
             return true;
         }
     }
@@ -191,6 +209,7 @@ static void clear_all_locked(void)
     s_current_track = 0;
     s_mute_mask = 0;
     s_solo_mask = 0;
+    synth_metronome_set_enabled(&s_record_metronome, false, s_current_bpm, s_global_frame);
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
     memset(&s_meter, 0, sizeof(s_meter));
     s_next_meter_log_frame = 0;
@@ -434,6 +453,9 @@ static void start_recording_locked(uint8_t track, uint32_t target_frames)
     slot->record_start_frame = 0;
     slot->target_record_frames = target_frames;
     slot->count_in_beat_frames = 0;
+    if (s_record_metronome_enabled) {
+        synth_metronome_set_enabled(&s_record_metronome, true, s_current_bpm, s_global_frame);
+    }
 
     set_message_locked("REC");
 }
@@ -468,6 +490,7 @@ static void finalize_recording_locked(uint8_t track, bool auto_advance, bool com
     slot->sync_to_master = false;
     slot->count_in_beat_frames = 0;
     slot->state = SYNTH_LOOPER_TRACK_LOOPING;
+    synth_metronome_set_enabled(&s_record_metronome, false, s_current_bpm, s_global_frame);
 
     if (s_master_length_frames == 0 || track == 0) {
         s_master_length_frames = length;
@@ -502,9 +525,17 @@ static void arm_waiting_track_locked(uint8_t track, uint16_t bpm)
         }
         slot->record_armed = true;
         slot->sync_to_master = false;
-        slot->count_in_beat_frames = beat_frames(bpm);
-        slot->record_start_frame = s_global_frame + count_in_frames(bpm);
+        uint32_t beat_count = synth_metronome_beat_frames(s_sample_rate_hz, bpm);
+        uint64_t count_in_length = (uint64_t)beat_count * 4ULL;
+        slot->count_in_beat_frames = beat_count;
+        slot->record_start_frame = s_global_frame + count_in_length;
         slot->target_record_frames = target_frames;
+        if (s_record_metronome_enabled) {
+            synth_metronome_set_enabled(&s_record_metronome,
+                                       true,
+                                       bpm,
+                                       slot->record_start_frame - count_in_length);
+        }
         set_message_locked("COUNT IN");
         return;
     }
@@ -525,7 +556,11 @@ static bool process_track_should_start(const synth_looper_process_track_t *track
     return global_frame >= track->record_start_frame;
 }
 
-static void start_process_recording(synth_looper_process_track_t *track)
+static void start_process_recording(synth_looper_process_track_t *track,
+                                    synth_metronome_t *record_metronome,
+                                    bool record_metronome_enabled,
+                                    uint16_t bpm,
+                                    uint64_t global_frame)
 {
     track->state = SYNTH_LOOPER_TRACK_RECORDING;
     track->record_armed = false;
@@ -535,6 +570,9 @@ static void start_process_recording(synth_looper_process_track_t *track)
     track->record_position = 0;
     track->record_start_frame = 0;
     track->count_in_beat_frames = 0;
+    if (record_metronome_enabled && !synth_metronome_is_enabled(record_metronome)) {
+        synth_metronome_set_enabled(record_metronome, true, bpm, global_frame);
+    }
 }
 
 static void finish_process_recording(synth_looper_process_track_t *track,
@@ -564,6 +602,19 @@ static void finish_process_recording(synth_looper_process_track_t *track,
     track->count_in_beat_frames = 0;
 }
 
+static bool process_record_metronome_should_run(const synth_looper_process_track_t *tracks)
+{
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        if (record_metronome_should_run_for_track(tracks[track].state,
+                                                  tracks[track].record_armed,
+                                                  tracks[track].sync_to_master,
+                                                  tracks[track].count_in_beat_frames)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool process_track_recording(synth_looper_process_track_t *track,
                                     const int16_t *block,
                                     uint32_t frame,
@@ -587,43 +638,6 @@ static bool process_track_recording(synth_looper_process_track_t *track,
         return true;
     }
     return track->record_position >= s_capacity_frames;
-}
-
-static int32_t count_in_click_sample(const synth_looper_process_track_t *track,
-                                     uint64_t global_frame,
-                                     bool metronome_enabled)
-{
-    if (!metronome_enabled) {
-        return 0;
-    }
-    if (track->state != SYNTH_LOOPER_TRACK_WAITING ||
-        !track->record_armed ||
-        track->sync_to_master ||
-        track->count_in_beat_frames == 0 ||
-        global_frame >= track->record_start_frame) {
-        return 0;
-    }
-
-    uint64_t count_in_length = (uint64_t)track->count_in_beat_frames * 4ULL;
-    if (track->record_start_frame < count_in_length) {
-        return 0;
-    }
-    uint64_t count_in_start = track->record_start_frame - count_in_length;
-    if (global_frame < count_in_start) {
-        return 0;
-    }
-
-    uint64_t count_in_offset = global_frame - count_in_start;
-    uint32_t beat_offset = (uint32_t)(count_in_offset % track->count_in_beat_frames);
-    if (beat_offset >= COUNT_IN_CLICK_FRAMES) {
-        return 0;
-    }
-
-    uint32_t beat_index = (uint32_t)(count_in_offset / track->count_in_beat_frames);
-    int32_t amplitude = beat_index == 0 ? COUNT_IN_CLICK_ACCENT_AMP : COUNT_IN_CLICK_AMP;
-    int32_t envelope = (amplitude * (int32_t)(COUNT_IN_CLICK_FRAMES - beat_offset)) /
-                       (int32_t)COUNT_IN_CLICK_FRAMES;
-    return ((beat_offset / 8U) & 1U) != 0 ? -envelope : envelope;
 }
 
 static bool process_track_playback(synth_looper_process_track_t *track,
@@ -653,10 +667,8 @@ static bool process_track_playback(synth_looper_process_track_t *track,
     uint32_t crossfade_frames = seam_crossfade_frames_for_length(track->length_frames);
     if (crossfade_frames > 0 && position >= track->length_frames - crossfade_frames) {
         uint32_t tail_offset = position - (track->length_frames - crossfade_frames);
-        int32_t head = decode_sample(track->samples[tail_offset]);
-        int32_t tail_weight = (int32_t)(crossfade_frames - tail_offset - 1U);
-        int32_t head_weight = (int32_t)(tail_offset + 1U);
-        sample = (sample * tail_weight + head * head_weight) / (int32_t)crossfade_frames;
+        int32_t head = decode_sample(track->samples[0]);
+        sample = synth_crossfade_smooth_i32(sample, head, tail_offset, crossfade_frames);
     }
     sample = apply_percent_gain(sample, track->volume_percent);
     *mixed_sample += sample;
@@ -675,6 +687,8 @@ esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
     s_sample_rate_hz = sample_rate_hz;
     s_channel_count = channel_count;
     s_capacity_frames = sample_rate_hz * SYNTH_LOOPER_MAX_SECONDS;
+    synth_metronome_init(&s_global_metronome, sample_rate_hz);
+    synth_metronome_init(&s_record_metronome, sample_rate_hz);
     clear_all_locked();
     s_initialized = true;
     ESP_RETURN_ON_ERROR(allocate_all_track_buffers(), TAG, "looper preallocation failed");
@@ -702,7 +716,10 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     bool completed[SYNTH_LOOPER_TRACK_COUNT] = {0};
     bool has_active_track = false;
     bool paused = false;
-    bool metronome_enabled = true;
+    bool record_metronome_enabled = false;
+    uint16_t current_bpm = 120;
+    synth_metronome_t global_metronome = {0};
+    synth_metronome_t record_metronome = {0};
     uint32_t master_length_frames = 0;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
     uint32_t live_peak = 0;
@@ -716,7 +733,10 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     uint64_t block_start = s_global_frame;
     s_global_frame += frames;
     paused = s_paused;
-    metronome_enabled = s_metronome_enabled;
+    current_bpm = s_current_bpm;
+    record_metronome_enabled = s_record_metronome_enabled;
+    global_metronome = s_global_metronome;
+    record_metronome = s_record_metronome;
     master_length_frames = s_master_length_frames;
     for (uint8_t i = 0; i < SYNTH_LOOPER_TRACK_COUNT; ++i) {
         process_tracks[i].samples = s_tracks[i].samples;
@@ -740,7 +760,10 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     }
     portEXIT_CRITICAL(&s_mux);
 
-    if (paused || !has_active_track) {
+    if (paused ||
+        (!has_active_track &&
+         !synth_metronome_is_enabled(&global_metronome) &&
+         !synth_metronome_is_enabled(&record_metronome))) {
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
         portENTER_CRITICAL(&s_mux);
         memset(&s_meter, 0, sizeof(s_meter));
@@ -760,13 +783,18 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
         int32_t loop_mix = 0;
         uint8_t active_playback_tracks = 0;
 
-        for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
-            click_mix += count_in_click_sample(&process_tracks[track], global_frame, metronome_enabled);
+        click_mix = synth_metronome_sample(&global_metronome, global_frame);
+        if (!synth_metronome_is_enabled(&global_metronome)) {
+            click_mix += synth_metronome_sample(&record_metronome, global_frame);
         }
 
         for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
             if (process_track_should_start(&process_tracks[track], global_frame, master_cycle_start)) {
-                start_process_recording(&process_tracks[track]);
+                start_process_recording(&process_tracks[track],
+                                        &record_metronome,
+                                        record_metronome_enabled,
+                                        current_bpm,
+                                        global_frame);
                 started[track] = true;
             }
         }
@@ -783,6 +811,10 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
                     process_master_length = process_tracks[track].length_frames;
                 }
             }
+        }
+
+        if (!process_record_metronome_should_run(process_tracks)) {
+            synth_metronome_set_enabled(&record_metronome, false, current_bpm, global_frame);
         }
 
         for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
@@ -847,6 +879,7 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
     s_meter = block_meter;
 #endif
+    s_record_metronome = record_metronome;
     for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
         synth_looper_track_t *slot = &s_tracks[track];
         if (slot->samples != process_tracks[track].samples) {
@@ -918,6 +951,7 @@ esp_err_t synth_looper_click(uint16_t bpm)
     }
 
     portENTER_CRITICAL(&s_mux);
+    set_current_bpm_locked(bpm);
     synth_looper_track_t *slot = &s_tracks[track];
     switch (slot->state) {
     case SYNTH_LOOPER_TRACK_EMPTY:
@@ -1110,7 +1144,7 @@ esp_err_t synth_looper_toggle_track_solo(uint8_t track)
     return ESP_OK;
 }
 
-esp_err_t synth_looper_toggle_metronome(void)
+esp_err_t synth_looper_toggle_metronome(uint16_t bpm)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -1118,12 +1152,57 @@ esp_err_t synth_looper_toggle_metronome(void)
 
     bool enabled = false;
     portENTER_CRITICAL(&s_mux);
-    s_metronome_enabled = !s_metronome_enabled;
-    enabled = s_metronome_enabled;
+    set_current_bpm_locked(bpm);
+    enabled = synth_metronome_toggle(&s_global_metronome, bpm, s_global_frame);
     set_message_locked(enabled ? "MET ON" : "MET OFF");
     portEXIT_CRITICAL(&s_mux);
 
     ESP_LOGI(TAG, "metronome=%s", enabled ? "on" : "off");
+    return ESP_OK;
+}
+
+esp_err_t synth_looper_toggle_record_metronome(uint16_t bpm)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    bool enabled = false;
+    portENTER_CRITICAL(&s_mux);
+    set_current_bpm_locked(bpm);
+    s_record_metronome_enabled = !s_record_metronome_enabled;
+    enabled = s_record_metronome_enabled;
+    if (!enabled) {
+        synth_metronome_set_enabled(&s_record_metronome, false, s_current_bpm, s_global_frame);
+    } else if (record_metronome_should_run_locked()) {
+        synth_metronome_set_enabled(&s_record_metronome, true, s_current_bpm, s_global_frame);
+    } else {
+        synth_metronome_set_timing(&s_record_metronome, s_current_bpm, s_global_frame);
+    }
+    set_message_locked(enabled ? "REC MET ON" : "REC MET OFF");
+    portEXIT_CRITICAL(&s_mux);
+
+    ESP_LOGI(TAG, "record metronome=%s", enabled ? "on" : "off");
+    return ESP_OK;
+}
+
+esp_err_t synth_looper_set_metronome_bpm(uint16_t bpm)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    portENTER_CRITICAL(&s_mux);
+    set_current_bpm_locked(bpm);
+    if (synth_metronome_is_enabled(&s_global_metronome)) {
+        synth_metronome_set_bpm_preserve_phase(&s_global_metronome, s_current_bpm, s_global_frame);
+    }
+    if (synth_metronome_is_enabled(&s_record_metronome)) {
+        synth_metronome_set_bpm_preserve_phase(&s_record_metronome, s_current_bpm, s_global_frame);
+    } else if (s_record_metronome_enabled) {
+        synth_metronome_set_timing(&s_record_metronome, s_current_bpm, s_global_frame);
+    }
+    portEXIT_CRITICAL(&s_mux);
     return ESP_OK;
 }
 
@@ -1228,7 +1307,9 @@ void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot)
     snapshot->page = s_current_track / SYNTH_LOOPER_TRACKS_PER_PAGE;
     snapshot->bar_count = s_bar_count;
     snapshot->paused = s_paused;
-    snapshot->metronome_enabled = s_metronome_enabled;
+    snapshot->metronome_enabled = synth_metronome_is_enabled(&s_global_metronome);
+    snapshot->record_metronome_enabled = s_record_metronome_enabled;
+    snapshot->record_metronome_active = synth_metronome_is_enabled(&s_record_metronome);
     snapshot->solo_active = s_solo_mask != 0;
     snapshot->master_ms = frames_to_ms(s_master_length_frames);
     snapshot->max_seconds = SYNTH_LOOPER_MAX_SECONDS;

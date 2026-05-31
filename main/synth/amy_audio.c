@@ -1,12 +1,10 @@
 #include "synth/amy_audio.h"
 
-#include <stdbool.h>
 #include <stddef.h>
 
 #include "amy.h"
 #include "driver/i2s_std.h"
 #include "esp_log.h"
-#include "esp_pocket_audio_board_config.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -25,45 +23,6 @@ static const BaseType_t AUDIO_TASK_CORE = 1;
 static synth_amy_audio_config_t s_config;
 static TaskHandle_t s_audio_task;
 
-#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
-static bool s_output_declick_ready;
-static int16_t s_output_declick_last[AMY_NCHANS];
-
-static void output_declick_process(int16_t *block, uint32_t frames, uint8_t channels)
-{
-    if (block == NULL || frames == 0 || channels == 0 || channels > AMY_NCHANS) {
-        return;
-    }
-
-    uint32_t fade_frames = ESP_POCKET_AUDIO_OUTPUT_DECLICK_FRAMES;
-    if (fade_frames == 0) {
-        return;
-    }
-    if (fade_frames > frames) {
-        fade_frames = frames;
-    }
-
-    if (s_output_declick_ready) {
-        for (uint32_t frame = 0; frame < fade_frames; ++frame) {
-            int32_t mix = (int32_t)(frame + 1U);
-            int32_t denom = (int32_t)(fade_frames + 1U);
-            for (uint8_t channel = 0; channel < channels; ++channel) {
-                uint32_t index = frame * channels + channel;
-                int32_t previous = s_output_declick_last[channel];
-                int32_t current = block[index];
-                block[index] = (int16_t)(previous + (((current - previous) * mix) / denom));
-            }
-        }
-    }
-
-    uint32_t last_frame = frames - 1U;
-    for (uint8_t channel = 0; channel < channels; ++channel) {
-        s_output_declick_last[channel] = block[last_frame * channels + channel];
-    }
-    s_output_declick_ready = true;
-}
-#endif
-
 static void audio_task(void *arg)
 {
     (void)arg;
@@ -76,9 +35,6 @@ static void audio_task(void *arg)
         int64_t flanger_done_us = esp_timer_get_time();
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
         int64_t looper_done_us = esp_timer_get_time();
-#if ESP_POCKET_AUDIO_OUTPUT_DECLICK_ENABLED
-        output_declick_process(block, AMY_BLOCK_SIZE, AMY_NCHANS);
-#endif
         int64_t render_done_us = esp_timer_get_time();
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(

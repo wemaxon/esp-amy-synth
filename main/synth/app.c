@@ -13,18 +13,19 @@
 #include "hmi/keymap.h"
 #include "hmi/play_ui.h"
 #include "synth/amy_engine.h"
-#include "synth/app_chord_tools.h"
-#include "synth/app_chords.h"
-#include "synth/app_key.h"
-#include "synth/app_looper.h"
-#include "synth/app_mixer.h"
-#include "synth/app_modulation.h"
-#include "synth/app_play_state.h"
-#include "synth/app_rhythm.h"
-#include "synth/app_settings.h"
-#include "synth/app_sound.h"
-#include "synth/app_tempo.h"
-#include "synth/app_wheel.h"
+#include "synth/app/chord_tools.h"
+#include "synth/app/chords.h"
+#include "synth/app/effects.h"
+#include "synth/app/key.h"
+#include "synth/app/looper.h"
+#include "synth/app/mixer.h"
+#include "synth/app/modulation.h"
+#include "synth/app/play_state.h"
+#include "synth/app/rhythm.h"
+#include "synth/app/settings.h"
+#include "synth/app/sound.h"
+#include "synth/app/tempo.h"
+#include "synth/app/wheel.h"
 #include "synth/chord_engine.h"
 #include "synth/looper.h"
 #include "synth/play_mode.h"
@@ -42,17 +43,7 @@ typedef struct {
     synth_app_sound_t sound;
     synth_play_mode_t mode;
     synth_app_tempo_t tempo;
-    uint8_t effect_index;
-    bool effects[PLAY_UI_EFFECT_COUNT];
-    uint8_t lfo_level;
-    uint8_t delay_level;
-    uint8_t tremolo_level;
-    uint8_t voice_level;
-    uint8_t adsr_preset;
-    bool adsr_modified;
-    uint32_t attack_ms;
-    uint32_t release_ms;
-    uint8_t glide_level;
+    synth_app_effects_t fx;
     synth_app_modulation_t lfo;
     synth_app_modulation_t tremolo;
     synth_app_wheel_t wheel;
@@ -93,16 +84,7 @@ static synth_app_state_t s_app = {
     .sound = SYNTH_APP_SOUND_INITIALIZER(SYNTH_SOUND_SAW),
     .mode = SYNTH_PLAY_MODE_PLAY,
     .tempo = SYNTH_APP_TEMPO_INITIALIZER,
-    .effect_index = PLAY_UI_EFFECT_JOYSTICK,
-    .effects = {
-        [PLAY_UI_EFFECT_FILTER] = true,
-        [PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0,
-    },
-    .adsr_preset = SYNTH_APP_ADSR_DEFAULT_PRESET,
-    .adsr_modified = false,
-    .attack_ms = SYNTH_APP_ADSR_DEFAULT_ATTACK_MS,
-    .release_ms = SYNTH_APP_ADSR_DEFAULT_RELEASE_MS,
-    .glide_level = 0,
+    .fx = SYNTH_APP_EFFECTS_INITIALIZER,
     .play = SYNTH_APP_PLAY_STATE_INITIALIZER,
     .wheel = SYNTH_APP_WHEEL_INITIALIZER,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
@@ -165,14 +147,7 @@ static bool any_chord_locked(void)
 
 static synth_amy_envelope_t current_envelope(void)
 {
-    synth_amy_envelope_t envelope = synth_app_adsr_preset_envelope(s_app.adsr_preset);
-    envelope.attack_ms = s_app.attack_ms;
-    envelope.release_ms = s_app.release_ms;
-    uint32_t repeat_cap_ms = synth_app_adsr_repeat_release_cap_ms();
-    if (s_app.mode == SYNTH_PLAY_MODE_REPEAT && envelope.release_ms > repeat_cap_ms) {
-        envelope.release_ms = repeat_cap_ms;
-    }
-    return envelope;
+    return synth_app_effects_envelope(&s_app.fx, s_app.mode == SYNTH_PLAY_MODE_REPEAT);
 }
 
 static void apply_current_envelope(void)
@@ -186,14 +161,14 @@ static void apply_current_envelope(void)
 
 static void apply_current_envelope_if_modified(void)
 {
-    if (s_app.adsr_modified) {
+    if (s_app.fx.adsr_modified) {
         apply_current_envelope();
     }
 }
 
 static uint16_t current_glide_ms(void)
 {
-    return synth_app_glide_ms(s_app.glide_level);
+    return synth_app_effects_glide_ms(&s_app.fx);
 }
 
 static void apply_current_glide(void)
@@ -228,16 +203,16 @@ static void update_ui(void)
     model.repeat_rate = s_app.play.repeat_rate;
     model.held_mask = s_app.chords.held_mask;
     model.focus_slot = s_app.chords.focus_slot;
-    model.effect_index = s_app.effect_index;
-    memcpy(model.effects, s_app.effects, sizeof(model.effects));
-    model.lfo_level = s_app.lfo_level;
-    model.delay_level = s_app.delay_level;
-    model.tremolo_level = s_app.tremolo_level;
-    model.voice_level = s_app.voice_level;
-    model.adsr_preset = s_app.adsr_preset;
-    model.attack_ms = s_app.attack_ms;
-    model.release_ms = s_app.release_ms;
-    model.glide_level = s_app.glide_level;
+    model.effect_index = s_app.fx.effect_index;
+    memcpy(model.effects, s_app.fx.enabled, sizeof(model.effects));
+    model.lfo_level = s_app.fx.lfo_level;
+    model.delay_level = s_app.fx.delay_level;
+    model.tremolo_level = s_app.fx.tremolo_level;
+    model.voice_level = s_app.fx.voice_level;
+    model.adsr_preset = s_app.fx.adsr_preset;
+    model.attack_ms = s_app.fx.attack_ms;
+    model.release_ms = s_app.fx.release_ms;
+    model.glide_level = s_app.fx.glide_level;
     model.wheel_present = synth_app_wheel_present(&s_app.wheel);
     model.wheel_percent = synth_app_wheel_percent(&s_app.wheel);
     model.volume_percent = synth_app_wheel_volume_percent(&s_app.wheel);
@@ -457,7 +432,7 @@ static void update_repeat(void)
 static void update_lfo(void)
 {
     float pitch_semitones = 0.0f;
-    if (!synth_app_lfo_pitch(&s_app.lfo, s_app.lfo_level, xTaskGetTickCount(), &pitch_semitones)) {
+    if (!synth_app_lfo_pitch(&s_app.lfo, s_app.fx.lfo_level, xTaskGetTickCount(), &pitch_semitones)) {
         return;
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_lfo_pitch(pitch_semitones));
@@ -467,7 +442,7 @@ static void update_tremolo(void)
 {
     float amount = 0.0f;
     if (!synth_app_tremolo_amount(&s_app.tremolo,
-                                  s_app.tremolo_level,
+                                  s_app.fx.tremolo_level,
                                   current_bpm(),
                                   xTaskGetTickCount(),
                                   &amount)) {
@@ -1032,11 +1007,7 @@ static void step_sound(int8_t steps)
 
 static void step_effect(int8_t steps)
 {
-    int value = (int)s_app.effect_index + steps;
-    while (value < 0) {
-        value += PLAY_UI_EFFECT_COUNT;
-    }
-    s_app.effect_index = (uint8_t)(value % PLAY_UI_EFFECT_COUNT);
+    synth_app_effects_step_selected(&s_app.fx, steps);
     set_status("EFFECT SELECT");
     update_ui();
 }
@@ -1135,12 +1106,10 @@ static void toggle_focused_chord_lock(void)
 
 static void step_lfo_level(void)
 {
-    size_t level_count = synth_app_lfo_level_count();
-    s_app.lfo_level = (uint8_t)((s_app.lfo_level + 1U) % level_count);
-    s_app.effects[PLAY_UI_EFFECT_LFO] = s_app.lfo_level > 0;
+    synth_app_effects_step_lfo_level(&s_app.fx);
     synth_app_modulation_reset(&s_app.lfo, xTaskGetTickCount());
 
-    esp_err_t err = synth_amy_set_lfo_enabled(s_app.effects[PLAY_UI_EFFECT_LFO]);
+    esp_err_t err = synth_amy_set_lfo_enabled(s_app.fx.enabled[PLAY_UI_EFFECT_LFO]);
     if (err == ESP_OK) {
         err = synth_amy_set_lfo_pitch(0.0f);
     }
@@ -1150,10 +1119,10 @@ static void step_lfo_level(void)
 
     ESP_LOGI(TAG,
              "lfo=%s level=%u depth=%.2f semitones",
-             s_app.effects[PLAY_UI_EFFECT_LFO] ? "on" : "off",
-             s_app.lfo_level,
-             synth_app_lfo_depth_semitones(s_app.lfo_level));
-    set_status(s_app.effects[PLAY_UI_EFFECT_LFO] ? "LFO ON" : "LFO OFF");
+             s_app.fx.enabled[PLAY_UI_EFFECT_LFO] ? "on" : "off",
+             s_app.fx.lfo_level,
+             synth_app_lfo_depth_semitones(s_app.fx.lfo_level));
+    set_status(s_app.fx.enabled[PLAY_UI_EFFECT_LFO] ? "LFO ON" : "LFO OFF");
     update_ui();
 }
 
@@ -1164,35 +1133,32 @@ static float delay_ms_for_level(uint8_t level)
 
 static void apply_delay_level(void)
 {
-    float delay_ms = delay_ms_for_level(s_app.delay_level);
-    bool enabled = s_app.delay_level > 0;
-    s_app.effects[PLAY_UI_EFFECT_DELAY] = enabled;
+    float delay_ms = delay_ms_for_level(s_app.fx.delay_level);
+    bool enabled = s_app.fx.delay_level > 0;
+    s_app.fx.enabled[PLAY_UI_EFFECT_DELAY] = enabled;
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_delay_enabled(enabled, delay_ms));
 }
 
 static void step_delay_level(void)
 {
-    size_t level_count = synth_app_delay_level_count();
-    s_app.delay_level = (uint8_t)((s_app.delay_level + 1U) % level_count);
+    synth_app_effects_step_delay_level(&s_app.fx);
     apply_delay_level();
 
     ESP_LOGI(TAG,
              "delay=%s level=%s time=%.1f ms",
-             s_app.effects[PLAY_UI_EFFECT_DELAY] ? "on" : "off",
-             synth_app_delay_level_name(s_app.delay_level),
-             delay_ms_for_level(s_app.delay_level));
-    set_status(s_app.effects[PLAY_UI_EFFECT_DELAY] ? "DELAY ON" : "DELAY OFF");
+             s_app.fx.enabled[PLAY_UI_EFFECT_DELAY] ? "on" : "off",
+             synth_app_delay_level_name(s_app.fx.delay_level),
+             delay_ms_for_level(s_app.fx.delay_level));
+    set_status(s_app.fx.enabled[PLAY_UI_EFFECT_DELAY] ? "DELAY ON" : "DELAY OFF");
     update_ui();
 }
 
 static void step_tremolo_level(void)
 {
-    size_t level_count = synth_app_tremolo_level_count();
-    s_app.tremolo_level = (uint8_t)((s_app.tremolo_level + 1U) % level_count);
-    s_app.effects[PLAY_UI_EFFECT_TREMOLO] = s_app.tremolo_level > 0;
+    synth_app_effects_step_tremolo_level(&s_app.fx);
     synth_app_modulation_reset(&s_app.tremolo, xTaskGetTickCount());
 
-    esp_err_t err = synth_amy_set_tremolo_enabled(s_app.effects[PLAY_UI_EFFECT_TREMOLO]);
+    esp_err_t err = synth_amy_set_tremolo_enabled(s_app.fx.enabled[PLAY_UI_EFFECT_TREMOLO]);
     if (err == ESP_OK) {
         err = synth_amy_set_tremolo_amount(0.0f);
     }
@@ -1202,18 +1168,17 @@ static void step_tremolo_level(void)
 
     ESP_LOGI(TAG,
              "tremolo=%s level=%s rate=%.2f Hz",
-             s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "on" : "off",
-             synth_app_tremolo_level_name(s_app.tremolo_level),
-             synth_app_tremolo_rate_hz(s_app.tremolo_level, current_bpm()));
-    set_status(s_app.effects[PLAY_UI_EFFECT_TREMOLO] ? "TREM ON" : "TREM OFF");
+             s_app.fx.enabled[PLAY_UI_EFFECT_TREMOLO] ? "on" : "off",
+             synth_app_tremolo_level_name(s_app.fx.tremolo_level),
+             synth_app_tremolo_rate_hz(s_app.fx.tremolo_level, current_bpm()));
+    set_status(s_app.fx.enabled[PLAY_UI_EFFECT_TREMOLO] ? "TREM ON" : "TREM OFF");
     update_ui();
 }
 
 static void step_voice_level(void)
 {
-    size_t level_count = synth_app_voice_level_count();
-    s_app.voice_level = (uint8_t)((s_app.voice_level + 1U) % level_count);
-    uint8_t voice_limit = synth_app_voice_limit(s_app.voice_level);
+    synth_app_effects_step_voice_level(&s_app.fx);
+    uint8_t voice_limit = synth_app_voice_limit(s_app.fx.voice_level);
     esp_err_t err = synth_amy_set_voice_limit(voice_limit);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to apply voice count: %s", esp_err_to_name(err));
@@ -1221,7 +1186,7 @@ static void step_voice_level(void)
 
     ESP_LOGI(TAG,
              "voices=%s limit=%u",
-             synth_app_voice_level_name(s_app.voice_level),
+             synth_app_voice_level_name(s_app.fx.voice_level),
              (unsigned)voice_limit);
     set_status("VOICES");
     refresh_held_chords();
@@ -1230,21 +1195,18 @@ static void step_voice_level(void)
 
 static void step_adsr_preset(void)
 {
-    s_app.adsr_preset = (uint8_t)((s_app.adsr_preset + 1U) % SYNTH_APP_ADSR_PRESET_COUNT);
-    synth_amy_envelope_t preset = synth_app_adsr_preset_envelope(s_app.adsr_preset);
-    const char *preset_name = synth_app_adsr_preset_name(s_app.adsr_preset);
-    s_app.attack_ms = preset.attack_ms;
-    s_app.release_ms = preset.release_ms;
-    s_app.adsr_modified = true;
+    synth_app_effects_step_adsr_preset(&s_app.fx);
+    synth_amy_envelope_t preset = synth_app_adsr_preset_envelope(s_app.fx.adsr_preset);
+    const char *preset_name = synth_app_adsr_preset_name(s_app.fx.adsr_preset);
     apply_current_envelope();
 
     ESP_LOGI(TAG,
              "adsr=%s attack=%lu decay=%lu sustain=%.2f release=%lu",
              preset_name,
-             (unsigned long)s_app.attack_ms,
+             (unsigned long)s_app.fx.attack_ms,
              (unsigned long)preset.decay_ms,
              preset.sustain_level,
-             (unsigned long)s_app.release_ms);
+             (unsigned long)s_app.fx.release_ms);
     set_status(preset_name);
     refresh_held_chords();
     update_ui();
@@ -1252,21 +1214,20 @@ static void step_adsr_preset(void)
 
 static void step_glide_level(void)
 {
-    size_t level_count = synth_app_glide_level_count();
-    s_app.glide_level = (uint8_t)((s_app.glide_level + 1U) % level_count);
+    synth_app_effects_step_glide_level(&s_app.fx);
     apply_current_glide();
 
     ESP_LOGI(TAG,
              "glide=%s portamento=%ums",
-             synth_app_glide_level_name(s_app.glide_level),
+             synth_app_glide_level_name(s_app.fx.glide_level),
              (unsigned)current_glide_ms());
-    set_status(s_app.glide_level == 0 ? "GLIDE OFF" : "GLIDE ON");
+    set_status(s_app.fx.glide_level == 0 ? "GLIDE OFF" : "GLIDE ON");
     update_ui();
 }
 
 static void toggle_current_effect(void)
 {
-    play_ui_effect_t effect = (play_ui_effect_t)(s_app.effect_index % PLAY_UI_EFFECT_COUNT);
+    play_ui_effect_t effect = synth_app_effects_selected(&s_app.fx);
     if (effect == PLAY_UI_EFFECT_JOYSTICK) {
         step_joystick_mode();
         return;
@@ -1304,23 +1265,23 @@ static void toggle_current_effect(void)
         return;
     }
 
-    s_app.effects[effect] = !s_app.effects[effect];
+    synth_app_effects_toggle_enabled(&s_app.fx, effect);
     esp_err_t err = ESP_OK;
     switch (effect) {
     case PLAY_UI_EFFECT_REVERB:
-        err = synth_amy_set_reverb_enabled(s_app.effects[effect]);
+        err = synth_amy_set_reverb_enabled(s_app.fx.enabled[effect]);
         break;
     case PLAY_UI_EFFECT_CHORUS:
-        err = synth_amy_set_chorus_enabled(s_app.effects[effect]);
+        err = synth_amy_set_chorus_enabled(s_app.fx.enabled[effect]);
         break;
     case PLAY_UI_EFFECT_STEREO:
-        err = synth_amy_set_stereo_enabled(s_app.effects[effect]);
+        err = synth_amy_set_stereo_enabled(s_app.fx.enabled[effect]);
         break;
     case PLAY_UI_EFFECT_FILTER:
-        err = synth_amy_set_filter_enabled(s_app.effects[effect]);
+        err = synth_amy_set_filter_enabled(s_app.fx.enabled[effect]);
         break;
     case PLAY_UI_EFFECT_FLANGER:
-        err = synth_amy_set_flanger_enabled(s_app.effects[effect]);
+        err = synth_amy_set_flanger_enabled(s_app.fx.enabled[effect]);
         break;
     default:
         break;
@@ -1328,8 +1289,8 @@ static void toggle_current_effect(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to apply %s: %s", play_ui_effect_name(effect), esp_err_to_name(err));
     }
-    ESP_LOGI(TAG, "%s=%s", play_ui_effect_name(effect), s_app.effects[effect] ? "on" : "off");
-    set_status(s_app.effects[effect] ? "FX ON" : "FX OFF");
+    ESP_LOGI(TAG, "%s=%s", play_ui_effect_name(effect), s_app.fx.enabled[effect] ? "on" : "off");
+    set_status(s_app.fx.enabled[effect] ? "FX ON" : "FX OFF");
     update_ui();
 }
 
@@ -1366,7 +1327,7 @@ static void step_bpm(int16_t delta)
     }
 
     ESP_LOGI(TAG, "bpm=%u", current_bpm());
-    if (s_app.effects[PLAY_UI_EFFECT_DELAY]) {
+    if (s_app.fx.enabled[PLAY_UI_EFFECT_DELAY]) {
         apply_delay_level();
     }
     set_status("BPM CHANGED");
@@ -1449,13 +1410,11 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
     }
 
     if (target == SYNTH_APP_WHEEL_TARGET_ATTACK) {
-        s_app.attack_ms = synth_app_attack_ms_from_wheel(wheel->percent);
-        s_app.adsr_modified = true;
+        synth_app_effects_set_attack_ms(&s_app.fx, synth_app_attack_ms_from_wheel(wheel->percent));
         apply_current_envelope();
         set_status("ATTACK");
     } else if (target == SYNTH_APP_WHEEL_TARGET_RELEASE) {
-        s_app.release_ms = synth_app_release_ms_from_wheel(wheel->percent);
-        s_app.adsr_modified = true;
+        synth_app_effects_set_release_ms(&s_app.fx, synth_app_release_ms_from_wheel(wheel->percent));
         apply_current_envelope();
         set_status("RELEASE");
     } else if (target == SYNTH_APP_WHEEL_TARGET_FILTER) {
@@ -1709,7 +1668,7 @@ static void handle_mode_button_tap(void)
         return;
     }
 
-    if (s_app.effects[PLAY_UI_EFFECT_DELAY]) {
+    if (s_app.fx.enabled[PLAY_UI_EFFECT_DELAY]) {
         apply_delay_level();
     }
     ESP_LOGI(TAG, "tap tempo bpm=%u taps=%u", tap.bpm, tap.tap_count);

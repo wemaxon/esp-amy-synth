@@ -12,10 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 CHORD_C = ROOT / "main" / "synth" / "chord_engine.c"
 CHORD_H = ROOT / "main" / "synth" / "chord_engine.h"
 APP_C = ROOT / "main" / "synth" / "app.c"
-APP_CHORD_TOOLS_C = ROOT / "main" / "synth" / "app_chord_tools.c"
-APP_KEY_C = ROOT / "main" / "synth" / "app_key.c"
-APP_KEY_H = ROOT / "main" / "synth" / "app_key.h"
-APP_SETTINGS_C = ROOT / "main" / "synth" / "app_settings.c"
+APP_CHORD_TOOLS_C = ROOT / "main" / "synth" / "app" / "chord_tools.c"
+APP_EFFECTS_C = ROOT / "main" / "synth" / "app" / "effects.c"
+APP_EFFECTS_H = ROOT / "main" / "synth" / "app" / "effects.h"
+APP_KEY_C = ROOT / "main" / "synth" / "app" / "key.c"
+APP_KEY_H = ROOT / "main" / "synth" / "app" / "key.h"
+APP_SETTINGS_C = ROOT / "main" / "synth" / "app" / "settings.c"
 AMY_C = ROOT / "main" / "synth" / "amy_engine.c"
 AMY_H = ROOT / "main" / "synth" / "amy_engine.h"
 AMY_RUNTIME_C = ROOT / "main" / "synth" / "amy_runtime.c"
@@ -373,7 +375,7 @@ def assert_voice_count_control(
         "app voice levels must map HiChord 8/4/2/1 to engine limits 6/4/2/1",
     )
     require(
-        "synth_app_voice_limit(s_app.voice_level)" in app_c and "synth_amy_set_voice_limit(voice_limit)" in app_c,
+        "synth_app_voice_limit(s_app.fx.voice_level)" in app_c and "synth_amy_set_voice_limit(voice_limit)" in app_c,
         "voice-count effect must call AMY voice limiter",
     )
     require("PLAY_UI_EFFECT_VOICE_COUNT" in toggle_body, "voice-count effect must be handled explicitly")
@@ -384,6 +386,7 @@ def assert_voice_count_control(
 
 def assert_adsr_control(
     app_c: str,
+    app_effects_c: str,
     app_settings_c: str,
     amy_c: str,
     amy_h: str,
@@ -409,7 +412,12 @@ def assert_adsr_control(
         require(preset in app_settings_c, f"missing exact ADSR preset {preset}")
     require("PLAY_UI_EFFECT_ADSR" in play_ui_h and "uint32_t attack_ms;" in play_ui_h, "play UI ADSR model missing")
     require("PLAY_UI_EFFECT_ADSR" in play_ui_c and '"ADSR %s"' in play_ui_c, "ADSR UI row missing")
-    require("step_adsr_preset" in app_c and "synth_amy_set_envelope(&envelope)" in app_c, "ADSR preset cycling missing")
+    require(
+        "step_adsr_preset" in app_c and
+        "synth_app_effects_step_adsr_preset(&s_app.fx)" in app_c and
+        "synth_amy_set_envelope(&envelope)" in app_c,
+        "ADSR preset cycling missing",
+    )
     require("controls_switch_is_pressed(CONTROL_KEY_MENU)" in wheel_target_body, "Gray+wheel attack control missing")
     require("synth_app_attack_ms_from_wheel" in apply_wheel_body, "attack wheel range missing")
     require("ATTACK_MIN_MS" in app_settings_c and "ATTACK_MAX_MS" in app_settings_c, "attack wheel range missing")
@@ -417,7 +425,11 @@ def assert_adsr_control(
     require("synth_app_release_ms_from_wheel" in apply_wheel_body, "release wheel range missing")
     require("RELEASE_MIN_MS" in app_settings_c and "RELEASE_MAX_MS" in app_settings_c, "release wheel range missing")
     require("controls_switch_is_pressed(CONTROL_MODE_MENU)" in wheel_target_body, "Red+wheel filter shortcut missing")
-    require("synth_app_adsr_repeat_release_cap_ms" in current_envelope_body, "repeat mode must cap envelope release")
+    require(
+        "synth_app_effects_envelope(&s_app.fx" in current_envelope_body and
+        "synth_app_adsr_repeat_release_cap_ms" in app_effects_c,
+        "repeat mode must cap envelope release",
+    )
     require("REPEAT_RELEASE_CAP_MS" in app_settings_c, "repeat mode must cap envelope release")
     require("apply_patch_envelope()" in runtime_controls_body, "patch synths must receive ADSR envelope")
     require("apply_raw_envelope(i)" in setter_body, "active raw voices must receive ADSR envelope")
@@ -459,6 +471,8 @@ def main() -> int:
     chord_h = read(CHORD_H)
     app_c = read(APP_C)
     app_chord_tools_c = read(APP_CHORD_TOOLS_C)
+    app_effects_c = read(APP_EFFECTS_C)
+    app_effects_h = read(APP_EFFECTS_H)
     app_key_c = read(APP_KEY_C)
     app_key_h = read(APP_KEY_H)
     app_settings_c = read(APP_SETTINGS_C)
@@ -483,7 +497,9 @@ def main() -> int:
                                   play_ui_h)
     assert_amy_voice_architecture(amy_voice_map_c)
     assert_voice_count_control(app_c, app_settings_c, amy_c, amy_h, amy_runtime_c, play_ui_c, play_ui_h)
-    assert_adsr_control(app_c, app_settings_c, amy_c, amy_h, play_ui_c, play_ui_h)
+    require("typedef struct {" in app_effects_h and "synth_app_effects_t" in app_effects_h,
+            "app effects state module missing")
+    assert_adsr_control(app_c, app_effects_c, app_settings_c, amy_c, amy_h, play_ui_c, play_ui_h)
     assert_glide_control(app_c, app_settings_c, amy_c, amy_h, play_ui_c, play_ui_h)
 
     print("PASS: chord engine matches checked HiChord manual invariants")

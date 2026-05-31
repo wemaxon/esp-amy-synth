@@ -1,4 +1,4 @@
-#include "synth/app_play_state.h"
+#include "synth/app/play_state.h"
 
 #include <string.h>
 

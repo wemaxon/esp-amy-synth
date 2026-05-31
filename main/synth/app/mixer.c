@@ -1,4 +1,4 @@
-#include "synth/app_mixer.h"
+#include "synth/app/mixer.h"
 
 #include <stddef.h>
 

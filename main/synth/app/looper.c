@@ -1,4 +1,4 @@
-#include "synth/app_looper.h"
+#include "synth/app/looper.h"
 
 #define LOOP_UI_REFRESH_TICKS pdMS_TO_TICKS(250)
 

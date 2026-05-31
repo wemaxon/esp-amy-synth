@@ -1,4 +1,4 @@
-#include "synth/app_settings.h"
+#include "synth/app/settings.h"
 
 #include <math.h>
 #include <stddef.h>

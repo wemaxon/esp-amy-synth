@@ -1,4 +1,4 @@
-#include "synth/app_chords.h"
+#include "synth/app/chords.h"
 
 #include <string.h>
 

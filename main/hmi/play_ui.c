@@ -13,7 +13,7 @@
 #include "freertos/task.h"
 #include "hmi/oled_display.h"
 #include "pocket_oled.h"
-#include "synth/app_key.h"
+#include "synth/app/key.h"
 
 static const char *TAG = "PLAY_UI";
 

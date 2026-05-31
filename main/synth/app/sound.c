@@ -1,4 +1,4 @@
-#include "synth/app_sound.h"
+#include "synth/app/sound.h"
 
 #include <stddef.h>
 

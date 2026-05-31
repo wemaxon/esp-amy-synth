@@ -1,9 +1,9 @@
-#include "synth/app_modulation.h"
+#include "synth/app/modulation.h"
 
 #include <math.h>
 #include <stddef.h>
 
-#include "synth/app_settings.h"
+#include "synth/app/settings.h"
 
 static const float LFO_RATE_HZ = 5.0f;
 static const float TWO_PI = 6.283185307f;

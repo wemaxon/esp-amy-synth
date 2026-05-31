@@ -1,4 +1,4 @@
-#include "synth/app_rhythm.h"
+#include "synth/app/rhythm.h"
 
 #include <stdbool.h>
 #include <string.h>

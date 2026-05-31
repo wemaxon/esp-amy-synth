@@ -1,4 +1,4 @@
-#include "synth/app_wheel.h"
+#include "synth/app/wheel.h"
 
 #include <stddef.h>
 

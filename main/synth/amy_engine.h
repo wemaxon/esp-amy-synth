@@ -31,6 +31,7 @@ esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
                                       uint8_t oscs_per_voice);
 esp_err_t synth_amy_builtin_patch_note_on(uint8_t midi_note, float velocity);
 esp_err_t synth_amy_builtin_patch_note_off(uint8_t midi_note);
+esp_err_t synth_amy_drum_hit(uint8_t pcm_preset, uint8_t midi_note, uint8_t velocity);
 esp_err_t synth_amy_set_volume(float normalized_volume);
 esp_err_t synth_amy_set_filter_enabled(bool enabled);
 esp_err_t synth_amy_set_filter_cutoff(float cutoff_hz);

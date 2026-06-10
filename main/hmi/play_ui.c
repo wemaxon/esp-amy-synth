@@ -98,6 +98,10 @@ void play_ui_model_init(play_ui_model_t *model)
     model->arp_rate = SYNTH_RHYTHM_RATE_EIGHTH;
     model->arp_chord_mode = SYNTH_ARP_CHORD_MODE_ARP_ONLY;
     model->repeat_rate = SYNTH_RHYTHM_RATE_EIGHTH;
+    model->drum_kit = SYNTH_DRUM_KIT_TIGHT;
+    model->drum_loop_style = SYNTH_DRUM_LOOP_ROCK;
+    model->drum_loop_variation = SYNTH_DRUM_LOOP_VARIATION_ORIGINAL;
+    strlcpy(model->drum_auto_rate, "-", sizeof(model->drum_auto_rate));
     model->effect_index = PLAY_UI_EFFECT_JOYSTICK;
     model->effects[PLAY_UI_EFFECT_STEREO] = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
     model->adsr_preset = 4;
@@ -201,6 +205,26 @@ static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model
         break;
     case SYNTH_PLAY_MODE_REPEAT:
         draw_rowf(display, row, "RATE %s", synth_rhythm_rate_name(model->repeat_rate));
+        break;
+    case SYNTH_PLAY_MODE_DRUM_MODE:
+        draw_rowf(display, row, "KIT %s", synth_drum_kit_name(model->drum_kit));
+        pocket_oled_draw_text_row(display, row + 1, "1-7 DRUM PADS");
+        break;
+    case SYNTH_PLAY_MODE_DRUM_LOOPS:
+        draw_rowf(display,
+                  row,
+                  "%s %s",
+                  synth_drum_loop_style_name(model->drum_loop_style),
+                  model->drum_loop_running ? "ON" : "OFF");
+        draw_rowf(display,
+                  row + 1,
+                  "%s KIT %s",
+                  synth_drum_loop_variation_short_name(model->drum_loop_variation),
+                  synth_drum_kit_name(model->drum_kit));
+        break;
+    case SYNTH_PLAY_MODE_AUTO_DRUM:
+        draw_rowf(display, row, "KIT %s", synth_drum_kit_name(model->drum_kit));
+        draw_rowf(display, row + 1, "RATE %.7s", model->drum_auto_rate);
         break;
     case SYNTH_PLAY_MODE_MIXER:
         draw_rowf(display, row, "LOOP TRACK MIX");

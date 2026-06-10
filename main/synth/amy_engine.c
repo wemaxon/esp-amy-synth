@@ -56,6 +56,8 @@ static const float SYNTH_DELAY_FEEDBACK = 0.32f;
 static const float SYNTH_DELAY_FILTER_COEF = 0.28f;
 static const float SYNTH_TREMOLO_MAX_DEPTH = 0.95f;
 static const float LFO_MAX_PITCH_SEMITONES = 2.0f;
+static const uint8_t SYNTH_AMY_DRUM_OSC_COUNT = 8;
+static const float SYNTH_AMY_DRUM_AMP = 0.56f;
 static const uint32_t ENVELOPE_ATTACK_MIN_MS = 1;
 static const uint32_t ENVELOPE_ATTACK_MAX_MS = 2000;
 static const uint32_t ENVELOPE_DECAY_MIN_MS = 1;
@@ -80,6 +82,8 @@ static uint16_t s_portamento_ms;
 static synth_sound_t s_sound = SYNTH_SOUND_SAW;
 static bool s_patch_loaded;
 static bool s_patch_pair_loaded;
+static uint16_t s_drum_osc_base;
+static uint8_t s_drum_next_osc;
 static uint16_t s_patch_number;
 static uint8_t s_patch_voice_count;
 static uint8_t s_patch_oscs_per_voice;
@@ -243,7 +247,7 @@ static uint16_t required_patch_osc_capacity(void)
     if (dx7_oscs > max_oscs) {
         max_oscs = dx7_oscs;
     }
-    return (uint16_t)(max_oscs + 20U);
+    return (uint16_t)(max_oscs + SYNTH_AMY_DRUM_OSC_COUNT + 20U);
 }
 
 static uint16_t amy_config_max_oscs(void)
@@ -281,11 +285,13 @@ static uint16_t active_osc_count(void)
 
 static uint16_t allocated_patch_osc_count(void)
 {
+    uint16_t allocated = SYNTH_AMY_DRUM_OSC_COUNT;
     if (!s_patch_loaded) {
-        return 0;
+        return allocated;
     }
     uint16_t synth_count = (uint16_t)(1U + (s_patch_pair_loaded ? 1U : 0U));
-    return (uint16_t)s_patch_voice_count * (uint16_t)s_patch_oscs_per_voice * synth_count;
+    return (uint16_t)(allocated +
+                      ((uint16_t)s_patch_voice_count * (uint16_t)s_patch_oscs_per_voice * synth_count));
 }
 
 static void set_amp_envelope(amy_event *event, const synth_amy_envelope_t *envelope)
@@ -347,7 +353,7 @@ static void fill_raw_filter_event(amy_event *event, const amy_raw_profile_t *pro
     }
 }
 
-static void amy_note_off_raw_osc(uint8_t osc)
+static void amy_note_off_raw_osc(uint16_t osc)
 {
     amy_event event = amy_default_event();
     event.osc = osc;
@@ -1046,6 +1052,32 @@ esp_err_t synth_amy_builtin_patch_note_off(uint8_t midi_note)
     return ESP_OK;
 }
 
+esp_err_t synth_amy_drum_hit(uint8_t pcm_preset, uint8_t midi_note, uint8_t velocity)
+{
+    if (!s_initialized || SYNTH_AMY_DRUM_OSC_COUNT == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (pcm_preset >= pcm_samples) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t osc = (uint16_t)(s_drum_osc_base + s_drum_next_osc);
+    s_drum_next_osc = (uint8_t)((s_drum_next_osc + 1U) % SYNTH_AMY_DRUM_OSC_COUNT);
+
+    amy_event event = amy_default_event();
+    event.osc = osc;
+    event.wave = PCM;
+    event.preset = pcm_preset;
+    event.midi_note = midi_note;
+    event.velocity = clamp_float((float)velocity / 127.0f, 0.0f, 1.0f);
+    event.amp_coefs[COEF_CONST] = SYNTH_AMY_DRUM_AMP;
+    event.feedback = 0.0f;
+    event.filter_type = FILTER_NONE;
+    event.pan_coefs[COEF_CONST] = 0.5f;
+    amy_add_event(&event);
+    return ESP_OK;
+}
+
 esp_err_t synth_amy_set_volume(float normalized_volume)
 {
     if (!s_initialized) {
@@ -1437,6 +1469,8 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     config.max_memory_patches = 4;
     config.max_sequencer_tags = 8;
     config.amy_external_coef_hook = amy_external_coef;
+    s_drum_osc_base = (uint16_t)(config.max_oscs - SYNTH_AMY_DRUM_OSC_COUNT);
+    s_drum_next_osc = 0;
     amy_start(config);
     enqueue_master_volume((float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f);
     amy_global.echo.max_delay_samples = SYNTH_DELAY_MAX_SAMPLES;
@@ -1459,13 +1493,14 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
 
     s_initialized = true;
     ESP_LOGI(TAG,
-             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u juno=%u dx7=%u pcm=%u stereo_pairs=%s multicore=%s perf_log=%s",
+             "AMY synth started: %d Hz, %d channels, block=%d (%u us), max_oscs=%u synth_voices=%u drum_oscs=%u juno=%u dx7=%u pcm=%u stereo_pairs=%s multicore=%s perf_log=%s",
              AMY_SAMPLE_RATE,
              AMY_NCHANS,
              AMY_BLOCK_SIZE,
              synth_amy_audio_block_us(),
              (unsigned)config.max_oscs,
              (unsigned)config.max_voices,
+             (unsigned)SYNTH_AMY_DRUM_OSC_COUNT,
              (unsigned)ESP_POCKET_AUDIO_AMY_JUNO_VOICES,
              (unsigned)ESP_POCKET_AUDIO_AMY_DX7_VOICES,
              (unsigned)ESP_POCKET_AUDIO_AMY_PCM_VOICES,
@@ -1617,6 +1652,9 @@ esp_err_t synth_amy_all_off(void)
 
     for (uint8_t i = 0; i < AMY_MUSICAL_VOICE_COUNT; ++i) {
         release_voice(i);
+    }
+    for (uint8_t i = 0; i < SYNTH_AMY_DRUM_OSC_COUNT; ++i) {
+        amy_note_off_raw_osc((uint16_t)(s_drum_osc_base + i));
     }
     return ESP_OK;
 }

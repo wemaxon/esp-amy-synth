@@ -73,6 +73,8 @@ esp_err_t synth_looper_set_metronome_bpm(uint16_t bpm);
 esp_err_t synth_looper_adjust_bars(int8_t steps);
 esp_err_t synth_looper_toggle_pause(void);
 esp_err_t synth_looper_clear_all(void);
+esp_err_t synth_looper_clear_track(uint8_t track);
+esp_err_t synth_looper_auto_bounce(uint8_t bars, uint16_t bpm, uint8_t *track_out);
 bool synth_looper_current_track_is_waiting(void);
 
 void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot);

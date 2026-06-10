@@ -229,6 +229,16 @@ static uint8_t next_empty_track_locked(uint8_t from_track)
     return from_track;
 }
 
+static uint8_t first_empty_track_locked(void)
+{
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        if (s_tracks[track].state == SYNTH_LOOPER_TRACK_EMPTY) {
+            return track;
+        }
+    }
+    return SYNTH_LOOPER_TRACK_COUNT;
+}
+
 static int16_t encode_sample(int32_t sample)
 {
     if (sample > 32767) {
@@ -1259,6 +1269,93 @@ esp_err_t synth_looper_clear_all(void)
     clear_all_locked();
     portEXIT_CRITICAL(&s_mux);
     ESP_LOGI(TAG, "clear all");
+    return ESP_OK;
+}
+
+esp_err_t synth_looper_clear_track(uint8_t track)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_mux);
+    if (track == 0) {
+        clear_all_locked();
+    } else {
+        clear_track_locked(track);
+        s_current_track = track;
+        if (!has_any_loop_locked()) {
+            s_paused = false;
+        }
+        set_message_locked("CLEARED");
+    }
+    portEXIT_CRITICAL(&s_mux);
+
+    ESP_LOGI(TAG, "clear track=%u", (unsigned)(track + 1));
+    return ESP_OK;
+}
+
+esp_err_t synth_looper_auto_bounce(uint8_t bars, uint16_t bpm, uint8_t *track_out)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint8_t track = SYNTH_LOOPER_TRACK_COUNT;
+    portENTER_CRITICAL(&s_mux);
+    track = first_empty_track_locked();
+    portEXIT_CRITICAL(&s_mux);
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    esp_err_t err = ensure_track_buffer(track);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    portENTER_CRITICAL(&s_mux);
+    if (s_tracks[track].state != SYNTH_LOOPER_TRACK_EMPTY) {
+        track = first_empty_track_locked();
+    }
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        portEXIT_CRITICAL(&s_mux);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    set_current_bpm_locked(bpm);
+    s_current_track = track;
+
+    synth_looper_track_t *slot = &s_tracks[track];
+    if (s_master_length_frames > 0 && track != 0) {
+        slot->state = SYNTH_LOOPER_TRACK_WAITING;
+        slot->record_armed = true;
+        slot->sync_to_master = true;
+        slot->length_frames = 0;
+        slot->play_position = 0;
+        slot->record_position = 0;
+        slot->record_start_frame = 0;
+        slot->target_record_frames = s_master_length_frames;
+        slot->count_in_beat_frames = 0;
+        set_message_locked("BOUNCE SYNC");
+    } else {
+        uint32_t target_frames = bars_to_frames(bars == 0 ? 1 : bars, s_current_bpm);
+        if (target_frames > s_capacity_frames) {
+            target_frames = s_capacity_frames;
+        }
+        start_recording_locked(track, target_frames);
+        set_message_locked("BOUNCE");
+    }
+
+    if (track_out != NULL) {
+        *track_out = track;
+    }
+    portEXIT_CRITICAL(&s_mux);
+
+    ESP_LOGI(TAG, "auto bounce track=%u bars=%u bpm=%u", (unsigned)(track + 1), (unsigned)bars, (unsigned)bpm);
     return ESP_OK;
 }
 

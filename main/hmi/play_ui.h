@@ -8,6 +8,7 @@
 #include "esp_pocket_audio.h"
 #include "hmi/controls.h"
 #include "synth/chord_engine.h"
+#include "synth/drums.h"
 #include "synth/looper.h"
 #include "synth/play_mode.h"
 #include "synth/sound.h"
@@ -62,6 +63,11 @@ typedef struct {
     synth_rhythm_rate_t arp_rate;
     synth_arp_chord_mode_t arp_chord_mode;
     synth_rhythm_rate_t repeat_rate;
+    synth_drum_kit_t drum_kit;
+    synth_drum_loop_style_t drum_loop_style;
+    synth_drum_loop_variation_t drum_loop_variation;
+    bool drum_loop_running;
+    char drum_auto_rate[8];
     uint8_t held_mask;
     uint8_t focus_slot;
     uint8_t effect_index;

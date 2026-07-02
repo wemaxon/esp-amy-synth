@@ -21,9 +21,12 @@ static bool s_codec_address_straps_initialized;
 static bool s_amp_initialized;
 static bool s_amp_enabled;
 
-#if ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE && ESP_POCKET_AUDIO_DIAG_SINE_32BIT_I2S
+#if ESP_POCKET_AUDIO_I2S_BITS_PER_SAMPLE == 32
 #define ESP_POCKET_AUDIO_I2S_DATA_WIDTH I2S_DATA_BIT_WIDTH_32BIT
 #define ESP_POCKET_AUDIO_I2S_DATA_BITS_FOR_LOG 32
+#elif ESP_POCKET_AUDIO_I2S_BITS_PER_SAMPLE == 24
+#define ESP_POCKET_AUDIO_I2S_DATA_WIDTH I2S_DATA_BIT_WIDTH_24BIT
+#define ESP_POCKET_AUDIO_I2S_DATA_BITS_FOR_LOG 24
 #else
 #define ESP_POCKET_AUDIO_I2S_DATA_WIDTH I2S_DATA_BIT_WIDTH_16BIT
 #define ESP_POCKET_AUDIO_I2S_DATA_BITS_FOR_LOG 16
@@ -148,7 +151,7 @@ static esp_err_t init_display(void)
     );
 #if ESP_POCKET_AUDIO_OLED_TRY_ALT_ADDR
     if (err != ESP_OK && ESP_POCKET_AUDIO_OLED_ALT_ADDR != ESP_POCKET_AUDIO_OLED_ADDR) {
-        ESP_LOGW(TAG, "OLED not detected at configured 7-bit address 0x%02x, trying 0x%02x",
+        ESP_LOGE(TAG, "OLED not detected at configured 7-bit address 0x%02x, trying 0x%02x",
                  ESP_POCKET_AUDIO_OLED_ADDR,
                  ESP_POCKET_AUDIO_OLED_ALT_ADDR);
         oled_addr = ESP_POCKET_AUDIO_OLED_ALT_ADDR;
@@ -160,13 +163,9 @@ static esp_err_t init_display(void)
     }
 #endif
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "OLED not detected at configured 7-bit address 0x%02x", oled_addr);
-#if ESP_POCKET_AUDIO_OLED_REQUIRED
-        return ESP_ERR_NOT_FOUND;
-#else
+        ESP_LOGE(TAG, "OLED not detected at configured 7-bit address 0x%02x", oled_addr);
         ESP_LOGI(TAG, "continuing without OLED display");
         return ESP_OK;
-#endif
     }
 
     err = pocket_oled_init(
@@ -182,12 +181,9 @@ static esp_err_t init_display(void)
         err = pocket_oled_flush(&s_hw.display);
     }
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "OLED init failed: %s", esp_err_to_name(err));
-#if ESP_POCKET_AUDIO_OLED_REQUIRED
-        return err;
-#else
+        ESP_LOGE(TAG, "OLED init failed: %s", esp_err_to_name(err));
         ESP_LOGI(TAG, "continuing without OLED display");
-#endif
+        return ESP_OK;
     }
 #else
     ESP_LOGI(TAG, "OLED display is disabled");
@@ -204,7 +200,6 @@ static esp_err_t init_display_i2c(void *ctx)
 
 static esp_err_t init_i2s_clocking(void)
 {
-#if ESP_POCKET_AUDIO_I2S_ENABLED
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(ESP_POCKET_AUDIO_I2S_PORT, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     chan_cfg.dma_desc_num = ESP_POCKET_AUDIO_I2S_DMA_DESC_NUM;
@@ -228,9 +223,11 @@ static esp_err_t init_i2s_clocking(void)
             },
         },
     };
+    std_cfg.clk_cfg.clk_src = ESP_POCKET_AUDIO_I2S_CLK_SRC;
 
-    ESP_LOGI(TAG, "I2S: port=%d mclk=%d bclk=%d ws=%d dout=%d din=%d rate=%d bits=%d dma=%ux%u",
+    ESP_LOGI(TAG, "I2S: port=%d clk_src=%d mclk=%d bclk=%d ws=%d dout=%d din=%d rate=%d bits=%d dma=%ux%u",
              ESP_POCKET_AUDIO_I2S_PORT,
+             ESP_POCKET_AUDIO_I2S_CLK_SRC,
              ESP_POCKET_AUDIO_I2S_MCLK_GPIO,
              ESP_POCKET_AUDIO_I2S_BCLK_GPIO,
              ESP_POCKET_AUDIO_I2S_WS_GPIO,
@@ -244,11 +241,6 @@ static esp_err_t init_i2s_clocking(void)
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_hw.i2s_tx, &std_cfg), TAG, "I2S std mode init failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_hw.i2s_tx), TAG, "I2S enable failed");
     return ESP_OK;
-#else
-    s_hw.i2s_tx = NULL;
-    ESP_LOGI(TAG, "I2S is disabled");
-    return ESP_OK;
-#endif
 }
 
 static int amp_shdn_level_for_enabled(bool enabled)

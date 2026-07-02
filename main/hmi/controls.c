@@ -85,9 +85,11 @@ static bool s_initialized;
 static i2c_master_bus_handle_t s_i2c_bus;
 #if ESP_POCKET_AUDIO_ADS1115_ENABLED
 static ads1115_t s_ads1115;
+static bool s_ads1115_present;
 #endif
 static switch_expander_t s_expanders[SWITCH_EXPANDER_STORAGE_COUNT];
 static uint16_t s_expander_port_state[SWITCH_EXPANDER_STORAGE_COUNT];
+static bool s_expander_present[SWITCH_EXPANDER_STORAGE_COUNT];
 static switch_debounce_t s_switches[CONTROL_SWITCH_COUNT];
 static control_event_t s_events[EVENT_QUEUE_LEN];
 static size_t s_event_head;
@@ -358,6 +360,7 @@ static bool mapping_is_available(const switch_mapping_t *mapping)
         return mapping->gpio != GPIO_NUM_NC;
     }
     return mapping->expander < configured_expander_count() &&
+           s_expander_present[mapping->expander] &&
            mapping->pin < s_expanders[mapping->expander].pin_count;
 }
 
@@ -394,29 +397,75 @@ static esp_err_t init_i2c_peripherals(void *ctx)
     (void)ctx;
 
 #if ESP_POCKET_AUDIO_ADS1115_ENABLED
-    ESP_RETURN_ON_ERROR(probe_i2c_addr(ESP_POCKET_AUDIO_ADS1115_ADDR), TAG, "ADS1115 not detected");
-    ESP_RETURN_ON_ERROR(ads1115_init(&s_ads1115, s_i2c_bus, ESP_POCKET_AUDIO_ADS1115_ADDR, ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ, ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS), TAG, "ADS1115 init failed");
-    ESP_LOGI(TAG,
-             "ADS1115 at 0x%02x initialized joystick x_ch=%u y_ch=%u",
-             ESP_POCKET_AUDIO_ADS1115_ADDR,
-             ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_CH,
-             ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_CH);
+    esp_err_t err = probe_i2c_addr(ESP_POCKET_AUDIO_ADS1115_ADDR);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "ADS1115 not detected at 7-bit address 0x%02x: %s; joystick and wheel unavailable",
+                 ESP_POCKET_AUDIO_ADS1115_ADDR,
+                 esp_err_to_name(err));
+    } else {
+        err = ads1115_init(&s_ads1115,
+                           s_i2c_bus,
+                           ESP_POCKET_AUDIO_ADS1115_ADDR,
+                           ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ,
+                           ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "ADS1115 init failed at 7-bit address 0x%02x: %s; joystick and wheel unavailable",
+                     ESP_POCKET_AUDIO_ADS1115_ADDR,
+                     esp_err_to_name(err));
+        } else {
+            s_ads1115_present = true;
+            ESP_LOGI(TAG,
+                     "ADS1115 at 0x%02x initialized joystick x_ch=%u y_ch=%u",
+                     ESP_POCKET_AUDIO_ADS1115_ADDR,
+                     ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_CH,
+                     ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_CH);
+        }
+    }
 #endif
 
     for (size_t i = 0; i < configured_expander_count(); ++i) {
-        ESP_RETURN_ON_ERROR(probe_i2c_addr(SWITCH_EXPANDER_ADDRS[i]), TAG, "switch expander not detected");
-        ESP_RETURN_ON_ERROR(switch_expander_init(&s_expanders[i],
-                                                 s_i2c_bus,
-                                                 ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE,
-                                                 SWITCH_EXPANDER_ADDRS[i],
-                                                 ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ,
-                                                 ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS),
-                            TAG,
-                            "switch expander init failed");
-        ESP_RETURN_ON_ERROR(switch_expander_write_port(&s_expanders[i], SWITCH_EXPANDER_PULLUP_MASKS[i]),
-                            TAG,
-                            "switch expander latch config failed");
+        esp_err_t err = probe_i2c_addr(SWITCH_EXPANDER_ADDRS[i]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "%s switch expander %u not detected at 7-bit address 0x%02x: %s; mapped keys unavailable",
+                     switch_expander_type_name(ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE),
+                     (unsigned)i,
+                     SWITCH_EXPANDER_ADDRS[i],
+                     esp_err_to_name(err));
+            continue;
+        }
+
+        err = switch_expander_init(&s_expanders[i],
+                                   s_i2c_bus,
+                                   ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE,
+                                   SWITCH_EXPANDER_ADDRS[i],
+                                   ESP_POCKET_AUDIO_CONTROL_I2C_CLK_HZ,
+                                   ESP_POCKET_AUDIO_CONTROL_I2C_TIMEOUT_MS);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "%s switch expander %u init failed at 7-bit address 0x%02x: %s; mapped keys unavailable",
+                     switch_expander_type_name(ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE),
+                     (unsigned)i,
+                     SWITCH_EXPANDER_ADDRS[i],
+                     esp_err_to_name(err));
+            continue;
+        }
+
+        err = switch_expander_write_port(&s_expanders[i], SWITCH_EXPANDER_PULLUP_MASKS[i]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "%s switch expander %u latch config failed at 7-bit address 0x%02x: %s; mapped keys unavailable",
+                     switch_expander_type_name(ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE),
+                     (unsigned)i,
+                     SWITCH_EXPANDER_ADDRS[i],
+                     esp_err_to_name(err));
+            continue;
+        }
+
         s_expander_port_state[i] = SWITCH_EXPANDER_PULLUP_MASKS[i];
+        s_expander_present[i] = true;
         ESP_LOGI(TAG,
                  "%s switch expander %u at 0x%02x pins=%u weak_pullup_mask=0x%04x",
                  switch_expander_type_name(ESP_POCKET_AUDIO_SWITCH_EXPANDER_TYPE),
@@ -480,6 +529,10 @@ static void refresh_expander_debounce_state(TickType_t now_ticks)
 static esp_err_t update_expander_switches(TickType_t now_ticks)
 {
     for (size_t i = 0; i < configured_expander_count(); ++i) {
+        if (!s_expander_present[i]) {
+            continue;
+        }
+
         uint16_t previous = s_expander_port_state[i];
         uint16_t port_state = previous;
         esp_err_t err = switch_expander_read_port(&s_expanders[i], &port_state);
@@ -524,6 +577,15 @@ static void update_gpio_switches(TickType_t now_ticks)
 static esp_err_t update_joystick(void)
 {
 #if ESP_POCKET_AUDIO_ADS1115_ENABLED
+    if (!s_ads1115_present) {
+        s_joystick.x.raw = 0;
+        s_joystick.x.value = 0.0f;
+        s_joystick.y.raw = 0;
+        s_joystick.y.value = 0.0f;
+        s_joystick.direction = CONTROL_JOYSTICK_CENTER;
+        return ESP_OK;
+    }
+
     int16_t raw_x = 0;
     int16_t raw_y = 0;
 
@@ -576,6 +638,11 @@ static void set_wheel_state(int16_t raw, float value, bool present)
 static esp_err_t update_wheel(void)
 {
 #if ESP_POCKET_AUDIO_ADS1115_ENABLED && ESP_POCKET_AUDIO_WHEEL_ENABLED
+    if (!s_ads1115_present) {
+        set_wheel_state(0, (float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f, false);
+        return ESP_OK;
+    }
+
     int16_t raw = 0;
     esp_err_t err = ads1115_read_single_ended(&s_ads1115, (ads1115_channel_t)ESP_POCKET_AUDIO_ADS1115_WHEEL_CH, &raw);
     if (err != ESP_OK) {

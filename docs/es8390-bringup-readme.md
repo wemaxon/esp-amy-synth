@@ -35,14 +35,17 @@ Current line-out path:
 WT0132P4 is configured for ES8390:
 
 - sample rate: `44100 Hz`
+- I2S clock source: `I2S_CLK_SRC_APLL`
 - I2S word length: `16-bit`
-- auto sine diagnostic: enabled
+- normal AMY synth boot: enabled
+- AMY perf/status logs: enabled
+- auto sine diagnostic: disabled
 - sine frequency: `440 Hz`
 - sine amplitude: `100%`
-- digital silence: disabled
-- DAC mute: disabled
-- strict DAC-only mode: enabled
-- control peripherals disabled for codec testing
+- digital silence diagnostic: disabled
+- DAC mute at startup: disabled
+- strict DAC-only test mode: disabled
+- control I2C peripherals: disabled on the current WT0132P4 config
 
 Expected clocks:
 
@@ -50,7 +53,7 @@ Expected clocks:
 - `BCLK`: about `1.4112 MHz` (`44.1 kHz * 16 * 2`)
 - `LRCK`: `44.1 kHz`
 
-DAC-only firmware disables/mutes ADC-side paths:
+During DAC-only tests the firmware disabled/muted ADC-side paths:
 
 - ADC serial output muted
 - ADC dem output muted
@@ -81,10 +84,12 @@ Tests already tried:
 - Changed sample rate from 44.1 kHz to 48 kHz while still in 32-bit mode: noise disappeared.
 - Changed back from 32-bit to 16-bit while staying at 48 kHz: noise stayed gone.
 - Changed `0x69` back to `0x20` line-out mode while staying at 48 kHz: noise stayed gone.
+- Forced `44.1 kHz / 16-bit` to use `I2S_CLK_SRC_APLL`: mostly works, but a very small residual noise remains.
 
 Current important discriminator:
 
 - `44.1 kHz`: noisy.
+- `44.1 kHz` with APLL: much better, but not as clean as 48 kHz.
 - `48 kHz`: clean.
 - `16-bit` vs `32-bit`: not the deciding factor.
 - HP driver on/off: not the deciding factor.
@@ -142,7 +147,7 @@ Likely ruled down:
 Still plausible:
 
 - ES8390 DAC clock/filter/register setup issue.
-- I2S clock generation issue specific to the 44.1 kHz clock family.
+- I2S clock generation issue specific to the 44.1 kHz clock family. APLL improves it, which supports this theory.
 - MCU clock divider jitter/modulation or fractional-clock artifacts at `11.2896 MHz` MCLK.
 - Internal DAC/reference/control-loop oscillation when clocks are active.
 - Board-level coupling that depends on active I2S clocks but is not fixed by temporary wiring changes.

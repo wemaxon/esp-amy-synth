@@ -4,6 +4,7 @@
 
 #include "amy.h"
 #include "driver/i2s_std.h"
+#include "esp_pocket_audio_board_config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -11,6 +12,10 @@
 #include "synth/amy_flanger.h"
 #include "synth/amy_perf.h"
 #include "synth/looper.h"
+
+#if ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ != AMY_SAMPLE_RATE
+#error "ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ must match AMY_SAMPLE_RATE"
+#endif
 
 #define SYNTH_AUDIO_BLOCK_US (((uint32_t)AMY_BLOCK_SIZE * 1000000U) / (uint32_t)AMY_SAMPLE_RATE)
 

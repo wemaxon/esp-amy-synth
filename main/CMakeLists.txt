@@ -48,6 +48,7 @@ idf_component_register(
         ads1115
         amy
         es8388
+        es8390
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_i2s

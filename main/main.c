@@ -1,3 +1,5 @@
+#include <stdbool.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -23,6 +25,7 @@ static void log_setup(void)
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set("ESP_POCKET_AUDIO", ESP_LOG_VERBOSE);
     esp_log_level_set("ES8388", ESP_LOG_VERBOSE);
+    esp_log_level_set("ES8390", ESP_LOG_VERBOSE);
     esp_log_level_set("POCKET_OLED", ESP_LOG_VERBOSE);
     esp_log_level_set("CONTROLS", ESP_LOG_INFO);
     esp_log_level_set("DIAG_AMY_PATCH", ESP_LOG_INFO);
@@ -57,7 +60,13 @@ static void app_task(void *arg)
     const esp_pocket_audio_hw_t *hw = esp_pocket_audio_hw();
     ESP_ERROR_CHECK(hw != NULL ? ESP_OK : ESP_ERR_INVALID_STATE);
     ESP_ERROR_CHECK(audio_codec_dump_registers(&hw->codec, TAG));
-#if ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE
+#if !ESP_POCKET_AUDIO_I2S_ENABLED
+    ESP_LOGI(TAG, "I2S disabled, idling for codec analog noise test");
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+#endif
+#if ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE && ESP_POCKET_AUDIO_I2S_ENABLED
     ESP_LOGI(TAG, "auto sine diagnostic enabled, starting direct I2S sine output");
     ESP_ERROR_CHECK(diagnostics_sine_output_run(hw));
 #endif

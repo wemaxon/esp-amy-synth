@@ -49,11 +49,20 @@ esp_err_t audio_codec_init(audio_codec_t *codec, i2c_master_bus_handle_t bus)
                            ESP_POCKET_AUDIO_CODEC_I2C_ADDR,
                            ESP_POCKET_AUDIO_CODEC_I2C_CLK_HZ,
                            ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS);
+    case ESP_POCKET_AUDIO_CODEC_ES8390:
+        if (bus == NULL) {
+            return ESP_ERR_INVALID_ARG;
+        }
+        return es8390_init(&codec->dev.es8390,
+                           bus,
+                           ESP_POCKET_AUDIO_CODEC_I2C_ADDR,
+                           ESP_POCKET_AUDIO_CODEC_I2C_CLK_HZ,
+                           ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS,
+                           ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ,
+                           ESP_POCKET_AUDIO_I2S_BITS_PER_SAMPLE);
     case ESP_POCKET_AUDIO_CODEC_PCM5102:
     case ESP_POCKET_AUDIO_CODEC_NONE:
         return ESP_OK;
-    case ESP_POCKET_AUDIO_CODEC_ES8390:
-        return ESP_ERR_NOT_SUPPORTED;
     default:
         return ESP_ERR_INVALID_ARG;
     }
@@ -68,11 +77,18 @@ esp_err_t audio_codec_start(audio_codec_t *codec)
     switch (codec->type) {
     case ESP_POCKET_AUDIO_CODEC_ES8388:
         return es8388_start(&codec->dev.es8388);
+    case ESP_POCKET_AUDIO_CODEC_ES8390: {
+        esp_err_t err = es8390_start(&codec->dev.es8390);
+#if ESP_POCKET_AUDIO_CODEC_DAC_ONLY_TEST
+        if (err == ESP_OK) {
+            err = es8390_enable_dac_only_test(&codec->dev.es8390);
+        }
+#endif
+        return err;
+    }
     case ESP_POCKET_AUDIO_CODEC_PCM5102:
     case ESP_POCKET_AUDIO_CODEC_NONE:
         return ESP_OK;
-    case ESP_POCKET_AUDIO_CODEC_ES8390:
-        return ESP_ERR_NOT_SUPPORTED;
     default:
         return ESP_ERR_INVALID_ARG;
     }
@@ -87,11 +103,11 @@ esp_err_t audio_codec_set_volume(audio_codec_t *codec, uint8_t volume_percent)
     switch (codec->type) {
     case ESP_POCKET_AUDIO_CODEC_ES8388:
         return es8388_set_volume(&codec->dev.es8388, volume_percent);
+    case ESP_POCKET_AUDIO_CODEC_ES8390:
+        return es8390_set_volume(&codec->dev.es8390, volume_percent);
     case ESP_POCKET_AUDIO_CODEC_PCM5102:
     case ESP_POCKET_AUDIO_CODEC_NONE:
         return ESP_OK;
-    case ESP_POCKET_AUDIO_CODEC_ES8390:
-        return ESP_ERR_NOT_SUPPORTED;
     default:
         return ESP_ERR_INVALID_ARG;
     }
@@ -106,11 +122,11 @@ esp_err_t audio_codec_set_mute(audio_codec_t *codec, bool mute)
     switch (codec->type) {
     case ESP_POCKET_AUDIO_CODEC_ES8388:
         return es8388_set_mute(&codec->dev.es8388, mute);
+    case ESP_POCKET_AUDIO_CODEC_ES8390:
+        return es8390_set_mute(&codec->dev.es8390, mute);
     case ESP_POCKET_AUDIO_CODEC_PCM5102:
     case ESP_POCKET_AUDIO_CODEC_NONE:
         return ESP_OK;
-    case ESP_POCKET_AUDIO_CODEC_ES8390:
-        return ESP_ERR_NOT_SUPPORTED;
     default:
         return ESP_ERR_INVALID_ARG;
     }
@@ -125,11 +141,11 @@ esp_err_t audio_codec_dump_registers(const audio_codec_t *codec, const char *tag
     switch (codec->type) {
     case ESP_POCKET_AUDIO_CODEC_ES8388:
         return es8388_dump_registers((es8388_t *)&codec->dev.es8388, tag);
+    case ESP_POCKET_AUDIO_CODEC_ES8390:
+        return es8390_dump_registers((es8390_t *)&codec->dev.es8390, tag);
     case ESP_POCKET_AUDIO_CODEC_PCM5102:
     case ESP_POCKET_AUDIO_CODEC_NONE:
         return ESP_OK;
-    case ESP_POCKET_AUDIO_CODEC_ES8390:
-        return ESP_ERR_NOT_SUPPORTED;
     default:
         return ESP_ERR_INVALID_ARG;
     }

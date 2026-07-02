@@ -1,6 +1,8 @@
 #ifndef ESP_POCKET_AUDIO_H
 #define ESP_POCKET_AUDIO_H
 
+#include <stdbool.h>
+
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_err.h"
@@ -21,6 +23,8 @@ typedef struct {
 
 esp_err_t esp_pocket_audio_init(void);
 const esp_pocket_audio_hw_t *esp_pocket_audio_hw(void);
+esp_err_t esp_pocket_audio_amp_set_enabled(bool enabled);
+bool esp_pocket_audio_amp_is_enabled(void);
 
 #ifdef __cplusplus
 }

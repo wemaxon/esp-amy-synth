@@ -7,6 +7,7 @@
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "es8388.h"
+#include "es8390.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +18,7 @@ typedef struct {
     uint8_t address;
     union {
         es8388_t es8388;
+        es8390_t es8390;
     } dev;
 } audio_codec_t;
 

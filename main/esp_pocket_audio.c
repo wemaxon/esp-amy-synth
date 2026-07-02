@@ -7,6 +7,8 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "hmi/control_i2c.h"
 #include "hmi/controls.h"
 #include "pocket_oled.h"
@@ -15,6 +17,9 @@ static const char *TAG = "ESP_POCKET_AUDIO";
 
 static esp_pocket_audio_hw_t s_hw;
 static bool s_initialized;
+static bool s_codec_address_straps_initialized;
+static bool s_amp_initialized;
+static bool s_amp_enabled;
 
 #if ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE && ESP_POCKET_AUDIO_DIAG_SINE_32BIT_I2S
 #define ESP_POCKET_AUDIO_I2S_DATA_WIDTH I2S_DATA_BIT_WIDTH_32BIT
@@ -29,9 +34,38 @@ static uint64_t gpio_mask(gpio_num_t gpio)
     return gpio == GPIO_NUM_NC ? 0 : 1ULL << gpio;
 }
 
+static esp_err_t init_codec_address_straps(void)
+{
+#if ESP_POCKET_AUDIO_CODEC_I2C_ENABLED
+    if (s_codec_address_straps_initialized) {
+        return ESP_OK;
+    }
+    if (ESP_POCKET_AUDIO_CODEC_AD1_GPIO == GPIO_NUM_NC) {
+        s_codec_address_straps_initialized = true;
+        return ESP_OK;
+    }
+
+    gpio_config_t cfg = {
+        .pin_bit_mask = gpio_mask(ESP_POCKET_AUDIO_CODEC_AD1_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = ESP_POCKET_AUDIO_CODEC_AD1_LEVEL ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = ESP_POCKET_AUDIO_CODEC_AD1_LEVEL ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "codec address GPIO config failed");
+    ESP_LOGI(TAG, "codec AD1 GPIO%d weak-pulled %s",
+             ESP_POCKET_AUDIO_CODEC_AD1_GPIO,
+             ESP_POCKET_AUDIO_CODEC_AD1_LEVEL ? "high" : "low");
+    s_codec_address_straps_initialized = true;
+#endif
+    return ESP_OK;
+}
+
 static esp_err_t init_codec_i2c(void)
 {
 #if ESP_POCKET_AUDIO_CODEC_I2C_ENABLED
+    ESP_RETURN_ON_ERROR(init_codec_address_straps(), TAG, "codec address setup failed");
+
     i2c_master_bus_config_t bus_cfg = {
         .i2c_port = ESP_POCKET_AUDIO_CODEC_I2C_PORT,
         .sda_io_num = ESP_POCKET_AUDIO_CODEC_I2C_SDA_GPIO,
@@ -47,6 +81,14 @@ static esp_err_t init_codec_i2c(void)
              ESP_POCKET_AUDIO_CODEC_I2C_SCL_GPIO);
     ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &s_hw.codec_i2c_bus), TAG, "codec I2C bus init failed");
 
+#if ESP_POCKET_AUDIO_DIAG_I2C_SCAN_ENABLED
+    ESP_RETURN_ON_ERROR(diagnostics_i2c_scan_bus(
+        s_hw.codec_i2c_bus,
+        "codec I2C",
+        ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS
+    ), TAG, "codec I2C scan failed");
+#endif
+
     esp_err_t probe = i2c_master_probe(
         s_hw.codec_i2c_bus,
         ESP_POCKET_AUDIO_CODEC_I2C_ADDR,
@@ -57,13 +99,6 @@ static esp_err_t init_codec_i2c(void)
                  "%s not detected at 7-bit address 0x%02x",
                  audio_codec_type_name(ESP_POCKET_AUDIO_CODEC_TYPE),
                  ESP_POCKET_AUDIO_CODEC_I2C_ADDR);
-#if ESP_POCKET_AUDIO_DIAG_I2C_SCAN_ENABLED
-        (void)diagnostics_i2c_scan_bus(
-            s_hw.codec_i2c_bus,
-            "codec I2C",
-            ESP_POCKET_AUDIO_CODEC_I2C_TIMEOUT_MS
-        );
-#endif
         return probe;
     }
 
@@ -79,6 +114,7 @@ static esp_err_t init_codec_i2c(void)
 
 static esp_err_t init_control_i2c(void)
 {
+#if ESP_POCKET_AUDIO_CONTROL_I2C_ENABLED
     i2c_master_bus_config_t i2c_cfg = {
         .i2c_port = ESP_POCKET_AUDIO_CONTROL_I2C_PORT,
         .sda_io_num = ESP_POCKET_AUDIO_CONTROL_I2C_SDA_GPIO,
@@ -94,8 +130,13 @@ static esp_err_t init_control_i2c(void)
              ESP_POCKET_AUDIO_CONTROL_I2C_SCL_GPIO);
 
     return i2c_new_master_bus(&i2c_cfg, &s_hw.control_i2c_bus);
+#else
+    ESP_LOGI(TAG, "control I2C is disabled");
+    return ESP_OK;
+#endif
 }
 
+#if ESP_POCKET_AUDIO_CONTROL_I2C_ENABLED
 static esp_err_t init_display(void)
 {
 #if ESP_POCKET_AUDIO_OLED_ENABLED
@@ -159,9 +200,11 @@ static esp_err_t init_display_i2c(void *ctx)
     (void)ctx;
     return init_display();
 }
+#endif
 
 static esp_err_t init_i2s_clocking(void)
 {
+#if ESP_POCKET_AUDIO_I2S_ENABLED
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(ESP_POCKET_AUDIO_I2S_PORT, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     chan_cfg.dma_desc_num = ESP_POCKET_AUDIO_I2S_DMA_DESC_NUM;
@@ -201,26 +244,75 @@ static esp_err_t init_i2s_clocking(void)
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_hw.i2s_tx, &std_cfg), TAG, "I2S std mode init failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_hw.i2s_tx), TAG, "I2S enable failed");
     return ESP_OK;
+#else
+    s_hw.i2s_tx = NULL;
+    ESP_LOGI(TAG, "I2S is disabled");
+    return ESP_OK;
+#endif
 }
 
-static esp_err_t init_pa_gpio(void)
+static int amp_shdn_level_for_enabled(bool enabled)
 {
-    if (ESP_POCKET_AUDIO_PA_ENABLE_GPIO == GPIO_NUM_NC) {
-        ESP_LOGI(TAG, "PA enable GPIO is not configured");
+#if ESP_POCKET_AUDIO_AMP_SHDN_ACTIVE_LOW
+    return enabled ? 1 : 0;
+#else
+    return enabled ? 0 : 1;
+#endif
+}
+
+esp_err_t esp_pocket_audio_amp_set_enabled(bool enabled)
+{
+#if ESP_POCKET_AUDIO_AMP_ENABLED
+    if (!s_amp_initialized || ESP_POCKET_AUDIO_AMP_SHDN_GPIO == GPIO_NUM_NC) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_RETURN_ON_ERROR(gpio_set_level(
+        ESP_POCKET_AUDIO_AMP_SHDN_GPIO,
+        amp_shdn_level_for_enabled(enabled)
+    ), TAG, "amp SHDN GPIO set failed");
+    s_amp_enabled = enabled;
+    ESP_LOGI(TAG, "speaker amp %s", enabled ? "enabled" : "shutdown");
+    return ESP_OK;
+#else
+    (void)enabled;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+bool esp_pocket_audio_amp_is_enabled(void)
+{
+    return s_amp_enabled;
+}
+
+static esp_err_t init_amp_gpio(void)
+{
+#if ESP_POCKET_AUDIO_AMP_ENABLED
+    if (ESP_POCKET_AUDIO_AMP_SHDN_GPIO == GPIO_NUM_NC) {
+        ESP_LOGW(TAG, "speaker amp enabled but SHDN GPIO is not configured");
         return ESP_OK;
     }
 
+    const bool default_enabled = ESP_POCKET_AUDIO_AMP_DEFAULT_ENABLED != 0;
     gpio_config_t cfg = {
-        .pin_bit_mask = gpio_mask(ESP_POCKET_AUDIO_PA_ENABLE_GPIO),
+        .pin_bit_mask = gpio_mask(ESP_POCKET_AUDIO_AMP_SHDN_GPIO),
         .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = ESP_POCKET_AUDIO_AMP_SHDN_ACTIVE_LOW && default_enabled ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = ESP_POCKET_AUDIO_AMP_SHDN_ACTIVE_LOW && !default_enabled ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "PA GPIO config failed");
-    ESP_RETURN_ON_ERROR(gpio_set_level(ESP_POCKET_AUDIO_PA_ENABLE_GPIO, 1), TAG, "PA GPIO enable failed");
-    ESP_LOGI(TAG, "PA enabled on GPIO%d", ESP_POCKET_AUDIO_PA_ENABLE_GPIO);
+    ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "amp SHDN GPIO config failed");
+    s_amp_initialized = true;
+    ESP_RETURN_ON_ERROR(esp_pocket_audio_amp_set_enabled(default_enabled), TAG, "amp SHDN default failed");
+    ESP_LOGI(TAG,
+             "speaker amp SHDN GPIO%d default=%s",
+             ESP_POCKET_AUDIO_AMP_SHDN_GPIO,
+             default_enabled ? "enabled" : "shutdown");
     return ESP_OK;
+#else
+    ESP_LOGI(TAG, "speaker amp is not configured");
+    return ESP_OK;
+#endif
 }
 
 esp_err_t esp_pocket_audio_init(void)
@@ -230,13 +322,19 @@ esp_err_t esp_pocket_audio_init(void)
     }
 
     ESP_LOGI(TAG, "board=%s codec=%s", ESP_POCKET_AUDIO_BOARD_NAME, audio_codec_type_name(ESP_POCKET_AUDIO_CODEC_TYPE));
+    ESP_RETURN_ON_ERROR(init_amp_gpio(), TAG, "amp GPIO failed");
+    ESP_RETURN_ON_ERROR(init_codec_address_straps(), TAG, "codec address setup failed");
+    ESP_RETURN_ON_ERROR(init_i2s_clocking(), TAG, "I2S failed");
     ESP_RETURN_ON_ERROR(init_codec_i2c(), TAG, "codec I2C failed");
     ESP_RETURN_ON_ERROR(audio_codec_init(&s_hw.codec, s_hw.codec_i2c_bus), TAG, "codec init failed");
-    ESP_RETURN_ON_ERROR(init_i2s_clocking(), TAG, "I2S failed");
     ESP_RETURN_ON_ERROR(audio_codec_start(&s_hw.codec), TAG, "codec start failed");
     ESP_RETURN_ON_ERROR(audio_codec_set_volume(&s_hw.codec, 100), TAG, "codec volume failed");
-    ESP_RETURN_ON_ERROR(init_pa_gpio(), TAG, "PA GPIO failed");
+#if ESP_POCKET_AUDIO_CODEC_START_MUTED
+    ESP_RETURN_ON_ERROR(audio_codec_set_mute(&s_hw.codec, true), TAG, "codec mute failed");
+    ESP_LOGI(TAG, "codec DAC muted at startup");
+#endif
     ESP_RETURN_ON_ERROR(init_control_i2c(), TAG, "control I2C failed");
+#if ESP_POCKET_AUDIO_CONTROL_I2C_ENABLED
 #if ESP_POCKET_AUDIO_DIAG_I2C_SCAN_ENABLED
     ESP_RETURN_ON_ERROR(diagnostics_i2c_scan_bus(
         s_hw.control_i2c_bus,
@@ -252,6 +350,7 @@ esp_err_t esp_pocket_audio_init(void)
         NULL,
         pdMS_TO_TICKS(500)
     ), TAG, "display init failed");
+#endif
 
     s_initialized = true;
     ESP_LOGI(TAG, "hardware init complete");

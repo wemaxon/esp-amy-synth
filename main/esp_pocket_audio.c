@@ -320,7 +320,9 @@ esp_err_t esp_pocket_audio_init(void)
     ESP_RETURN_ON_ERROR(init_codec_i2c(), TAG, "codec I2C failed");
     ESP_RETURN_ON_ERROR(audio_codec_init(&s_hw.codec, s_hw.codec_i2c_bus), TAG, "codec init failed");
     ESP_RETURN_ON_ERROR(audio_codec_start(&s_hw.codec), TAG, "codec start failed");
-    ESP_RETURN_ON_ERROR(audio_codec_set_volume(&s_hw.codec, 100), TAG, "codec volume failed");
+    ESP_RETURN_ON_ERROR(audio_codec_set_volume(&s_hw.codec, ESP_POCKET_AUDIO_CODEC_DEFAULT_VOLUME_PERCENT),
+                        TAG,
+                        "codec volume failed");
 #if ESP_POCKET_AUDIO_CODEC_START_MUTED
     ESP_RETURN_ON_ERROR(audio_codec_set_mute(&s_hw.codec, true), TAG, "codec mute failed");
     ESP_LOGI(TAG, "codec DAC muted at startup");

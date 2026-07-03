@@ -28,7 +28,7 @@ Current line-out path:
 - Each output path has `0R`, then `1uF` AC coupling, then `4.7R` series to the line-out connector.
 - `LOUTN` and `ROUTN` are disconnected in the normal hardware path.
 - MAX98306 speaker amp is not used during the current noise debug.
-- Amp feature exists in firmware, `AMP_SHDN` is IO54, default off.
+- Amp feature exists in firmware, `AMP_SHDN` is IO54, default on.
 
 ## Firmware State
 
@@ -37,6 +37,7 @@ WT0132P4 is configured for ES8390:
 - sample rate: `44100 Hz`
 - I2S clock source: `I2S_CLK_SRC_APLL`
 - I2S word length: `16-bit`
+- codec output volume: `90%`
 - normal AMY synth boot: enabled
 - AMY perf/status logs: enabled
 - auto sine diagnostic: disabled

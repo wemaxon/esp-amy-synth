@@ -25,44 +25,14 @@
 #include "synth/app/rhythm.h"
 #include "synth/app/settings.h"
 #include "synth/app/sound.h"
+#include "synth/app/state.h"
 #include "synth/app/tempo.h"
+#include "synth/app/ui_model.h"
 #include "synth/app/wheel.h"
 #include "synth/chord_engine.h"
 #include "synth/looper.h"
 #include "synth/play_mode.h"
 #include "synth/sound.h"
-
-typedef struct {
-    synth_key_t key;
-    int8_t global_octave_shift;
-    int8_t button_octave_shift[SYNTH_CHORD_BUTTON_COUNT];
-    synth_chord_modifier_t modifier;
-    synth_joystick_mode_t joystick_mode;
-    synth_bass_mode_t bass_mode;
-    bool voice_leading_enabled;
-    synth_app_chord_state_t chords;
-    synth_app_sound_t sound;
-    synth_play_mode_t mode;
-    synth_app_tempo_t tempo;
-    synth_app_effects_t fx;
-    synth_app_modulation_t lfo;
-    synth_app_modulation_t tremolo;
-    synth_app_wheel_t wheel;
-    control_joystick_direction_t last_menu_direction;
-    control_joystick_direction_t last_play_direction;
-    control_joystick_direction_t joystick_direction;
-    uint8_t slash_bass_slot;
-    synth_app_looper_t looper;
-    synth_app_mixer_t mixer;
-    synth_app_drum_modes_t drums;
-    bool mode_bpm_submenu;
-    synth_app_play_state_t play;
-    bool drone_active;
-    uint8_t drone_slot;
-    char chord_name[16];
-    char status[22];
-    TaskHandle_t task;
-} synth_app_state_t;
 
 static const char *TAG = "SYNTH_APP";
 
@@ -138,16 +108,6 @@ static void set_status(const char *status)
     }
 }
 
-static bool any_chord_locked(void)
-{
-    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
-        if (s_app.chords.locked_modifier[slot] != SYNTH_CHORD_MOD_NONE) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static synth_amy_envelope_t current_envelope(void)
 {
     return synth_app_effects_envelope(&s_app.fx, s_app.mode == SYNTH_PLAY_MODE_REPEAT);
@@ -184,51 +144,7 @@ static void apply_current_glide(void)
 
 static void update_ui(void)
 {
-    play_ui_model_t model = {0};
-    play_ui_model_init(&model);
-    model.screen = active_screen();
-    model.key = s_app.key;
-    model.global_octave_shift = s_app.global_octave_shift;
-    memcpy(model.button_octave_shift, s_app.button_octave_shift, sizeof(model.button_octave_shift));
-    model.modifier = s_app.modifier;
-    model.joystick_mode = s_app.joystick_mode;
-    model.bass_mode = s_app.bass_mode;
-    model.voice_leading_enabled = s_app.voice_leading_enabled;
-    model.chord_lock_enabled = any_chord_locked();
-    model.sound = synth_app_sound_current(&s_app.sound);
-    model.mode = s_app.mode;
-    model.bpm = current_bpm();
-    model.mode_bpm_submenu = s_app.mode_bpm_submenu;
-    model.strum_speed = s_app.play.strum_speed;
-    model.arp_pattern = s_app.play.arp_pattern;
-    model.arp_rate = s_app.play.arp_rate;
-    model.arp_chord_mode = s_app.play.arp_chord_mode;
-    model.repeat_rate = s_app.play.repeat_rate;
-    model.drum_kit = s_app.drums.kit;
-    model.drum_loop_style = s_app.drums.loop_style;
-    model.drum_loop_variation = s_app.drums.loop_variation;
-    model.drum_loop_running = synth_app_drums_loop_active(&s_app.drums);
-    strlcpy(model.drum_auto_rate, synth_app_drums_auto_rate_name(&s_app.drums), sizeof(model.drum_auto_rate));
-    model.held_mask = s_app.chords.held_mask;
-    model.focus_slot = s_app.chords.focus_slot;
-    model.effect_index = s_app.fx.effect_index;
-    memcpy(model.effects, s_app.fx.enabled, sizeof(model.effects));
-    model.lfo_level = s_app.fx.lfo_level;
-    model.delay_level = s_app.fx.delay_level;
-    model.tremolo_level = s_app.fx.tremolo_level;
-    model.voice_level = s_app.fx.voice_level;
-    model.adsr_preset = s_app.fx.adsr_preset;
-    model.attack_ms = s_app.fx.attack_ms;
-    model.release_ms = s_app.fx.release_ms;
-    model.glide_level = s_app.fx.glide_level;
-    model.wheel_present = synth_app_wheel_present(&s_app.wheel);
-    model.wheel_percent = synth_app_wheel_percent(&s_app.wheel);
-    model.volume_percent = synth_app_wheel_volume_percent(&s_app.wheel);
-    model.joystick_direction = s_app.joystick_direction;
-    synth_looper_get_snapshot(&model.looper);
-    strlcpy(model.chord_name, s_app.chord_name, sizeof(model.chord_name));
-    strlcpy(model.status, s_app.status, sizeof(model.status));
-    play_ui_update(&model);
+    synth_app_ui_render(&s_app, active_screen());
 }
 
 static uint8_t slot_from_degree(uint8_t degree)

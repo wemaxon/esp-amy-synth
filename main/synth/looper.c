@@ -12,6 +12,7 @@
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "synth/crossfade.h"
+#include "synth/looper_dsp.h"
 #include "synth/metronome.h"
 
 typedef struct {
@@ -45,27 +46,14 @@ typedef struct {
 
 static const char *TAG = "SYNTH_LOOPER";
 
-static const uint16_t GAIN_Q8_UNITY = 256;
 static const uint16_t LIVE_MIX_GAIN_Q8 = 192;
 static const uint8_t LOOP_TRACK_DEFAULT_VOLUME_PERCENT = 85;
 static const uint32_t MIN_RECORD_MS = 120;
 static const uint32_t LOOP_SEAM_CROSSFADE_MS = 50;
-static const int32_t SOFT_LIMIT_THRESHOLD = 24576;
-static const uint32_t SOFT_LIMIT_KNEE = 8191;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
 static const uint32_t METER_LOG_INTERVAL_MS = 1000;
 static const uint32_t CLIP_LOG_INTERVAL_MS = 500;
 #endif
-static const uint16_t LOOP_BUS_GAIN_BY_TRACKS_Q8[SYNTH_LOOPER_TRACK_COUNT + 1] = {
-    0,
-    192,
-    160,
-    142,
-    128,
-    118,
-    110,
-};
-
 static synth_looper_track_t s_tracks[SYNTH_LOOPER_TRACK_COUNT];
 static uint32_t s_sample_rate_hz;
 static uint8_t s_channel_count;
@@ -239,45 +227,6 @@ static uint8_t first_empty_track_locked(void)
     return SYNTH_LOOPER_TRACK_COUNT;
 }
 
-static int16_t encode_sample(int32_t sample)
-{
-    if (sample > 32767) {
-        sample = 32767;
-    } else if (sample < -32768) {
-        sample = -32768;
-    }
-    return (int16_t)sample;
-}
-
-static int32_t decode_sample(int16_t sample)
-{
-    return (int32_t)sample;
-}
-
-static int32_t apply_gain_q8(int32_t sample, uint16_t gain_q8)
-{
-    if (gain_q8 == GAIN_Q8_UNITY) {
-        return sample;
-    }
-    return (sample * (int32_t)gain_q8) / (int32_t)GAIN_Q8_UNITY;
-}
-
-static int32_t apply_percent_gain(int32_t sample, uint8_t percent)
-{
-    if (percent >= 100) {
-        return sample;
-    }
-    return (sample * (int32_t)percent) / 100;
-}
-
-static uint16_t loop_bus_gain_q8(uint8_t active_tracks)
-{
-    if (active_tracks > SYNTH_LOOPER_TRACK_COUNT) {
-        active_tracks = SYNTH_LOOPER_TRACK_COUNT;
-    }
-    return LOOP_BUS_GAIN_BY_TRACKS_Q8[active_tracks];
-}
-
 static uint8_t track_bit(uint8_t track)
 {
     return (uint8_t)(1U << track);
@@ -300,67 +249,6 @@ static uint32_t seam_crossfade_frames_for_length(uint32_t length_frames)
         frames = max_frames;
     }
     return frames;
-}
-
-static uint32_t abs_sample_i32(int32_t sample)
-{
-    if (sample < 0) {
-        return sample == INT32_MIN ? (uint32_t)INT32_MAX : (uint32_t)-sample;
-    }
-    return (uint32_t)sample;
-}
-
-#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-static void meter_peak(uint32_t *peak, int32_t sample)
-{
-    uint32_t magnitude = abs_sample_i32(sample);
-    if (magnitude > *peak) {
-        *peak = magnitude;
-    }
-}
-
-static uint8_t peak_to_percent(uint32_t peak)
-{
-    if (peak >= 32767U) {
-        return 100;
-    }
-    return (uint8_t)(((peak * 100U) + 16383U) / 32767U);
-}
-
-static void increment_meter_counter(uint16_t *counter)
-{
-    if (*counter < UINT16_MAX) {
-        ++(*counter);
-    }
-}
-#endif
-
-static int16_t soft_limit_i16(int32_t sample, synth_looper_meter_t *meter)
-{
-    uint32_t magnitude = abs_sample_i32(sample);
-#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-    if (magnitude > 32767U && meter != NULL) {
-        increment_meter_counter(&meter->would_clip_samples);
-    }
-#endif
-    if (magnitude <= (uint32_t)SOFT_LIMIT_THRESHOLD) {
-        return (int16_t)sample;
-    }
-
-#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-    if (meter != NULL) {
-        increment_meter_counter(&meter->limited_samples);
-    }
-#endif
-
-    uint32_t over = magnitude - (uint32_t)SOFT_LIMIT_THRESHOLD;
-    uint32_t shaped = (uint32_t)SOFT_LIMIT_THRESHOLD +
-                      (uint32_t)(((uint64_t)over * SOFT_LIMIT_KNEE) /
-                                 ((uint64_t)over + SOFT_LIMIT_KNEE));
-    if (shaped > 32767U) {
-        shaped = 32767U;
-    }
-    return sample < 0 ? (int16_t)-(int32_t)shaped : (int16_t)shaped;
 }
 
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
@@ -642,7 +530,7 @@ static bool process_track_recording(synth_looper_process_track_t *track,
     if (channels > 1) {
         mono = (mono + block[sample_index + 1]) / 2;
     }
-    track->samples[track->record_position++] = encode_sample(mono);
+    track->samples[track->record_position++] = synth_looper_dsp_encode_sample(mono);
 
     if (track->target_record_frames > 0 && track->record_position >= track->target_record_frames) {
         return true;
@@ -673,14 +561,14 @@ static bool process_track_playback(synth_looper_process_track_t *track,
         return false;
     }
 
-    int32_t sample = decode_sample(track->samples[position]);
+    int32_t sample = track->samples[position];
     uint32_t crossfade_frames = seam_crossfade_frames_for_length(track->length_frames);
     if (crossfade_frames > 0 && position >= track->length_frames - crossfade_frames) {
         uint32_t tail_offset = position - (track->length_frames - crossfade_frames);
-        int32_t head = decode_sample(track->samples[0]);
+        int32_t head = track->samples[0];
         sample = synth_crossfade_smooth_i32(sample, head, tail_offset, crossfade_frames);
     }
-    sample = apply_percent_gain(sample, track->volume_percent);
+    sample = synth_looper_dsp_apply_percent_gain(sample, track->volume_percent);
     *mixed_sample += sample;
     return true;
 }
@@ -842,11 +730,13 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
 #endif
 
         if (active_playback_tracks > 0) {
-            loop_mix = apply_gain_q8(loop_mix, loop_bus_gain_q8(active_playback_tracks));
+            loop_mix = synth_looper_dsp_apply_gain_q8(
+                loop_mix,
+                synth_looper_dsp_bus_gain_q8(active_playback_tracks));
         }
         loop_mix += click_mix;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-        meter_peak(&loop_peak, loop_mix);
+        synth_looper_dsp_meter_peak(&loop_peak, loop_mix);
 #endif
 
         uint32_t sample_index = frame * channels;
@@ -855,8 +745,8 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
             for (uint8_t channel = 0; channel < channels; ++channel) {
                 int32_t live = block[sample_index + channel];
-                meter_peak(&live_peak, live);
-                meter_peak(&output_peak, live);
+                synth_looper_dsp_meter_peak(&live_peak, live);
+                synth_looper_dsp_meter_peak(&output_peak, live);
             }
 #endif
             continue;
@@ -865,23 +755,23 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
         for (uint8_t channel = 0; channel < channels; ++channel) {
             int32_t live_input = block[sample_index + channel];
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-            meter_peak(&live_peak, live_input);
+            synth_looper_dsp_meter_peak(&live_peak, live_input);
 #endif
-            int32_t live = apply_gain_q8(live_input, LIVE_MIX_GAIN_Q8);
+            int32_t live = synth_looper_dsp_apply_gain_q8(live_input, LIVE_MIX_GAIN_Q8);
             int32_t mixed = live + loop_mix;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-            block[sample_index + channel] = soft_limit_i16(mixed, &block_meter);
-            meter_peak(&output_peak, block[sample_index + channel]);
+            block[sample_index + channel] = synth_looper_dsp_soft_limit(mixed, &block_meter);
+            synth_looper_dsp_meter_peak(&output_peak, block[sample_index + channel]);
 #else
-            block[sample_index + channel] = soft_limit_i16(mixed, NULL);
+            block[sample_index + channel] = synth_looper_dsp_soft_limit(mixed, NULL);
 #endif
         }
     }
 
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-    block_meter.live_peak_percent = peak_to_percent(live_peak);
-    block_meter.loop_peak_percent = peak_to_percent(loop_peak);
-    block_meter.output_peak_percent = peak_to_percent(output_peak);
+    block_meter.live_peak_percent = synth_looper_dsp_peak_percent(live_peak);
+    block_meter.loop_peak_percent = synth_looper_dsp_peak_percent(loop_peak);
+    block_meter.output_peak_percent = synth_looper_dsp_peak_percent(output_peak);
     log_meter_if_due(&block_meter, block_start, max_audible_tracks);
 #endif
 

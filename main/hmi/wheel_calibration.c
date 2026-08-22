@@ -4,7 +4,8 @@
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
-#include "nvs.h"
+#include "hmi/calibration_math.h"
+#include "hmi/calibration_store.h"
 
 typedef struct {
     uint32_t magic;
@@ -43,6 +44,11 @@ static bool calibration_is_valid(const stored_calibration_t *stored)
            stored->invert <= 1;
 }
 
+static bool stored_calibration_is_valid(const void *data)
+{
+    return calibration_is_valid((const stored_calibration_t *)data);
+}
+
 esp_err_t wheel_calibration_init(void)
 {
     if (s_initialized) {
@@ -50,23 +56,19 @@ esp_err_t wheel_calibration_init(void)
     }
 
     wheel_calibration_t cal = default_calibration();
-    nvs_handle_t handle = 0;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    stored_calibration_t stored = {0};
+    esp_err_t err = calibration_store_load(NVS_NAMESPACE,
+                                           NVS_KEY,
+                                           &stored,
+                                           sizeof(stored),
+                                           stored_calibration_is_valid);
     if (err == ESP_OK) {
-        stored_calibration_t stored = {0};
-        size_t size = sizeof(stored);
-        err = nvs_get_blob(handle, NVS_KEY, &stored, &size);
-        nvs_close(handle);
-        if (err == ESP_OK && size == sizeof(stored) && calibration_is_valid(&stored)) {
-            cal.min_raw = stored.min_raw;
-            cal.max_raw = stored.max_raw;
-            cal.invert = stored.invert != 0;
-            cal.saved = true;
-        } else if (err != ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGW(TAG, "ignoring invalid wheel calibration: %s", esp_err_to_name(err));
-        }
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGW(TAG, "NVS open failed for wheel calibration: %s", esp_err_to_name(err));
+        cal.min_raw = stored.min_raw;
+        cal.max_raw = stored.max_raw;
+        cal.invert = stored.invert != 0;
+        cal.saved = true;
+    } else if (err != ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "ignoring invalid wheel calibration: %s", esp_err_to_name(err));
     }
 
     portENTER_CRITICAL(&s_lock);
@@ -109,17 +111,7 @@ esp_err_t wheel_calibration_save(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    nvs_handle_t handle = 0;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = nvs_set_blob(handle, NVS_KEY, &stored, sizeof(stored));
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
-    nvs_close(handle);
+    esp_err_t err = calibration_store_save(NVS_NAMESPACE, NVS_KEY, &stored, sizeof(stored));
 
     if (err == ESP_OK) {
         portENTER_CRITICAL(&s_lock);
@@ -131,22 +123,12 @@ esp_err_t wheel_calibration_save(void)
 
 esp_err_t wheel_calibration_reset(void)
 {
-    nvs_handle_t handle = 0;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        esp_err_t erase_err = nvs_erase_key(handle, NVS_KEY);
-        if (erase_err != ESP_OK && erase_err != ESP_ERR_NVS_NOT_FOUND) {
-            err = erase_err;
-        } else {
-            err = nvs_commit(handle);
-        }
-        nvs_close(handle);
-    }
+    esp_err_t err = calibration_store_erase(NVS_NAMESPACE, NVS_KEY);
 
     portENTER_CRITICAL(&s_lock);
     s_calibration = default_calibration();
     portEXIT_CRITICAL(&s_lock);
-    return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
+    return err;
 }
 
 void wheel_calibration_begin_range_capture(int16_t raw)
@@ -176,17 +158,5 @@ float wheel_calibration_normalize(int16_t raw)
     wheel_calibration_t cal = {0};
     wheel_calibration_get(&cal);
 
-    int32_t span = (int32_t)cal.max_raw - cal.min_raw;
-    if (span <= 0) {
-        return 0.0f;
-    }
-
-    float value = ((float)raw - (float)cal.min_raw) / (float)span;
-    if (value < 0.0f) {
-        value = 0.0f;
-    } else if (value > 1.0f) {
-        value = 1.0f;
-    }
-
-    return cal.invert ? 1.0f - value : value;
+    return calibration_normalize_range(raw, cal.min_raw, cal.max_raw, cal.invert);
 }

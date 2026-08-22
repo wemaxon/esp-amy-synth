@@ -1,6 +1,5 @@
 #include "hmi/controls.h"
 
-#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
 
@@ -13,11 +12,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hmi/control_i2c.h"
+#include "hmi/control_logic.h"
 #include "hmi/joystick_calibration.h"
 #include "hmi/switch_expander.h"
 #include "hmi/wheel_calibration.h"
 
-#define EVENT_QUEUE_LEN 16
 #define CONTROLS_TASK_STACK_SIZE 4096
 
 typedef struct {
@@ -37,8 +36,6 @@ static const char *TAG = "CONTROLS";
 static const TickType_t SERVICE_PERIOD_TICKS = pdMS_TO_TICKS(20);
 static const TickType_t HELD_LOG_TICKS = pdMS_TO_TICKS(500);
 static const TickType_t EXPANDER_SLOW_POLL_TICKS = pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_EXPANDER_SLOW_POLL_MS);
-static const float DIRECTION_AXIS_DEADZONE = 0.75f;
-static const float DIRECTION_DIAGONAL_AXIS_MIN = 0.55f;
 
 #define SWITCH_MAP_FROM_CONFIG(name) \
     { \
@@ -91,9 +88,7 @@ static switch_expander_t s_expanders[SWITCH_EXPANDER_STORAGE_COUNT];
 static uint16_t s_expander_port_state[SWITCH_EXPANDER_STORAGE_COUNT];
 static bool s_expander_present[SWITCH_EXPANDER_STORAGE_COUNT];
 static switch_debounce_t s_switches[CONTROL_SWITCH_COUNT];
-static control_event_t s_events[EVENT_QUEUE_LEN];
-static size_t s_event_head;
-static size_t s_event_tail;
+static control_event_queue_t s_event_queue;
 static control_joystick_state_t s_joystick;
 static control_wheel_state_t s_wheel;
 static volatile uint32_t s_gpio_irq_pending_mask;
@@ -197,27 +192,6 @@ const char *controls_joystick_direction_name(control_joystick_direction_t direct
     default:
         return "UNKNOWN";
     }
-}
-
-control_joystick_direction_t controls_joystick_direction_from_axes(float x, float y)
-{
-    float abs_x = fabsf(x);
-    float abs_y = fabsf(y);
-    if (abs_x < DIRECTION_AXIS_DEADZONE && abs_y < DIRECTION_AXIS_DEADZONE) {
-        return CONTROL_JOYSTICK_CENTER;
-    }
-
-    if (abs_x >= DIRECTION_DIAGONAL_AXIS_MIN && abs_y >= DIRECTION_DIAGONAL_AXIS_MIN) {
-        if (x > 0.0f) {
-            return y > 0.0f ? CONTROL_JOYSTICK_UP_RIGHT : CONTROL_JOYSTICK_DOWN_RIGHT;
-        }
-        return y > 0.0f ? CONTROL_JOYSTICK_UP_LEFT : CONTROL_JOYSTICK_DOWN_LEFT;
-    }
-
-    if (abs_x >= abs_y) {
-        return x > 0.0f ? CONTROL_JOYSTICK_RIGHT : CONTROL_JOYSTICK_LEFT;
-    }
-    return y > 0.0f ? CONTROL_JOYSTICK_UP : CONTROL_JOYSTICK_DOWN;
 }
 
 static esp_err_t probe_i2c_addr(uint8_t address)
@@ -335,13 +309,7 @@ static esp_err_t init_gpio_interrupts(void)
 static void push_event(control_switch_t sw, bool pressed)
 {
     portENTER_CRITICAL(&s_event_mux);
-    size_t next_head = (s_event_head + 1) % EVENT_QUEUE_LEN;
-    if (next_head == s_event_tail) {
-        s_event_tail = (s_event_tail + 1) % EVENT_QUEUE_LEN;
-    }
-    s_events[s_event_head].sw = sw;
-    s_events[s_event_head].type = pressed ? CONTROL_EVENT_SWITCH_PRESSED : CONTROL_EVENT_SWITCH_RELEASED;
-    s_event_head = next_head;
+    control_event_queue_push(&s_event_queue, sw, pressed);
     portEXIT_CRITICAL(&s_event_mux);
 }
 
@@ -781,8 +749,7 @@ esp_err_t controls_init(i2c_master_bus_handle_t bus)
     }
 
     ESP_RETURN_ON_ERROR(init_gpio_interrupts(), TAG, "GPIO interrupt init failed");
-    s_event_head = 0;
-    s_event_tail = 0;
+    control_event_queue_reset(&s_event_queue);
     s_initialized = true;
     ESP_RETURN_ON_ERROR(controls_update(), TAG, "initial controls update failed");
     now = xTaskGetTickCount();
@@ -870,14 +837,9 @@ esp_err_t controls_pop_event(control_event_t *event)
     }
 
     portENTER_CRITICAL(&s_event_mux);
-    if (s_event_tail == s_event_head) {
-        portEXIT_CRITICAL(&s_event_mux);
-        return ESP_ERR_NOT_FOUND;
-    }
-    *event = s_events[s_event_tail];
-    s_event_tail = (s_event_tail + 1) % EVENT_QUEUE_LEN;
+    esp_err_t err = control_event_queue_pop(&s_event_queue, event);
     portEXIT_CRITICAL(&s_event_mux);
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t controls_axis_read(control_axis_t axis, control_axis_state_t *state)

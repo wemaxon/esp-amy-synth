@@ -29,6 +29,7 @@ typedef struct {
     int64_t next_profile_log_us;
 } amy_perf_stats_t;
 
+#if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED
 typedef struct {
     uint16_t audible;
     uint16_t audible_low;
@@ -36,11 +37,15 @@ typedef struct {
     uint16_t aux;
     uint16_t suspended;
 } amy_osc_stats_t;
+#endif
 
+#if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED || ESP_POCKET_AUDIO_AMY_PROFILE_LOG_ENABLED
 static const char *TAG = "SYNTH_AMY";
+#endif
 
 static amy_perf_stats_t s_perf;
 
+#if ESP_POCKET_AUDIO_AMY_PERF_LOG_ENABLED
 static amy_osc_stats_t amy_runtime_osc_stats(void)
 {
     amy_osc_stats_t stats = {0};
@@ -76,6 +81,7 @@ static amy_osc_stats_t amy_runtime_osc_stats(void)
     }
     return stats;
 }
+#endif
 
 void synth_amy_perf_reset(void)
 {

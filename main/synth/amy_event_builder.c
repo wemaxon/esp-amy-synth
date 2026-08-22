@@ -1,0 +1,121 @@
+#include "synth/amy_event_builder.h"
+
+#include <stddef.h>
+
+static float clamp_float(float value, float minimum, float maximum)
+{
+    if (value < minimum) {
+        return minimum;
+    }
+    if (value > maximum) {
+        return maximum;
+    }
+    return value;
+}
+
+void amy_event_apply_envelope(amy_event *event, const synth_amy_envelope_t *envelope)
+{
+    if (event == NULL || envelope == NULL) {
+        return;
+    }
+
+    event->eg_type[0] = ENVELOPE_NORMAL;
+    event->eg0_times[0] = envelope->attack_ms;
+    event->eg0_values[0] = 1.0f;
+    event->eg0_times[1] = envelope->decay_ms;
+    event->eg0_values[1] = envelope->sustain_level;
+    event->eg0_times[2] = envelope->release_ms;
+    event->eg0_values[2] = 0.0f;
+}
+
+void amy_event_apply_filter(amy_event *event,
+                            const amy_raw_profile_t *profile,
+                            const amy_filter_controls_t *controls)
+{
+    if (event == NULL || profile == NULL || controls == NULL) {
+        return;
+    }
+
+    bool profile_filter = profile->filter_cutoff_hz < controls->maximum_hz;
+    if (controls->enabled || profile_filter) {
+        float cutoff = profile->filter_cutoff_hz;
+        if (controls->enabled && controls->cutoff_hz < cutoff) {
+            cutoff = controls->cutoff_hz;
+        }
+        event->filter_type = FILTER_LPF;
+        event->filter_freq_coefs[COEF_CONST] =
+            clamp_float(cutoff, controls->minimum_hz, controls->maximum_hz);
+        event->resonance = controls->enabled ? 0.6f : profile->resonance;
+    } else {
+        event->filter_type = FILTER_NONE;
+    }
+}
+
+void amy_event_build_raw_note(amy_event *event,
+                              uint16_t osc,
+                              uint8_t midi_note,
+                              const amy_sound_runtime_t *runtime,
+                              const amy_raw_note_event_config_t *config)
+{
+    if (event == NULL || runtime == NULL || config == NULL) {
+        return;
+    }
+
+    *event = amy_default_event();
+    const amy_raw_profile_t *profile = &runtime->raw;
+    event->osc = osc;
+    event->wave = profile->wave;
+    if (runtime->backend == AMY_SOUND_BACKEND_PCM) {
+        event->preset = runtime->pcm_preset;
+        event->feedback = runtime->pcm_loop ? 1.0f : 0.0f;
+    }
+    event->midi_note = (float)midi_note + config->detune_semitones;
+    event->velocity = clamp_float(runtime->velocity, 0.0f, 1.0f);
+    event->amp_coefs[COEF_CONST] = config->amplitude;
+    event->amp_coefs[COEF_EXT1] = config->tremolo_enabled ? 1.0f : 0.0f;
+    event->freq_coefs[COEF_EXT0] = config->lfo_enabled ? 1.0f : 0.0f;
+    event->portamento_ms = config->portamento_ms;
+    event->pan_coefs[COEF_CONST] = clamp_float(config->pan, 0.0f, 1.0f);
+    event->duty_coefs[COEF_CONST] = profile->duty;
+    amy_event_apply_filter(event, profile, &config->filter);
+    amy_event_apply_envelope(event, config->envelope);
+}
+
+void amy_event_build_patch_note(amy_event *event,
+                                uint8_t synth_id,
+                                float midi_note,
+                                const amy_sound_runtime_t *runtime,
+                                uint16_t portamento_ms)
+{
+    if (event == NULL) {
+        return;
+    }
+    *event = amy_default_event();
+    event->synth = synth_id;
+    event->midi_note = midi_note;
+    float velocity = runtime != NULL ? runtime->velocity : 0.55f;
+    event->velocity = clamp_float(velocity, 0.0f, 1.0f);
+    event->portamento_ms = portamento_ms;
+}
+
+void amy_event_build_raw_note_off(amy_event *event, uint16_t osc)
+{
+    if (event == NULL) {
+        return;
+    }
+    *event = amy_default_event();
+    event->osc = osc;
+    event->velocity = 0.0f;
+}
+
+void amy_event_build_patch_note_off(amy_event *event, uint8_t synth_id, uint8_t midi_note)
+{
+    if (event == NULL) {
+        return;
+    }
+    *event = amy_default_event();
+    event->synth = synth_id;
+    event->midi_note = midi_note;
+    event->velocity = 0.0f;
+}
+

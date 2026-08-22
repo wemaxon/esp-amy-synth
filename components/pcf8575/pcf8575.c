@@ -1,5 +1,7 @@
 #include "pcf8575.h"
 
+#include "pcf857x.h"
+
 esp_err_t pcf8575_init(
     pcf8575_t *dev,
     i2c_master_bus_handle_t bus,
@@ -15,13 +17,7 @@ esp_err_t pcf8575_init(
     dev->output_latch = 0xFFFF;
     dev->timeout_ms = timeout_ms;
 
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = address,
-        .scl_speed_hz = scl_speed_hz,
-    };
-
-    esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &dev->dev);
+    esp_err_t err = pcf857x_add_device(bus, address, scl_speed_hz, &dev->dev);
     if (err != ESP_OK) {
         return err;
     }
@@ -36,7 +32,7 @@ esp_err_t pcf8575_read_port(const pcf8575_t *dev, uint16_t *value)
     }
 
     uint8_t rx[2] = {0};
-    esp_err_t err = i2c_master_receive(dev->dev, rx, sizeof(rx), dev->timeout_ms);
+    esp_err_t err = pcf857x_read(dev->dev, dev->timeout_ms, rx, sizeof(rx));
     if (err != ESP_OK) {
         return err;
     }
@@ -55,7 +51,7 @@ esp_err_t pcf8575_write_port(pcf8575_t *dev, uint16_t value)
         (uint8_t)(value & 0xFF),
         (uint8_t)(value >> 8),
     };
-    esp_err_t err = i2c_master_transmit(dev->dev, tx, sizeof(tx), dev->timeout_ms);
+    esp_err_t err = pcf857x_write(dev->dev, dev->timeout_ms, tx, sizeof(tx));
     if (err == ESP_OK) {
         dev->output_latch = value;
     }

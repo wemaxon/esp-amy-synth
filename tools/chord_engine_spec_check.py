@@ -20,6 +20,7 @@ APP_KEY_H = ROOT / "main" / "synth" / "app" / "key.h"
 APP_SETTINGS_C = ROOT / "main" / "synth" / "app" / "settings.c"
 AMY_C = ROOT / "main" / "synth" / "amy_engine.c"
 AMY_H = ROOT / "main" / "synth" / "amy_engine.h"
+AMY_EVENT_BUILDER_C = ROOT / "main" / "synth" / "amy_event_builder.c"
 AMY_RUNTIME_C = ROOT / "main" / "synth" / "amy_runtime.c"
 AMY_VOICE_MAP_C = ROOT / "main" / "synth" / "amy_voice_map.c"
 PLAY_UI_C = ROOT / "main" / "hmi" / "play_ui.c"
@@ -366,7 +367,7 @@ def assert_voice_count_control(
     require("clamp_voice_count(requested_voice_limit)" in runtime_helper_body, "runtime voice helper must clamp user cap")
     require("synth_amy_all_off()" in setter_body, "voice-limit changes must silence stale roles")
     require(
-        "configure_patch_synth(runtime_for_sound(s_sound))" in setter_body,
+        "configure_patch_synth(amy_runtime_for_sound(s_sound))" in setter_body,
         "voice-limit changes must reconfigure loaded patch synths",
     )
     require(
@@ -440,6 +441,7 @@ def assert_glide_control(
     app_settings_c: str,
     amy_c: str,
     amy_h: str,
+    amy_event_builder_c: str,
     play_ui_c: str,
     play_ui_h: str,
 ) -> None:
@@ -448,6 +450,8 @@ def assert_glide_control(
     setter_body = function_body(amy_c, "synth_amy_set_portamento")
     raw_note_body = function_body(amy_c, "amy_note_on_raw_osc")
     patch_note_body = function_body(amy_c, "amy_note_on_patch_synth")
+    raw_builder_body = function_body(amy_event_builder_c, "amy_event_build_raw_note")
+    patch_builder_body = function_body(amy_event_builder_c, "amy_event_build_patch_note")
 
     require("esp_err_t synth_amy_set_portamento(uint16_t portamento_ms);" in amy_h, "AMY portamento API missing")
     require("static uint16_t s_portamento_ms;" in amy_c, "portamento state missing")
@@ -460,8 +464,12 @@ def assert_glide_control(
     require("synth_amy_set_portamento(current_glide_ms())" in app_c, "app must apply AMY portamento")
     require("PLAY_UI_EFFECT_GLIDE" in play_ui_h and "uint8_t glide_level;" in play_ui_h, "play UI glide model missing")
     require("PLAY_UI_EFFECT_GLIDE" in play_ui_c and '"GLIDE %s"' in play_ui_c, "glide UI row missing")
-    require("event.portamento_ms = s_portamento_ms" in raw_note_body, "raw note-on must carry portamento")
-    require("event.portamento_ms = s_portamento_ms" in patch_note_body, "patch note-on must carry portamento")
+    require(".portamento_ms = s_portamento_ms" in raw_note_body and
+            "event->portamento_ms = config->portamento_ms" in raw_builder_body,
+            "raw note-on must carry portamento")
+    require("s_portamento_ms" in patch_note_body and
+            "event->portamento_ms = portamento_ms" in patch_builder_body,
+            "patch note-on must carry portamento")
     require("apply_patch_portamento()" in runtime_controls_body, "patch synths must receive portamento setting")
     require("apply_raw_portamento(i)" in setter_body, "active raw voices must receive portamento setting")
 
@@ -478,6 +486,7 @@ def main() -> int:
     app_settings_c = read(APP_SETTINGS_C)
     amy_c = read(AMY_C)
     amy_h = read(AMY_H)
+    amy_event_builder_c = read(AMY_EVENT_BUILDER_C)
     amy_runtime_c = read(AMY_RUNTIME_C)
     amy_voice_map_c = read(AMY_VOICE_MAP_C)
     play_ui_c = read(PLAY_UI_C)
@@ -500,7 +509,13 @@ def main() -> int:
     require("typedef struct {" in app_effects_h and "synth_app_effects_t" in app_effects_h,
             "app effects state module missing")
     assert_adsr_control(app_c, app_effects_c, app_settings_c, amy_c, amy_h, play_ui_c, play_ui_h)
-    assert_glide_control(app_c, app_settings_c, amy_c, amy_h, play_ui_c, play_ui_h)
+    assert_glide_control(app_c,
+                         app_settings_c,
+                         amy_c,
+                         amy_h,
+                         amy_event_builder_c,
+                         play_ui_c,
+                         play_ui_h)
 
     print("PASS: chord engine matches checked HiChord manual invariants")
     return 0

@@ -18,7 +18,9 @@ static const char *TAG = "ESP_POCKET_AUDIO";
 static esp_pocket_audio_hw_t s_hw;
 static bool s_initialized;
 static bool s_codec_address_straps_initialized;
+#if ESP_POCKET_AUDIO_AMP_ENABLED
 static bool s_amp_initialized;
+#endif
 static bool s_amp_enabled;
 
 #if ESP_POCKET_AUDIO_I2S_BITS_PER_SAMPLE == 32
@@ -243,6 +245,7 @@ static esp_err_t init_i2s_clocking(void)
     return ESP_OK;
 }
 
+#if ESP_POCKET_AUDIO_AMP_ENABLED
 static int amp_shdn_level_for_enabled(bool enabled)
 {
 #if ESP_POCKET_AUDIO_AMP_SHDN_ACTIVE_LOW
@@ -251,6 +254,7 @@ static int amp_shdn_level_for_enabled(bool enabled)
     return enabled ? 0 : 1;
 #endif
 }
+#endif
 
 esp_err_t esp_pocket_audio_amp_set_enabled(bool enabled)
 {

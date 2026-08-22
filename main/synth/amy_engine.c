@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "synth/amy_audio.h"
+#include "synth/amy_event_builder.h"
 #include "synth/amy_flanger.h"
 #include "synth/amy_perf.h"
 #include "synth/amy_runtime.h"
@@ -185,21 +186,6 @@ static uint8_t clamp_voice_count(uint8_t count)
     return count;
 }
 
-static const amy_sound_runtime_t *runtime_for_sound(synth_sound_t sound)
-{
-    return amy_runtime_for_sound(sound);
-}
-
-static const char *backend_name(amy_sound_backend_t backend)
-{
-    return amy_runtime_backend_name(backend);
-}
-
-static uint8_t runtime_voice_limit(const amy_sound_runtime_t *runtime)
-{
-    return amy_runtime_voice_limit(runtime, s_voice_limit);
-}
-
 static uint8_t main_osc_for_voice(uint8_t voice)
 {
     return voice;
@@ -208,11 +194,6 @@ static uint8_t main_osc_for_voice(uint8_t voice)
 static uint8_t pair_osc_for_voice(uint8_t voice)
 {
     return (uint8_t)(voice + AMY_STEREO_PAIR_OFFSET);
-}
-
-static bool runtime_supports_stereo_pairs(const amy_sound_runtime_t *runtime)
-{
-    return amy_runtime_supports_stereo_pairs(runtime, s_stereo_enabled);
 }
 
 static float main_pan_for_voice(uint8_t voice)
@@ -230,7 +211,8 @@ static float pair_pan_for_voice(uint8_t voice)
 
 static float raw_amp_scale_for_runtime(const amy_sound_runtime_t *runtime)
 {
-    return runtime_supports_stereo_pairs(runtime) ? RAW_STEREO_PAIR_AMP_SCALE : 1.0f;
+    return amy_runtime_supports_stereo_pairs(runtime, s_stereo_enabled) ?
+               RAW_STEREO_PAIR_AMP_SCALE : 1.0f;
 }
 
 static uint16_t patch_osc_capacity(uint8_t voices, uint8_t oscs_per_voice)
@@ -267,7 +249,7 @@ static uint32_t amy_config_max_voices(void)
 
 static uint16_t active_osc_count(void)
 {
-    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     uint16_t active = 0;
 
     for (uint8_t voice = 0; voice < AMY_MUSICAL_VOICE_COUNT; ++voice) {
@@ -294,21 +276,6 @@ static uint16_t allocated_patch_osc_count(void)
                       ((uint16_t)s_patch_voice_count * (uint16_t)s_patch_oscs_per_voice * synth_count));
 }
 
-static void set_amp_envelope(amy_event *event, const synth_amy_envelope_t *envelope)
-{
-    if (event == NULL || envelope == NULL) {
-        return;
-    }
-
-    event->eg_type[0] = ENVELOPE_NORMAL;
-    event->eg0_times[0] = envelope->attack_ms;
-    event->eg0_values[0] = 1.0f;
-    event->eg0_times[1] = envelope->decay_ms;
-    event->eg0_values[1] = envelope->sustain_level;
-    event->eg0_times[2] = envelope->release_ms;
-    event->eg0_values[2] = 0.0f;
-}
-
 static void raw_profile_envelope(const amy_sound_runtime_t *runtime, synth_amy_envelope_t *envelope)
 {
     if (runtime == NULL || envelope == NULL) {
@@ -332,32 +299,20 @@ static const synth_amy_envelope_t *effective_raw_envelope(const amy_sound_runtim
     return profile_envelope;
 }
 
-static void fill_raw_filter_event(amy_event *event, const amy_raw_profile_t *profile)
+static amy_filter_controls_t current_filter_controls(void)
 {
-    if (event == NULL || profile == NULL) {
-        return;
-    }
-
-    bool profile_filter = profile->filter_cutoff_hz < FILTER_CUTOFF_MAX_HZ;
-    if (s_filter_enabled || profile_filter) {
-        float cutoff = profile->filter_cutoff_hz;
-        if (s_filter_enabled) {
-            cutoff = fminf(cutoff, s_filter_cutoff_hz);
-        }
-        event->filter_type = FILTER_LPF;
-        event->filter_freq_coefs[COEF_CONST] =
-            clamp_float(cutoff, FILTER_CUTOFF_MIN_HZ, FILTER_CUTOFF_MAX_HZ);
-        event->resonance = s_filter_enabled ? 0.6f : profile->resonance;
-    } else {
-        event->filter_type = FILTER_NONE;
-    }
+    return (amy_filter_controls_t){
+        .enabled = s_filter_enabled,
+        .cutoff_hz = s_filter_cutoff_hz,
+        .minimum_hz = FILTER_CUTOFF_MIN_HZ,
+        .maximum_hz = FILTER_CUTOFF_MAX_HZ,
+    };
 }
 
 static void amy_note_off_raw_osc(uint16_t osc)
 {
-    amy_event event = amy_default_event();
-    event.osc = osc;
-    event.velocity = 0.0f;
+    amy_event event;
+    amy_event_build_raw_note_off(&event, osc);
     amy_add_event(&event);
 }
 
@@ -381,25 +336,19 @@ static void amy_note_on_raw_osc(uint8_t voice,
         return;
     }
 
-    const amy_raw_profile_t *profile = &runtime->raw;
-    amy_event event = amy_default_event();
-    event.osc = osc;
-    event.wave = profile->wave;
-    if (runtime->backend == AMY_SOUND_BACKEND_PCM) {
-        event.preset = runtime->pcm_preset;
-        event.feedback = runtime->pcm_loop ? 1.0f : 0.0f;
-    }
-    event.midi_note = (float)midi_note + detune_semitones;
-    event.velocity = clamp_float(runtime->velocity, 0.0f, 1.0f);
-    event.amp_coefs[COEF_CONST] = raw_amp_for_voice(voice, runtime, amp_scale);
-    event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
-    event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
-    event.portamento_ms = s_portamento_ms;
-    event.pan_coefs[COEF_CONST] = clamp_float(pan, 0.0f, 1.0f);
-    event.duty_coefs[COEF_CONST] = profile->duty;
-    fill_raw_filter_event(&event, profile);
     synth_amy_envelope_t profile_envelope = {0};
-    set_amp_envelope(&event, effective_raw_envelope(runtime, &profile_envelope));
+    amy_raw_note_event_config_t config = {
+        .amplitude = raw_amp_for_voice(voice, runtime, amp_scale),
+        .pan = pan,
+        .detune_semitones = detune_semitones,
+        .tremolo_enabled = s_tremolo_enabled,
+        .lfo_enabled = s_lfo_enabled,
+        .portamento_ms = s_portamento_ms,
+        .filter = current_filter_controls(),
+        .envelope = effective_raw_envelope(runtime, &profile_envelope),
+    };
+    amy_event event;
+    amy_event_build_raw_note(&event, osc, midi_note, runtime, &config);
     amy_add_event(&event);
 }
 
@@ -415,7 +364,7 @@ static void amy_note_on_raw(uint8_t voice, uint8_t midi_note, const amy_sound_ru
                         amp_scale);
 
     s_voices[voice].pair_active = false;
-    if (runtime_supports_stereo_pairs(runtime)) {
+    if (amy_runtime_supports_stereo_pairs(runtime, s_stereo_enabled)) {
         amy_note_on_raw_osc(voice,
                             pair_osc_for_voice(voice),
                             midi_note,
@@ -431,19 +380,15 @@ static void amy_note_on_patch_synth(uint8_t synth_id,
                                     float midi_note,
                                     const amy_sound_runtime_t *runtime)
 {
-    amy_event event = amy_default_event();
-    event.synth = synth_id;
-    event.midi_note = midi_note;
-    float velocity = runtime != NULL ? runtime->velocity : 0.55f;
-    event.velocity = clamp_float(velocity, 0.0f, 1.0f);
-    event.portamento_ms = s_portamento_ms;
+    amy_event event;
+    amy_event_build_patch_note(&event, synth_id, midi_note, runtime, s_portamento_ms);
     amy_add_event(&event);
 }
 
 static bool amy_note_on_patch(uint8_t midi_note, const amy_sound_runtime_t *runtime)
 {
     amy_note_on_patch_synth(AMY_PATCH_MAIN_SYNTH, (float)midi_note, runtime);
-    if (runtime_supports_stereo_pairs(runtime) && s_patch_pair_loaded) {
+    if (amy_runtime_supports_stereo_pairs(runtime, s_stereo_enabled) && s_patch_pair_loaded) {
         amy_note_on_patch_synth(AMY_PATCH_PAIR_SYNTH,
                                 (float)midi_note + RAW_STEREO_PAIR_DETUNE_SEMITONES,
                                 runtime);
@@ -454,10 +399,8 @@ static bool amy_note_on_patch(uint8_t midi_note, const amy_sound_runtime_t *runt
 
 static void amy_note_off_patch_synth(uint8_t synth_id, uint8_t midi_note)
 {
-    amy_event event = amy_default_event();
-    event.synth = synth_id;
-    event.midi_note = midi_note;
-    event.velocity = 0.0f;
+    amy_event event;
+    amy_event_build_patch_note_off(&event, synth_id, midi_note);
     amy_add_event(&event);
 }
 
@@ -477,13 +420,14 @@ static void apply_raw_filter_osc(uint8_t osc, const amy_raw_profile_t *profile)
 
     amy_event event = amy_default_event();
     event.osc = osc;
-    fill_raw_filter_event(&event, profile);
+    amy_filter_controls_t controls = current_filter_controls();
+    amy_event_apply_filter(&event, profile, &controls);
     amy_add_event(&event);
 }
 
 static void apply_raw_filter(uint8_t voice)
 {
-    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     if (voice >= AMY_MUSICAL_VOICE_COUNT ||
         (runtime->backend != AMY_SOUND_BACKEND_RAW && runtime->backend != AMY_SOUND_BACKEND_PCM)) {
         return;
@@ -518,7 +462,7 @@ static void apply_raw_envelope_osc(uint8_t osc, const synth_amy_envelope_t *enve
 {
     amy_event event = amy_default_event();
     event.osc = osc;
-    set_amp_envelope(&event, envelope);
+    amy_event_apply_envelope(&event, envelope);
     amy_add_event(&event);
 }
 
@@ -528,7 +472,7 @@ static void apply_raw_envelope(uint8_t voice)
         return;
     }
 
-    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     synth_amy_envelope_t profile_envelope = {0};
     const synth_amy_envelope_t *envelope = effective_raw_envelope(runtime, &profile_envelope);
 
@@ -584,7 +528,7 @@ static void apply_raw_stereo_state(uint8_t voice, const amy_sound_runtime_t *run
         return;
     }
 
-    bool pairs_enabled = runtime_supports_stereo_pairs(runtime);
+    bool pairs_enabled = amy_runtime_supports_stereo_pairs(runtime, s_stereo_enabled);
     float amp_scale = pairs_enabled ? RAW_STEREO_PAIR_AMP_SCALE : 1.0f;
 
     amy_event main_event = amy_default_event();
@@ -730,7 +674,7 @@ static void apply_patch_envelope_to_synth(uint8_t synth_id)
         amy_event event = amy_default_event();
         event.synth = synth_id;
         event.osc = osc;
-        set_amp_envelope(&event, &s_envelope);
+        amy_event_apply_envelope(&event, &s_envelope);
         amy_add_event(&event);
     }
 }
@@ -828,7 +772,7 @@ static void configure_patch_synth_instance(uint8_t synth_id, const amy_sound_run
     amy_event event = amy_default_event();
     event.synth = synth_id;
     event.patch_number = runtime->patch_number;
-    event.num_voices = runtime_voice_limit(runtime);
+    event.num_voices = amy_runtime_voice_limit(runtime, s_voice_limit);
     amy_add_event(&event);
 }
 
@@ -838,7 +782,7 @@ static void configure_patch_synth(const amy_sound_runtime_t *runtime)
         return;
     }
 
-    uint8_t voices = runtime_voice_limit(runtime);
+    uint8_t voices = amy_runtime_voice_limit(runtime, s_voice_limit);
     configure_patch_synth_instance(AMY_PATCH_MAIN_SYNTH, runtime);
 
     s_patch_loaded = true;
@@ -847,7 +791,7 @@ static void configure_patch_synth(const amy_sound_runtime_t *runtime)
     s_patch_voice_count = voices;
     s_patch_oscs_per_voice = runtime->oscs_per_voice;
 
-    if (runtime_supports_stereo_pairs(runtime)) {
+    if (amy_runtime_supports_stereo_pairs(runtime, s_stereo_enabled)) {
         configure_patch_synth_instance(AMY_PATCH_PAIR_SYNTH, runtime);
         s_patch_pair_loaded = true;
     }
@@ -879,7 +823,7 @@ static void replay_active_patch_voices(const amy_sound_runtime_t *runtime)
 
 static void reload_patch_synth_preserving_notes(void)
 {
-    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     if (!s_patch_loaded || runtime->backend != AMY_SOUND_BACKEND_PATCH) {
         return;
     }
@@ -920,7 +864,7 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const amy_sound_runtime_t *runtime = runtime_for_sound(sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(sound);
     if (s_initialized && sound == s_sound &&
         (runtime->backend != AMY_SOUND_BACKEND_PATCH || s_patch_loaded)) {
         return ESP_OK;
@@ -955,7 +899,7 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
              "sound=%s engine=%s backend=%s velocity=%.2f%s%s",
              synth_sound_name(sound),
              synth_sound_engine_name(sound),
-             backend_name(runtime->backend),
+             amy_runtime_backend_name(runtime->backend),
              runtime->velocity,
              runtime->patch_label != NULL ? " patch=" : "",
              runtime->patch_label != NULL ? runtime->patch_label : "");
@@ -967,7 +911,7 @@ float synth_amy_sound_velocity(synth_sound_t sound)
     if (sound >= SYNTH_SOUND_COUNT) {
         return 0.0f;
     }
-    return runtime_for_sound(sound)->velocity;
+    return amy_runtime_for_sound(sound)->velocity;
 }
 
 bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, const char **patch_label)
@@ -976,7 +920,7 @@ bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, con
         return false;
     }
 
-    const amy_sound_runtime_t *runtime = runtime_for_sound(sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(sound);
     if (runtime->backend != AMY_SOUND_BACKEND_PATCH) {
         return false;
     }
@@ -1241,7 +1185,7 @@ esp_err_t synth_amy_set_stereo_enabled(bool enabled)
     }
 
     amy_graph_lock();
-    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     if (runtime->backend == AMY_SOUND_BACKEND_PATCH) {
         if (s_patch_loaded && s_stereo_enabled && !s_patch_pair_loaded) {
             configure_patch_synth_instance(AMY_PATCH_PAIR_SYNTH, runtime);
@@ -1278,7 +1222,7 @@ esp_err_t synth_amy_set_stereo_enabled(bool enabled)
     ESP_LOGI(TAG,
              "stereo pairs %s backend=%s detune=%.1f cents alloc_oscs=%u",
              s_stereo_enabled ? "on" : "off",
-             backend_name(runtime->backend),
+             amy_runtime_backend_name(runtime->backend),
              s_stereo_enabled ? RAW_STEREO_PAIR_DETUNE_SEMITONES * 100.0f : 0.0f,
              (unsigned)allocated_patch_osc_count());
     return ESP_OK;
@@ -1329,7 +1273,7 @@ esp_err_t synth_amy_set_voice_limit(uint8_t voices)
     amy_graph_lock();
     esp_err_t err = synth_amy_all_off();
     if (err == ESP_OK && s_patch_loaded) {
-        configure_patch_synth(runtime_for_sound(s_sound));
+        configure_patch_synth(amy_runtime_for_sound(s_sound));
     }
     amy_graph_unlock();
 
@@ -1531,7 +1475,7 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
 
     release_slot_voices(slot);
 
-    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     if (runtime->backend == AMY_SOUND_BACKEND_PATCH && !s_patch_loaded) {
         configure_patch_synth(runtime);
     }
@@ -1540,7 +1484,7 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
     amy_voice_map_build_assignment(chord, assignments);
 
     const uint8_t *priority = amy_voice_map_role_priority(runtime->backend);
-    uint8_t limit = runtime_voice_limit(runtime);
+    uint8_t limit = amy_runtime_voice_limit(runtime, s_voice_limit);
     uint8_t played = 0;
 #if ESP_POCKET_AUDIO_AMY_VOICE_MAP_LOG_ENABLED
     char assignment_log[224] = {0};
@@ -1584,7 +1528,7 @@ esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord)
              slot + 1,
              synth_sound_name(s_sound),
              synth_sound_engine_name(s_sound),
-             backend_name(runtime->backend),
+             amy_runtime_backend_name(runtime->backend),
              played,
              limit,
              (unsigned)active_osc_count(),
@@ -1603,7 +1547,7 @@ esp_err_t synth_amy_chord_voice_on(uint8_t slot, const synth_chord_t *chord, uin
         return ESP_ERR_INVALID_ARG;
     }
 
-    const amy_sound_runtime_t *runtime = runtime_for_sound(s_sound);
+    const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     if (runtime->backend == AMY_SOUND_BACKEND_PATCH && !s_patch_loaded) {
         configure_patch_synth(runtime);
     }
@@ -1612,7 +1556,7 @@ esp_err_t synth_amy_chord_voice_on(uint8_t slot, const synth_chord_t *chord, uin
     amy_voice_map_build_assignment(chord, assignments);
 
     const uint8_t *priority = amy_voice_map_role_priority(runtime->backend);
-    uint8_t limit = runtime_voice_limit(runtime);
+    uint8_t limit = amy_runtime_voice_limit(runtime, s_voice_limit);
     uint8_t played = 0;
     uint8_t available = 0;
 

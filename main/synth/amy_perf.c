@@ -60,6 +60,12 @@ static amy_osc_stats_t amy_runtime_osc_stats(void)
             continue;
         }
 
+        if (synth[osc]->role == SYNTH_IS_MOD_SOURCE ||
+            synth[osc]->role == SYNTH_IS_ALGO_SOURCE) {
+            ++stats.aux;
+            continue;
+        }
+
         switch (synth[osc]->status) {
         case SYNTH_AUDIBLE:
             ++stats.audible;
@@ -69,11 +75,7 @@ static amy_osc_stats_t amy_runtime_osc_stats(void)
                 ++stats.audible_high;
             }
             break;
-        case SYNTH_IS_MOD_SOURCE:
-        case SYNTH_IS_ALGO_SOURCE:
-            ++stats.aux;
-            break;
-        case SYNTH_AUDIBLE_SUSPENDED:
+        case SYNTH_INAUDIBLE:
             ++stats.suspended;
             break;
         default:

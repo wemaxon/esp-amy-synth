@@ -554,12 +554,36 @@ static void apply_raw_stereo_state(uint8_t voice, const amy_sound_runtime_t *run
     }
 }
 
+static bool patch_voice_base_osc(uint16_t voice, uint16_t *base_osc)
+{
+    if (osc_to_voice == NULL || base_osc == NULL) {
+        return false;
+    }
+
+    for (uint16_t osc = 0; osc < AMY_OSCS; ++osc) {
+        if (osc_to_voice[osc] == voice) {
+            *base_osc = osc;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void apply_patch_pan_to_voice(uint16_t voice, float pan)
 {
+    uint16_t base_osc = 0;
+    if (!patch_voice_base_osc(voice, &base_osc)) {
+        return;
+    }
+
     for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
+        uint16_t target_osc = (uint16_t)(base_osc + osc);
+        if (target_osc >= AMY_OSCS) {
+            break;
+        }
+
         amy_event event = amy_default_event();
-        event.voices[0] = voice;
-        event.osc = osc;
+        event.osc = target_osc;
         event.pan_coefs[COEF_CONST] = clamp_float(pan, 0.0f, 1.0f);
         amy_add_event(&event);
     }
@@ -1417,7 +1441,6 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     s_drum_next_osc = 0;
     amy_start(config);
     enqueue_master_volume((float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f);
-    amy_global.echo.max_delay_samples = SYNTH_DELAY_MAX_SAMPLES;
     synth_amy_perf_reset();
     ESP_RETURN_ON_ERROR(synth_looper_init(AMY_SAMPLE_RATE, AMY_NCHANS),
                         TAG,

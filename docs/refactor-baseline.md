@@ -9,9 +9,10 @@ compatibility contract for refactors, not a redesign proposal.
   policy, the AMY adapter, and the looper.
 - The small components under `components/` are repository-owned hardware
   adapters.  Their public headers are compatibility surfaces.
-- `components/amy/amy` is a pinned upstream dependency.  Refactors must not
-  edit it or clean its working tree.  AMY integration changes belong in
-  `main/synth/amy_*` or the wrapping component CMake file.
+- `components/amy/amy` is a pinned upstream dependency. Routine refactors must
+  not edit it or clean its working tree. Dependency upgrades may carry narrowly
+  scoped platform fixes when upstream still lacks them; AMY integration changes
+  otherwise belong in `main/synth/amy_*` or the wrapping component CMake file.
 - Board selection remains compile-time configuration.  ESP32 defaults to
   `ai_thinker_a1s`; ESP32-P4 defaults to `wt0132p4_a1`.
 

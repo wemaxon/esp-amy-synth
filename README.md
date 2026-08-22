@@ -128,7 +128,8 @@ python tools/host_parity_check.py
 The modernization baseline, compatibility boundaries, parity gates, and bug
 audit live in `docs/refactor-baseline.md` and `docs/bug-audit.md`. The looper
 ownership model and AUD-004 hardware profile are in
-`docs/looper-realtime-architecture.md`.
+`docs/looper-realtime-architecture.md`. The AMY dependency migration is
+documented in `docs/amy-1.2.152-upgrade.md`.
 
 ## Prereqisites
 
@@ -141,7 +142,7 @@ python -m venv .venv
 .\.venv\Scripts\activate
 cd components\amy\amy
 git fetch --tags
-git checkout tags/1.2.4
+git checkout tags/1.2.152
 ```
 
 #### Install amy python library
@@ -149,7 +150,7 @@ git checkout tags/1.2.4
 cd components/amy/amy
 
 git fetch --tags
-git checkout tags/1.2.4
+git checkout tags/1.2.152
 
 pip install -r requirements.txt
 pip install -e .

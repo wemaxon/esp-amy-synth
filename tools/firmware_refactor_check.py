@@ -105,8 +105,36 @@ def check_persistence_contracts() -> None:
 def check_dependency_boundary() -> None:
     cmake = source("components/amy/CMakeLists.txt")
     require("amy/src" in cmake, "AMY component no longer points at the pinned source tree")
+    require('"${AMY_SRC_DIR}/cv_trigger.c"' in cmake,
+            "AMY 1.2.152 cv_trigger source is missing from the component")
     require((ROOT / "components" / "amy" / "amy" / ".git").exists(),
             "AMY dependency is no longer a submodule checkout")
+
+
+def check_amy_upgrade_contracts() -> None:
+    properties = source("components/amy/amy/library.properties")
+    engine = source("main/synth/amy_engine.c")
+    perf = source("main/synth/amy_perf.c")
+    amy_midi = source("components/amy/amy/src/amy_midi.c")
+    amy_i2s = source("components/amy/amy/src/i2s.c")
+    amy_patches = source("components/amy/amy/src/patches.c")
+
+    require(re.search(r"^version=1\.2\.152$", properties, re.MULTILINE) is not None,
+            "AMY dependency is no longer version 1.2.152")
+    require("event.voices" not in engine,
+            "AMY adapter reintroduced the removed direct event voice API")
+    require("amy_global.echo" not in engine,
+            "AMY adapter reintroduced the removed global echo state")
+    require("synth[osc]->role == SYNTH_IS_MOD_SOURCE" in perf and
+            "case SYNTH_INAUDIBLE:" in perf,
+            "AMY diagnostics no longer honor the separate role/status model")
+    require(re.search(r"void\s+run_midi_task\s*\(\s*void\s*\*", amy_midi) is not None,
+            "AMY MIDI task lost its ESP-IDF TaskFunction_t-compatible signature")
+    require(re.search(r"void\s+esp_fill_audio_buffer_task\s*\(\s*void\s*\*", amy_i2s)
+            is not None,
+            "AMY audio task lost its ESP-IDF TaskFunction_t-compatible signature")
+    require("synth[i] != NULL && synth[i]->status == SYNTH_AUDIBLE" in amy_patches,
+            "AMY all-notes-off path lost its reserved-osc null guard")
 
 
 def check_board_contracts() -> None:
@@ -173,6 +201,7 @@ def main() -> None:
     check_timing_contracts()
     check_persistence_contracts()
     check_dependency_boundary()
+    check_amy_upgrade_contracts()
     check_board_contracts()
     check_looper_realtime_boundary()
     check_obsolete_test_removed()

@@ -7,6 +7,7 @@ idf_component_register(
         "${AMY_SRC_DIR}/amy_midi.c"
         "${AMY_SRC_DIR}/api.c"
         "${AMY_SRC_DIR}/custom.c"
+        "${AMY_SRC_DIR}/cv_trigger.c"
         "${AMY_SRC_DIR}/delay.c"
         "${AMY_SRC_DIR}/envelope.c"
         "${AMY_SRC_DIR}/filters.c"

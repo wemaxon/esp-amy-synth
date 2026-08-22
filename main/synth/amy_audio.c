@@ -40,6 +40,8 @@ static void audio_task(void *arg)
         int64_t flanger_done_us = esp_timer_get_time();
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
         int64_t looper_done_us = esp_timer_get_time();
+        synth_looper_record_process_time((uint32_t)(looper_done_us - flanger_done_us),
+                                         SYNTH_AUDIO_BLOCK_US);
         int64_t render_done_us = esp_timer_get_time();
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(

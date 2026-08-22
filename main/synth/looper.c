@@ -5,14 +5,15 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
-#include "freertos/FreeRTOS.h"
 #include "synth/crossfade.h"
 #include "synth/looper_dsp.h"
+#include "synth/looper_transport.h"
 #include "synth/metronome.h"
 
 typedef struct {
@@ -54,6 +55,7 @@ static const uint32_t LOOP_SEAM_CROSSFADE_MS = 50;
 static const uint32_t METER_LOG_INTERVAL_MS = 1000;
 static const uint32_t CLIP_LOG_INTERVAL_MS = 500;
 #endif
+/* Initialized before task startup, then written only by the audio task. */
 static synth_looper_track_t s_tracks[SYNTH_LOOPER_TRACK_COUNT];
 static uint32_t s_sample_rate_hz;
 static uint8_t s_channel_count;
@@ -70,13 +72,26 @@ static synth_metronome_t s_record_metronome;
 static bool s_record_metronome_enabled;
 static uint8_t s_mute_mask;
 static uint8_t s_solo_mask;
-static char s_message[22] = "EMPTY";
+static synth_looper_message_code_t s_message_code = SYNTH_LOOPER_MESSAGE_EMPTY;
+static uint8_t s_message_arg0;
+static uint8_t s_message_arg1;
+static _Atomic uint32_t s_audio_block;
+static uint32_t s_last_bounce_request_id;
+static esp_err_t s_last_bounce_result = ESP_ERR_NOT_FOUND;
+static uint8_t s_last_bounce_track = SYNTH_LOOPER_TRACK_COUNT;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
 static synth_looper_meter_t s_meter;
 static uint64_t s_next_meter_log_frame;
 static uint64_t s_next_clip_log_frame;
 #endif
-static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+/* Application-to-audio commands and audio-to-application immutable views. */
+static synth_looper_command_queue_t s_command_queue;
+static synth_looper_snapshot_store_t s_snapshot_store;
+static _Atomic uint32_t s_next_request_id;
+static _Atomic uint32_t s_pending_bounce_request;
+static _Atomic uint32_t s_max_command_latency_blocks;
+static _Atomic uint32_t s_max_process_us;
+static _Atomic uint32_t s_process_over_budget;
 
 static uint8_t track_bit(uint8_t track);
 
@@ -111,9 +126,9 @@ static uint32_t bars_to_frames(uint8_t bars, uint16_t bpm)
     return (uint32_t)((beats * 60ULL * (uint64_t)s_sample_rate_hz) / (uint64_t)bpm);
 }
 
-static void set_current_bpm_locked(uint16_t bpm)
+static void set_current_bpm(uint16_t bpm)
 {
-    s_current_bpm = bpm == 0 ? 120 : bpm;
+    s_current_bpm = bpm;
 }
 
 static size_t track_buffer_bytes(void)
@@ -121,15 +136,14 @@ static size_t track_buffer_bytes(void)
     return (size_t)s_capacity_frames * sizeof(int16_t);
 }
 
-static void set_message_locked(const char *message)
+static void set_message(synth_looper_message_code_t code, uint8_t arg0, uint8_t arg1)
 {
-    if (message == NULL) {
-        return;
-    }
-    strlcpy(s_message, message, sizeof(s_message));
+    s_message_code = code;
+    s_message_arg0 = arg0;
+    s_message_arg1 = arg1;
 }
 
-static bool has_any_loop_locked(void)
+static bool has_any_loop(void)
 {
     for (uint8_t i = 0; i < SYNTH_LOOPER_TRACK_COUNT; ++i) {
         if (s_tracks[i].state == SYNTH_LOOPER_TRACK_LOOPING) {
@@ -153,7 +167,7 @@ static bool record_metronome_should_run_for_track(synth_looper_track_state_t sta
            count_in_beat_frames > 0;
 }
 
-static bool record_metronome_should_run_locked(void)
+static bool record_metronome_should_run(void)
 {
     for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
         if (record_metronome_should_run_for_track(s_tracks[track].state,
@@ -166,7 +180,7 @@ static bool record_metronome_should_run_locked(void)
     return false;
 }
 
-static void clear_track_locked(uint8_t track)
+static void clear_track(uint8_t track)
 {
     if (track >= SYNTH_LOOPER_TRACK_COUNT) {
         return;
@@ -187,10 +201,10 @@ static void clear_track_locked(uint8_t track)
     s_solo_mask &= (uint8_t)~track_bit(track);
 }
 
-static void clear_all_locked(void)
+static void clear_all(void)
 {
     for (uint8_t i = 0; i < SYNTH_LOOPER_TRACK_COUNT; ++i) {
-        clear_track_locked(i);
+        clear_track(i);
     }
     s_master_length_frames = 0;
     s_paused = false;
@@ -203,10 +217,10 @@ static void clear_all_locked(void)
     s_next_meter_log_frame = 0;
     s_next_clip_log_frame = 0;
 #endif
-    set_message_locked("CLEARED");
+    set_message(SYNTH_LOOPER_MESSAGE_CLEARED, 0, 0);
 }
 
-static uint8_t next_empty_track_locked(uint8_t from_track)
+static uint8_t next_empty_track(uint8_t from_track)
 {
     for (uint8_t offset = 1; offset <= SYNTH_LOOPER_TRACK_COUNT; ++offset) {
         uint8_t track = (uint8_t)((from_track + offset) % SYNTH_LOOPER_TRACK_COUNT);
@@ -217,7 +231,7 @@ static uint8_t next_empty_track_locked(uint8_t from_track)
     return from_track;
 }
 
-static uint8_t first_empty_track_locked(void)
+static uint8_t first_empty_track(void)
 {
     for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
         if (s_tracks[track].state == SYNTH_LOOPER_TRACK_EMPTY) {
@@ -295,7 +309,7 @@ static void log_meter_if_due(const synth_looper_meter_t *meter,
 
 static esp_err_t ensure_track_buffer(uint8_t track)
 {
-    if (track >= SYNTH_LOOPER_TRACK_COUNT || !s_initialized) {
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
     if (s_tracks[track].samples != NULL) {
@@ -305,12 +319,7 @@ static esp_err_t ensure_track_buffer(uint8_t track)
     size_t buffer_bytes = track_buffer_bytes();
     int16_t *buffer = heap_caps_malloc(buffer_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (buffer == NULL) {
-        buffer = heap_caps_malloc(buffer_bytes, MALLOC_CAP_8BIT);
-    }
-    if (buffer == NULL) {
-        portENTER_CRITICAL(&s_mux);
-        set_message_locked("NO MEMORY");
-        portEXIT_CRITICAL(&s_mux);
+        set_message(SYNTH_LOOPER_MESSAGE_NO_MEMORY, 0, 0);
         ESP_LOGW(TAG,
                  "failed to allocate %lu byte looper track buffer",
                  (unsigned long)buffer_bytes);
@@ -318,16 +327,7 @@ static esp_err_t ensure_track_buffer(uint8_t track)
     }
     memset(buffer, 0, buffer_bytes);
 
-    portENTER_CRITICAL(&s_mux);
-    if (s_tracks[track].samples == NULL) {
-        s_tracks[track].samples = buffer;
-        buffer = NULL;
-    }
-    portEXIT_CRITICAL(&s_mux);
-
-    if (buffer != NULL) {
-        heap_caps_free(buffer);
-    }
+    s_tracks[track].samples = buffer;
     return ESP_OK;
 }
 
@@ -339,7 +339,15 @@ static esp_err_t allocate_all_track_buffers(void)
     return ESP_OK;
 }
 
-static void start_recording_locked(uint8_t track, uint32_t target_frames)
+static void free_track_buffers(void)
+{
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        heap_caps_free(s_tracks[track].samples);
+        s_tracks[track].samples = NULL;
+    }
+}
+
+static void start_recording(uint8_t track, uint32_t target_frames)
 {
     synth_looper_track_t *slot = &s_tracks[track];
     slot->state = SYNTH_LOOPER_TRACK_RECORDING;
@@ -355,16 +363,16 @@ static void start_recording_locked(uint8_t track, uint32_t target_frames)
         synth_metronome_set_enabled(&s_record_metronome, true, s_current_bpm, s_global_frame);
     }
 
-    set_message_locked("REC");
+    set_message(SYNTH_LOOPER_MESSAGE_RECORDING, 0, 0);
 }
 
-static void finalize_recording_locked(uint8_t track, bool auto_advance, bool completed_target)
+static void finalize_recording(uint8_t track, bool auto_advance, bool completed_target)
 {
     synth_looper_track_t *slot = &s_tracks[track];
     uint32_t min_frames = ms_to_frames(MIN_RECORD_MS);
     if (slot->record_position < min_frames) {
-        clear_track_locked(track);
-        set_message_locked("TOO SHORT");
+        clear_track(track);
+        set_message(SYNTH_LOOPER_MESSAGE_TOO_SHORT, 0, 0);
         return;
     }
 
@@ -394,14 +402,14 @@ static void finalize_recording_locked(uint8_t track, bool auto_advance, bool com
         s_master_length_frames = length;
     }
 
-    set_message_locked("PLAY");
+    set_message(SYNTH_LOOPER_MESSAGE_PLAYING, 0, 0);
 
     if (auto_advance) {
-        s_current_track = next_empty_track_locked(track);
+        s_current_track = next_empty_track(track);
     }
 }
 
-static void arm_waiting_track_locked(uint8_t track, uint16_t bpm)
+static void arm_waiting_track(uint8_t track, uint16_t bpm)
 {
     synth_looper_track_t *slot = &s_tracks[track];
     uint32_t target_frames = 0;
@@ -412,7 +420,7 @@ static void arm_waiting_track_locked(uint8_t track, uint16_t bpm)
         slot->record_start_frame = 0;
         slot->target_record_frames = s_master_length_frames;
         slot->count_in_beat_frames = 0;
-        set_message_locked("SYNC WAIT");
+        set_message(SYNTH_LOOPER_MESSAGE_SYNC_WAIT, 0, 0);
         return;
     }
 
@@ -434,11 +442,11 @@ static void arm_waiting_track_locked(uint8_t track, uint16_t bpm)
                                        bpm,
                                        slot->record_start_frame - count_in_length);
         }
-        set_message_locked("COUNT IN");
+        set_message(SYNTH_LOOPER_MESSAGE_COUNT_IN, 0, 0);
         return;
     }
 
-    start_recording_locked(track, 0);
+    start_recording(track, 0);
 }
 
 static bool process_track_should_start(const synth_looper_process_track_t *track,
@@ -573,6 +581,226 @@ static bool process_track_playback(synth_looper_process_track_t *track,
     return true;
 }
 
+static void update_atomic_max(_Atomic uint32_t *maximum, uint32_t value)
+{
+    uint32_t current = atomic_load_explicit(maximum, memory_order_relaxed);
+    while (current < value &&
+           !atomic_compare_exchange_weak_explicit(maximum,
+                                                  &current,
+                                                  value,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+    }
+}
+
+static void build_runtime_view(synth_looper_runtime_view_t *view)
+{
+    *view = (synth_looper_runtime_view_t){
+        .global_frame = s_global_frame,
+        .master_length_frames = s_master_length_frames,
+        .audio_block = atomic_load_explicit(&s_audio_block, memory_order_relaxed),
+        .last_bounce_request_id = s_last_bounce_request_id,
+        .last_bounce_result = s_last_bounce_result,
+        .last_bounce_track = s_last_bounce_track,
+        .current_track = s_current_track,
+        .bar_count = s_bar_count,
+        .message_code = s_message_code,
+        .message_arg0 = s_message_arg0,
+        .message_arg1 = s_message_arg1,
+        .paused = s_paused,
+        .metronome_enabled = synth_metronome_is_enabled(&s_global_metronome),
+        .record_metronome_enabled = s_record_metronome_enabled,
+        .record_metronome_active = synth_metronome_is_enabled(&s_record_metronome),
+    };
+#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
+    view->meter = s_meter;
+#endif
+
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        view->track_state[track] = s_tracks[track].state;
+        view->track_length_frames[track] = s_tracks[track].length_frames;
+        view->track_position_frames[track] =
+            s_tracks[track].state == SYNTH_LOOPER_TRACK_RECORDING ?
+                s_tracks[track].record_position :
+                s_tracks[track].play_position;
+        view->track_volume_percent[track] = s_tracks[track].volume_percent;
+    }
+    view->mute_mask = s_mute_mask;
+    view->solo_mask = s_solo_mask;
+
+    const synth_looper_track_t *current = &s_tracks[s_current_track];
+    view->target_record_frames = current->target_record_frames;
+    view->record_start_frame = current->record_start_frame;
+    view->count_in_beat_frames = current->count_in_beat_frames;
+    view->current_track_armed = current->record_armed;
+    view->waiting_for_sync = current->state == SYNTH_LOOPER_TRACK_WAITING &&
+                             current->record_armed &&
+                             current->sync_to_master;
+}
+
+static void publish_runtime_view(void)
+{
+    synth_looper_runtime_view_t view;
+    build_runtime_view(&view);
+    synth_looper_snapshot_publish(&s_snapshot_store, &view);
+}
+
+static void format_message(const synth_looper_runtime_view_t *view, char *message, size_t size)
+{
+    switch (view->message_code) {
+    case SYNTH_LOOPER_MESSAGE_NO_MEMORY:
+        strlcpy(message, "NO MEMORY", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_CLEARED:
+        strlcpy(message, "CLEARED", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_WAITING:
+        strlcpy(message, "WAITING", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_SYNC_WAIT:
+        strlcpy(message, "SYNC WAIT", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_COUNT_IN:
+        strlcpy(message, "COUNT IN", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_RECORDING:
+        strlcpy(message, "REC", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_PLAYING:
+        strlcpy(message, "PLAY", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_TOO_SHORT:
+        strlcpy(message, "TOO SHORT", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_OFF:
+        strlcpy(message, "OFF", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_TRACK:
+        snprintf(message, size, "TRACK %u", (unsigned)view->message_arg0);
+        break;
+    case SYNTH_LOOPER_MESSAGE_TRACK_VOLUME:
+        snprintf(message,
+                 size,
+                 "T%u VOL %u",
+                 (unsigned)view->message_arg0,
+                 (unsigned)view->message_arg1);
+        break;
+    case SYNTH_LOOPER_MESSAGE_TRACK_MUTE:
+        snprintf(message, size, "T%u MUTE", (unsigned)view->message_arg0);
+        break;
+    case SYNTH_LOOPER_MESSAGE_TRACK_ON:
+        snprintf(message, size, "T%u ON", (unsigned)view->message_arg0);
+        break;
+    case SYNTH_LOOPER_MESSAGE_TRACK_SOLO_ON:
+        snprintf(message, size, "T%u SOLO ON", (unsigned)view->message_arg0);
+        break;
+    case SYNTH_LOOPER_MESSAGE_TRACK_SOLO_OFF:
+        snprintf(message, size, "T%u SOLO OFF", (unsigned)view->message_arg0);
+        break;
+    case SYNTH_LOOPER_MESSAGE_METRONOME_ON:
+        strlcpy(message, "MET ON", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_METRONOME_OFF:
+        strlcpy(message, "MET OFF", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_RECORD_METRONOME_ON:
+        strlcpy(message, "REC MET ON", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_RECORD_METRONOME_OFF:
+        strlcpy(message, "REC MET OFF", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_FREE_LENGTH:
+        strlcpy(message, "FREE LENGTH", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_BARS:
+        snprintf(message, size, "%u BARS", (unsigned)view->message_arg0);
+        break;
+    case SYNTH_LOOPER_MESSAGE_PAUSED:
+        strlcpy(message, "PAUSED", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_RESUMED:
+        strlcpy(message, "PLAYING", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_NO_LOOP:
+        strlcpy(message, "NO LOOP", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_BOUNCE:
+        strlcpy(message, "BOUNCE", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_BOUNCE_SYNC:
+        strlcpy(message, "BOUNCE SYNC", size);
+        break;
+    case SYNTH_LOOPER_MESSAGE_EMPTY:
+    default:
+        strlcpy(message, "EMPTY", size);
+        break;
+    }
+}
+
+static void runtime_view_to_snapshot(const synth_looper_runtime_view_t *view,
+                                     synth_looper_snapshot_t *snapshot)
+{
+    memset(snapshot, 0, sizeof(*snapshot));
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        snapshot->track_state[track] = view->track_state[track];
+        snapshot->track_ms[track] = frames_to_ms(view->track_length_frames[track]);
+        snapshot->track_position_ms[track] = frames_to_ms(view->track_position_frames[track]);
+        snapshot->track_volume_percent[track] = view->track_volume_percent[track];
+        snapshot->track_muted[track] = (view->mute_mask & track_bit(track)) != 0;
+        snapshot->track_soloed[track] = (view->solo_mask & track_bit(track)) != 0;
+        if (view->track_state[track] == SYNTH_LOOPER_TRACK_RECORDING) {
+            snapshot->track_ms[track] = snapshot->track_position_ms[track];
+        }
+    }
+    snapshot->meter = view->meter;
+    snapshot->current_track = view->current_track;
+    snapshot->page = view->current_track / SYNTH_LOOPER_TRACKS_PER_PAGE;
+    snapshot->bar_count = view->bar_count;
+    snapshot->paused = view->paused;
+    snapshot->metronome_enabled = view->metronome_enabled;
+    snapshot->record_metronome_enabled = view->record_metronome_enabled;
+    snapshot->record_metronome_active = view->record_metronome_active;
+    snapshot->solo_active = view->solo_mask != 0;
+    snapshot->master_ms = frames_to_ms(view->master_length_frames);
+    snapshot->max_seconds = SYNTH_LOOPER_MAX_SECONDS;
+    snapshot->current_track_armed = view->current_track_armed;
+    snapshot->waiting_for_sync = view->waiting_for_sync;
+
+    uint8_t current_track = view->current_track;
+    synth_looper_track_state_t current_state = view->track_state[current_track];
+    if (current_state == SYNTH_LOOPER_TRACK_WAITING && view->current_track_armed) {
+        if (view->waiting_for_sync && view->master_length_frames > 0) {
+            uint32_t master_position = view->track_position_frames[0];
+            if (master_position >= view->master_length_frames) {
+                master_position = 0;
+            }
+            uint32_t wait_frames = master_position == 0 ?
+                0 : view->master_length_frames - master_position;
+            snapshot->progress_ms = frames_to_ms(master_position);
+            snapshot->progress_total_ms = frames_to_ms(view->master_length_frames);
+            snapshot->wait_ms = frames_to_ms(wait_frames);
+        } else if (view->record_start_frame > view->global_frame) {
+            uint64_t wait_frames = view->record_start_frame - view->global_frame;
+            uint64_t total_wait_frames = (uint64_t)view->count_in_beat_frames * 4ULL;
+            snapshot->wait_ms = frames64_to_ms(wait_frames);
+            snapshot->progress_total_ms = frames64_to_ms(total_wait_frames);
+            if (total_wait_frames > wait_frames) {
+                snapshot->progress_ms = frames64_to_ms(total_wait_frames - wait_frames);
+            }
+        }
+    } else if (current_state == SYNTH_LOOPER_TRACK_RECORDING) {
+        snapshot->progress_ms = frames_to_ms(view->track_position_frames[current_track]);
+        if (view->target_record_frames > 0) {
+            snapshot->progress_total_ms = frames_to_ms(view->target_record_frames);
+        }
+    } else if (current_state == SYNTH_LOOPER_TRACK_LOOPING &&
+               view->track_length_frames[current_track] > 0) {
+        snapshot->progress_ms = frames_to_ms(view->track_position_frames[current_track]);
+        snapshot->progress_total_ms = frames_to_ms(view->track_length_frames[current_track]);
+    }
+    format_message(view, snapshot->message, sizeof(snapshot->message));
+}
+
 esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
 {
     if (s_initialized) {
@@ -587,10 +815,25 @@ esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
     s_capacity_frames = sample_rate_hz * SYNTH_LOOPER_MAX_SECONDS;
     synth_metronome_init(&s_global_metronome, sample_rate_hz);
     synth_metronome_init(&s_record_metronome, sample_rate_hz);
-    clear_all_locked();
+    synth_looper_command_queue_init(&s_command_queue);
+    atomic_init(&s_audio_block, 0);
+    atomic_init(&s_next_request_id, 1);
+    atomic_init(&s_pending_bounce_request, 0);
+    atomic_init(&s_max_command_latency_blocks, 0);
+    atomic_init(&s_max_process_us, 0);
+    atomic_init(&s_process_over_budget, 0);
+    clear_all();
+    esp_err_t allocation_err = allocate_all_track_buffers();
+    if (allocation_err != ESP_OK) {
+        free_track_buffers();
+        ESP_LOGE(TAG, "looper preallocation failed: %s", esp_err_to_name(allocation_err));
+        return allocation_err;
+    }
     s_initialized = true;
-    ESP_RETURN_ON_ERROR(allocate_all_track_buffers(), TAG, "looper preallocation failed");
-    set_message_locked("EMPTY");
+    set_message(SYNTH_LOOPER_MESSAGE_EMPTY, 0, 0);
+    synth_looper_runtime_view_t initial_view;
+    build_runtime_view(&initial_view);
+    synth_looper_snapshot_store_init(&s_snapshot_store, &initial_view);
 
     ESP_LOGI(TAG,
              "looper ready tracks=%u max_seconds=%u sample_rate=%lu channels=%u storage=mono-int16 bytes_per_track=%lu preallocated=%lu",
@@ -603,11 +846,253 @@ esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
     return ESP_OK;
 }
 
+static esp_err_t enqueue_command(synth_looper_command_t command)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    command.submitted_block = atomic_load_explicit(&s_audio_block, memory_order_acquire);
+    return synth_looper_command_queue_push(&s_command_queue, &command);
+}
+
+static void apply_click_command(uint16_t bpm)
+{
+    set_current_bpm(bpm);
+    synth_looper_track_t *slot = &s_tracks[s_current_track];
+    switch (slot->state) {
+    case SYNTH_LOOPER_TRACK_EMPTY:
+        slot->state = SYNTH_LOOPER_TRACK_WAITING;
+        slot->record_armed = false;
+        slot->sync_to_master = false;
+        slot->record_position = 0;
+        slot->play_position = 0;
+        slot->length_frames = 0;
+        slot->record_start_frame = 0;
+        slot->target_record_frames = 0;
+        slot->count_in_beat_frames = 0;
+        set_message(SYNTH_LOOPER_MESSAGE_WAITING, 0, 0);
+        break;
+    case SYNTH_LOOPER_TRACK_WAITING:
+        arm_waiting_track(s_current_track, bpm);
+        break;
+    case SYNTH_LOOPER_TRACK_RECORDING:
+        finalize_recording(s_current_track, true, false);
+        break;
+    case SYNTH_LOOPER_TRACK_LOOPING:
+        if (s_current_track == 0) {
+            clear_all();
+        } else {
+            slot->state = SYNTH_LOOPER_TRACK_OFF;
+            slot->play_position = 0;
+            set_message(SYNTH_LOOPER_MESSAGE_OFF, 0, 0);
+        }
+        break;
+    case SYNTH_LOOPER_TRACK_OFF:
+        if (s_current_track == 0) {
+            clear_all();
+        } else {
+            clear_track(s_current_track);
+            set_message(SYNTH_LOOPER_MESSAGE_CLEARED, 0, 0);
+        }
+        break;
+    default:
+        break;
+    }
+    if (!has_any_loop()) {
+        s_paused = false;
+    }
+}
+
+static void apply_auto_bounce_command(const synth_looper_command_t *command)
+{
+    uint8_t track = first_empty_track();
+    esp_err_t result = ESP_OK;
+    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+        result = ESP_ERR_NOT_FOUND;
+    } else {
+        set_current_bpm(command->bpm);
+        s_current_track = track;
+        synth_looper_track_t *slot = &s_tracks[track];
+        if (s_master_length_frames > 0 && track != 0) {
+            slot->state = SYNTH_LOOPER_TRACK_WAITING;
+            slot->record_armed = true;
+            slot->sync_to_master = true;
+            slot->length_frames = 0;
+            slot->play_position = 0;
+            slot->record_position = 0;
+            slot->record_start_frame = 0;
+            slot->target_record_frames = s_master_length_frames;
+            slot->count_in_beat_frames = 0;
+            set_message(SYNTH_LOOPER_MESSAGE_BOUNCE_SYNC, 0, 0);
+        } else {
+            uint32_t target_frames = bars_to_frames(command->bars, s_current_bpm);
+            if (target_frames > s_capacity_frames) {
+                target_frames = s_capacity_frames;
+            }
+            start_recording(track, target_frames);
+            set_message(SYNTH_LOOPER_MESSAGE_BOUNCE, 0, 0);
+        }
+    }
+
+    s_last_bounce_request_id = command->request_id;
+    s_last_bounce_result = result;
+    s_last_bounce_track = result == ESP_OK ? track : SYNTH_LOOPER_TRACK_COUNT;
+}
+
+static void apply_command(const synth_looper_command_t *command)
+{
+    uint32_t audio_block = atomic_load_explicit(&s_audio_block, memory_order_relaxed);
+    update_atomic_max(&s_max_command_latency_blocks, audio_block - command->submitted_block);
+
+    switch (command->type) {
+    case SYNTH_LOOPER_COMMAND_CLICK:
+        apply_click_command(command->bpm);
+        break;
+    case SYNTH_LOOPER_COMMAND_SELECT_TRACK: {
+        int value = (int)s_current_track + command->value;
+        while (value < 0) {
+            value += SYNTH_LOOPER_TRACK_COUNT;
+        }
+        s_current_track = (uint8_t)(value % SYNTH_LOOPER_TRACK_COUNT);
+        set_message(SYNTH_LOOPER_MESSAGE_TRACK, (uint8_t)(s_current_track + 1U), 0);
+        break;
+    }
+    case SYNTH_LOOPER_COMMAND_SET_TRACK_VOLUME:
+    case SYNTH_LOOPER_COMMAND_SET_CURRENT_TRACK_VOLUME: {
+        uint8_t track = command->type == SYNTH_LOOPER_COMMAND_SET_CURRENT_TRACK_VOLUME ?
+            s_current_track : command->track;
+        uint8_t percent = command->value > 100 ? 100 : (uint8_t)command->value;
+        s_current_track = track;
+        if (s_tracks[track].volume_percent != percent) {
+            s_tracks[track].volume_percent = percent;
+            set_message(SYNTH_LOOPER_MESSAGE_TRACK_VOLUME, (uint8_t)(track + 1U), percent);
+        }
+        break;
+    }
+    case SYNTH_LOOPER_COMMAND_TOGGLE_TRACK_MUTE: {
+        uint8_t bit = track_bit(command->track);
+        s_current_track = command->track;
+        s_mute_mask ^= bit;
+        set_message((s_mute_mask & bit) != 0 ?
+                        SYNTH_LOOPER_MESSAGE_TRACK_MUTE :
+                        SYNTH_LOOPER_MESSAGE_TRACK_ON,
+                    (uint8_t)(command->track + 1U),
+                    0);
+        break;
+    }
+    case SYNTH_LOOPER_COMMAND_TOGGLE_TRACK_SOLO: {
+        uint8_t bit = track_bit(command->track);
+        s_current_track = command->track;
+        s_solo_mask ^= bit;
+        set_message((s_solo_mask & bit) != 0 ?
+                        SYNTH_LOOPER_MESSAGE_TRACK_SOLO_ON :
+                        SYNTH_LOOPER_MESSAGE_TRACK_SOLO_OFF,
+                    (uint8_t)(command->track + 1U),
+                    0);
+        break;
+    }
+    case SYNTH_LOOPER_COMMAND_TOGGLE_METRONOME: {
+        set_current_bpm(command->bpm);
+        bool enabled = synth_metronome_toggle(&s_global_metronome,
+                                              command->bpm,
+                                              s_global_frame);
+        set_message(enabled ? SYNTH_LOOPER_MESSAGE_METRONOME_ON :
+                              SYNTH_LOOPER_MESSAGE_METRONOME_OFF,
+                    0,
+                    0);
+        break;
+    }
+    case SYNTH_LOOPER_COMMAND_TOGGLE_RECORD_METRONOME:
+        set_current_bpm(command->bpm);
+        s_record_metronome_enabled = !s_record_metronome_enabled;
+        if (!s_record_metronome_enabled) {
+            synth_metronome_set_enabled(&s_record_metronome, false, s_current_bpm, s_global_frame);
+        } else if (record_metronome_should_run()) {
+            synth_metronome_set_enabled(&s_record_metronome, true, s_current_bpm, s_global_frame);
+        } else {
+            synth_metronome_set_timing(&s_record_metronome, s_current_bpm, s_global_frame);
+        }
+        set_message(s_record_metronome_enabled ?
+                        SYNTH_LOOPER_MESSAGE_RECORD_METRONOME_ON :
+                        SYNTH_LOOPER_MESSAGE_RECORD_METRONOME_OFF,
+                    0,
+                    0);
+        break;
+    case SYNTH_LOOPER_COMMAND_SET_METRONOME_BPM:
+        set_current_bpm(command->bpm);
+        if (synth_metronome_is_enabled(&s_global_metronome)) {
+            synth_metronome_set_bpm_preserve_phase(&s_global_metronome,
+                                                   s_current_bpm,
+                                                   s_global_frame);
+        }
+        if (synth_metronome_is_enabled(&s_record_metronome)) {
+            synth_metronome_set_bpm_preserve_phase(&s_record_metronome,
+                                                   s_current_bpm,
+                                                   s_global_frame);
+        } else if (s_record_metronome_enabled) {
+            synth_metronome_set_timing(&s_record_metronome, s_current_bpm, s_global_frame);
+        }
+        break;
+    case SYNTH_LOOPER_COMMAND_ADJUST_BARS: {
+        int value = (int)s_bar_count + command->value;
+        if (value < 0) {
+            value = 0;
+        } else if (value > SYNTH_LOOPER_MAX_BARS) {
+            value = SYNTH_LOOPER_MAX_BARS;
+        }
+        s_bar_count = (uint8_t)value;
+        set_message(s_bar_count == 0 ? SYNTH_LOOPER_MESSAGE_FREE_LENGTH : SYNTH_LOOPER_MESSAGE_BARS,
+                    s_bar_count,
+                    0);
+        break;
+    }
+    case SYNTH_LOOPER_COMMAND_TOGGLE_PAUSE:
+        if (has_any_loop()) {
+            s_paused = !s_paused;
+            set_message(s_paused ? SYNTH_LOOPER_MESSAGE_PAUSED : SYNTH_LOOPER_MESSAGE_RESUMED, 0, 0);
+        } else {
+            s_paused = false;
+            set_message(SYNTH_LOOPER_MESSAGE_NO_LOOP, 0, 0);
+        }
+        break;
+    case SYNTH_LOOPER_COMMAND_CLEAR_ALL:
+        clear_all();
+        break;
+    case SYNTH_LOOPER_COMMAND_CLEAR_TRACK:
+        if (command->track == 0) {
+            clear_all();
+        } else {
+            clear_track(command->track);
+            s_current_track = command->track;
+            if (!has_any_loop()) {
+                s_paused = false;
+            }
+            set_message(SYNTH_LOOPER_MESSAGE_CLEARED, 0, 0);
+        }
+        break;
+    case SYNTH_LOOPER_COMMAND_AUTO_BOUNCE:
+        apply_auto_bounce_command(command);
+        break;
+    default:
+        break;
+    }
+}
+
+static void drain_commands(void)
+{
+    synth_looper_command_t command;
+    while (synth_looper_command_queue_pop(&s_command_queue, &command)) {
+        apply_command(&command);
+    }
+}
+
 void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channels)
 {
     if (!s_initialized || block == NULL || frames == 0 || channels == 0) {
         return;
     }
+
+    drain_commands();
 
     synth_looper_process_track_t process_tracks[SYNTH_LOOPER_TRACK_COUNT] = {0};
     bool started[SYNTH_LOOPER_TRACK_COUNT] = {0};
@@ -627,7 +1112,6 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     synth_looper_meter_t block_meter = {0};
 #endif
 
-    portENTER_CRITICAL(&s_mux);
     uint64_t block_start = s_global_frame;
     s_global_frame += frames;
     paused = s_paused;
@@ -656,17 +1140,15 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
             has_active_track = true;
         }
     }
-    portEXIT_CRITICAL(&s_mux);
-
     if (paused ||
         (!has_active_track &&
          !synth_metronome_is_enabled(&global_metronome) &&
          !synth_metronome_is_enabled(&record_metronome))) {
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-        portENTER_CRITICAL(&s_mux);
         memset(&s_meter, 0, sizeof(s_meter));
-        portEXIT_CRITICAL(&s_mux);
 #endif
+        atomic_fetch_add_explicit(&s_audio_block, 1, memory_order_release);
+        publish_runtime_view();
         return;
     }
 
@@ -775,7 +1257,6 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     log_meter_if_due(&block_meter, block_start, max_audible_tracks);
 #endif
 
-    portENTER_CRITICAL(&s_mux);
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
     s_meter = block_meter;
 #endif
@@ -803,8 +1284,8 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
                 if (s_master_length_frames == 0 || track == 0) {
                     s_master_length_frames = slot->length_frames;
                 }
-                s_current_track = next_empty_track_locked(track);
-                set_message_locked("PLAY");
+                s_current_track = next_empty_track(track);
+                set_message(SYNTH_LOOPER_MESSAGE_PLAYING, 0, 0);
             } else if (process_tracks[track].state == SYNTH_LOOPER_TRACK_RECORDING) {
                 slot->record_position = process_tracks[track].record_position;
             }
@@ -816,7 +1297,7 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
                 slot->record_position = process_tracks[track].record_position;
                 slot->record_start_frame = 0;
                 slot->count_in_beat_frames = 0;
-                set_message_locked("REC");
+                set_message(SYNTH_LOOPER_MESSAGE_RECORDING, 0, 0);
             } else if (process_tracks[track].state == SYNTH_LOOPER_TRACK_LOOPING) {
                 slot->state = SYNTH_LOOPER_TRACK_LOOPING;
                 slot->record_armed = false;
@@ -830,103 +1311,32 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
                 if (s_master_length_frames == 0 || track == 0) {
                     s_master_length_frames = slot->length_frames;
                 }
-                s_current_track = next_empty_track_locked(track);
-                set_message_locked("PLAY");
+                s_current_track = next_empty_track(track);
+                set_message(SYNTH_LOOPER_MESSAGE_PLAYING, 0, 0);
             }
         }
     }
-    portEXIT_CRITICAL(&s_mux);
+    atomic_fetch_add_explicit(&s_audio_block, 1, memory_order_release);
+    publish_runtime_view();
 }
 
 esp_err_t synth_looper_click(uint16_t bpm)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (bpm == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
-
-    uint8_t track = s_current_track;
-    esp_err_t err = ensure_track_buffer(track);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    portENTER_CRITICAL(&s_mux);
-    set_current_bpm_locked(bpm);
-    synth_looper_track_t *slot = &s_tracks[track];
-    switch (slot->state) {
-    case SYNTH_LOOPER_TRACK_EMPTY:
-        slot->state = SYNTH_LOOPER_TRACK_WAITING;
-        slot->record_armed = false;
-        slot->sync_to_master = false;
-        slot->record_position = 0;
-        slot->play_position = 0;
-        slot->length_frames = 0;
-        slot->record_start_frame = 0;
-        slot->target_record_frames = 0;
-        slot->count_in_beat_frames = 0;
-        set_message_locked("WAITING");
-        break;
-    case SYNTH_LOOPER_TRACK_WAITING:
-        arm_waiting_track_locked(track, bpm);
-        break;
-    case SYNTH_LOOPER_TRACK_RECORDING:
-        finalize_recording_locked(track, true, false);
-        break;
-    case SYNTH_LOOPER_TRACK_LOOPING:
-        if (track == 0) {
-            clear_all_locked();
-        } else {
-            slot->state = SYNTH_LOOPER_TRACK_OFF;
-            slot->play_position = 0;
-            set_message_locked("OFF");
-        }
-        break;
-    case SYNTH_LOOPER_TRACK_OFF:
-        if (track == 0) {
-            clear_all_locked();
-        } else {
-            clear_track_locked(track);
-            set_message_locked("CLEARED");
-        }
-        break;
-    default:
-        break;
-    }
-    bool active = has_any_loop_locked();
-    if (!active) {
-        s_paused = false;
-    }
-    synth_looper_track_state_t state = slot->state;
-    uint8_t bars = s_bar_count;
-    bool paused = s_paused;
-    portEXIT_CRITICAL(&s_mux);
-
-    ESP_LOGI(TAG,
-             "click track=%u state=%s bars=%u paused=%s",
-             (unsigned)(track + 1),
-             synth_looper_track_state_name(state),
-             (unsigned)bars,
-             paused ? "yes" : "no");
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_CLICK,
+        .bpm = bpm,
+    });
 }
 
 esp_err_t synth_looper_select_track(int8_t steps)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    portENTER_CRITICAL(&s_mux);
-    int value = (int)s_current_track + steps;
-    while (value < 0) {
-        value += SYNTH_LOOPER_TRACK_COUNT;
-    }
-    s_current_track = (uint8_t)(value % SYNTH_LOOPER_TRACK_COUNT);
-    char message[sizeof(s_message)];
-    snprintf(message, sizeof(message), "TRACK %u", (unsigned)(s_current_track + 1));
-    set_message_locked(message);
-    portEXIT_CRITICAL(&s_mux);
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_SELECT_TRACK,
+        .value = steps,
+    });
 }
 
 esp_err_t synth_looper_set_track_volume(uint8_t track, uint8_t percent)
@@ -941,51 +1351,22 @@ esp_err_t synth_looper_set_track_volume(uint8_t track, uint8_t percent)
         percent = 100;
     }
 
-    bool changed = false;
-    uint8_t track_number = 0;
-    uint8_t previous_percent = 0;
-    synth_looper_track_state_t state = SYNTH_LOOPER_TRACK_EMPTY;
-
-    portENTER_CRITICAL(&s_mux);
-    synth_looper_track_t *slot = &s_tracks[track];
-    s_current_track = track;
-    track_number = (uint8_t)(track + 1U);
-    previous_percent = slot->volume_percent;
-    state = slot->state;
-    if (slot->volume_percent != percent) {
-        slot->volume_percent = percent;
-        changed = true;
-        char message[sizeof(s_message)];
-        snprintf(message,
-                 sizeof(message),
-                 "T%u VOL %u",
-                 (unsigned)track_number,
-                 (unsigned)percent);
-        set_message_locked(message);
-    }
-    portEXIT_CRITICAL(&s_mux);
-    if (changed) {
-        ESP_LOGI(TAG,
-                 "track volume track=%u state=%s previous=%u%% current=%u%%",
-                 (unsigned)track_number,
-                 synth_looper_track_state_name(state),
-                 (unsigned)previous_percent,
-                 (unsigned)percent);
-    }
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_SET_TRACK_VOLUME,
+        .track = track,
+        .value = percent,
+    });
 }
 
 esp_err_t synth_looper_set_current_track_volume(uint8_t percent)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (percent > 100) {
+        percent = 100;
     }
-
-    uint8_t track = 0;
-    portENTER_CRITICAL(&s_mux);
-    track = s_current_track;
-    portEXIT_CRITICAL(&s_mux);
-    return synth_looper_set_track_volume(track, percent);
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_SET_CURRENT_TRACK_VOLUME,
+        .value = percent,
+    });
 }
 
 esp_err_t synth_looper_toggle_track_mute(uint8_t track)
@@ -997,20 +1378,10 @@ esp_err_t synth_looper_toggle_track_mute(uint8_t track)
         return ESP_ERR_INVALID_ARG;
     }
 
-    bool muted = false;
-    uint8_t track_number = (uint8_t)(track + 1U);
-    portENTER_CRITICAL(&s_mux);
-    uint8_t bit = track_bit(track);
-    s_current_track = track;
-    s_mute_mask ^= bit;
-    muted = (s_mute_mask & bit) != 0;
-    char message[sizeof(s_message)];
-    snprintf(message, sizeof(message), "T%u %s", (unsigned)track_number, muted ? "MUTE" : "ON");
-    set_message_locked(message);
-    portEXIT_CRITICAL(&s_mux);
-
-    ESP_LOGI(TAG, "track mute track=%u muted=%s", (unsigned)track_number, muted ? "yes" : "no");
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_TOGGLE_TRACK_MUTE,
+        .track = track,
+    });
 }
 
 esp_err_t synth_looper_toggle_track_solo(uint8_t track)
@@ -1022,144 +1393,65 @@ esp_err_t synth_looper_toggle_track_solo(uint8_t track)
         return ESP_ERR_INVALID_ARG;
     }
 
-    bool soloed = false;
-    uint8_t solo_mask = 0;
-    uint8_t track_number = (uint8_t)(track + 1U);
-    portENTER_CRITICAL(&s_mux);
-    uint8_t bit = track_bit(track);
-    s_current_track = track;
-    s_solo_mask ^= bit;
-    soloed = (s_solo_mask & bit) != 0;
-    solo_mask = s_solo_mask;
-    char message[sizeof(s_message)];
-    snprintf(message, sizeof(message), "T%u SOLO %s", (unsigned)track_number, soloed ? "ON" : "OFF");
-    set_message_locked(message);
-    portEXIT_CRITICAL(&s_mux);
-
-    ESP_LOGI(TAG,
-             "track solo track=%u soloed=%s solo_mask=0x%02x",
-             (unsigned)track_number,
-             soloed ? "yes" : "no",
-             (unsigned)solo_mask);
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_TOGGLE_TRACK_SOLO,
+        .track = track,
+    });
 }
 
 esp_err_t synth_looper_toggle_metronome(uint16_t bpm)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (bpm == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
-
-    bool enabled = false;
-    portENTER_CRITICAL(&s_mux);
-    set_current_bpm_locked(bpm);
-    enabled = synth_metronome_toggle(&s_global_metronome, bpm, s_global_frame);
-    set_message_locked(enabled ? "MET ON" : "MET OFF");
-    portEXIT_CRITICAL(&s_mux);
-
-    ESP_LOGI(TAG, "metronome=%s", enabled ? "on" : "off");
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_TOGGLE_METRONOME,
+        .bpm = bpm,
+    });
 }
 
 esp_err_t synth_looper_toggle_record_metronome(uint16_t bpm)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (bpm == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
-
-    bool enabled = false;
-    portENTER_CRITICAL(&s_mux);
-    set_current_bpm_locked(bpm);
-    s_record_metronome_enabled = !s_record_metronome_enabled;
-    enabled = s_record_metronome_enabled;
-    if (!enabled) {
-        synth_metronome_set_enabled(&s_record_metronome, false, s_current_bpm, s_global_frame);
-    } else if (record_metronome_should_run_locked()) {
-        synth_metronome_set_enabled(&s_record_metronome, true, s_current_bpm, s_global_frame);
-    } else {
-        synth_metronome_set_timing(&s_record_metronome, s_current_bpm, s_global_frame);
-    }
-    set_message_locked(enabled ? "REC MET ON" : "REC MET OFF");
-    portEXIT_CRITICAL(&s_mux);
-
-    ESP_LOGI(TAG, "record metronome=%s", enabled ? "on" : "off");
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_TOGGLE_RECORD_METRONOME,
+        .bpm = bpm,
+    });
 }
 
 esp_err_t synth_looper_set_metronome_bpm(uint16_t bpm)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
+    if (bpm == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
-
-    portENTER_CRITICAL(&s_mux);
-    set_current_bpm_locked(bpm);
-    if (synth_metronome_is_enabled(&s_global_metronome)) {
-        synth_metronome_set_bpm_preserve_phase(&s_global_metronome, s_current_bpm, s_global_frame);
-    }
-    if (synth_metronome_is_enabled(&s_record_metronome)) {
-        synth_metronome_set_bpm_preserve_phase(&s_record_metronome, s_current_bpm, s_global_frame);
-    } else if (s_record_metronome_enabled) {
-        synth_metronome_set_timing(&s_record_metronome, s_current_bpm, s_global_frame);
-    }
-    portEXIT_CRITICAL(&s_mux);
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_SET_METRONOME_BPM,
+        .bpm = bpm,
+    });
 }
 
 esp_err_t synth_looper_adjust_bars(int8_t steps)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    portENTER_CRITICAL(&s_mux);
-    int value = (int)s_bar_count + steps;
-    if (value < 0) {
-        value = 0;
-    } else if (value > SYNTH_LOOPER_MAX_BARS) {
-        value = SYNTH_LOOPER_MAX_BARS;
-    }
-    s_bar_count = (uint8_t)value;
-    char message[sizeof(s_message)];
-    if (s_bar_count == 0) {
-        snprintf(message, sizeof(message), "FREE LENGTH");
-    } else {
-        snprintf(message, sizeof(message), "%u BARS", (unsigned)s_bar_count);
-    }
-    set_message_locked(message);
-    portEXIT_CRITICAL(&s_mux);
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_ADJUST_BARS,
+        .value = steps,
+    });
 }
 
 esp_err_t synth_looper_toggle_pause(void)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    portENTER_CRITICAL(&s_mux);
-    if (has_any_loop_locked()) {
-        s_paused = !s_paused;
-        set_message_locked(s_paused ? "PAUSED" : "PLAYING");
-    } else {
-        s_paused = false;
-        set_message_locked("NO LOOP");
-    }
-    portEXIT_CRITICAL(&s_mux);
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_TOGGLE_PAUSE,
+    });
 }
 
 esp_err_t synth_looper_clear_all(void)
 {
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    portENTER_CRITICAL(&s_mux);
-    clear_all_locked();
-    portEXIT_CRITICAL(&s_mux);
-    ESP_LOGI(TAG, "clear all");
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_CLEAR_ALL,
+    });
 }
 
 esp_err_t synth_looper_clear_track(uint8_t track)
@@ -1171,95 +1463,97 @@ esp_err_t synth_looper_clear_track(uint8_t track)
         return ESP_ERR_INVALID_ARG;
     }
 
-    portENTER_CRITICAL(&s_mux);
-    if (track == 0) {
-        clear_all_locked();
-    } else {
-        clear_track_locked(track);
-        s_current_track = track;
-        if (!has_any_loop_locked()) {
-            s_paused = false;
-        }
-        set_message_locked("CLEARED");
-    }
-    portEXIT_CRITICAL(&s_mux);
-
-    ESP_LOGI(TAG, "clear track=%u", (unsigned)(track + 1));
-    return ESP_OK;
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_CLEAR_TRACK,
+        .track = track,
+    });
 }
 
-esp_err_t synth_looper_auto_bounce(uint8_t bars, uint16_t bpm, uint8_t *track_out)
+esp_err_t synth_looper_request_auto_bounce(uint8_t bars,
+                                           uint16_t bpm,
+                                           synth_looper_request_id_t *request_id)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-
-    uint8_t track = SYNTH_LOOPER_TRACK_COUNT;
-    portENTER_CRITICAL(&s_mux);
-    track = first_empty_track_locked();
-    portEXIT_CRITICAL(&s_mux);
-    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
-        return ESP_ERR_NOT_FOUND;
+    if (request_id == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (bars == 0 || bars > SYNTH_LOOPER_MAX_BARS || bpm == 0) {
+        return ESP_ERR_INVALID_ARG;
     }
 
-    esp_err_t err = ensure_track_buffer(track);
+    uint32_t next_id = atomic_fetch_add_explicit(&s_next_request_id, 1, memory_order_relaxed);
+    if (next_id == 0) {
+        next_id = atomic_fetch_add_explicit(&s_next_request_id, 1, memory_order_relaxed);
+    }
+    uint32_t no_pending_request = 0;
+    if (!atomic_compare_exchange_strong_explicit(&s_pending_bounce_request,
+                                                 &no_pending_request,
+                                                 next_id,
+                                                 memory_order_acq_rel,
+                                                 memory_order_acquire)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_AUTO_BOUNCE,
+        .request_id = next_id,
+        .bpm = bpm,
+        .bars = bars,
+    });
     if (err != ESP_OK) {
+        uint32_t expected_id = next_id;
+        atomic_compare_exchange_strong_explicit(&s_pending_bounce_request,
+                                                &expected_id,
+                                                0,
+                                                memory_order_release,
+                                                memory_order_relaxed);
         return err;
     }
 
-    portENTER_CRITICAL(&s_mux);
-    if (s_tracks[track].state != SYNTH_LOOPER_TRACK_EMPTY) {
-        track = first_empty_track_locked();
-    }
-    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
-        portEXIT_CRITICAL(&s_mux);
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    set_current_bpm_locked(bpm);
-    s_current_track = track;
-
-    synth_looper_track_t *slot = &s_tracks[track];
-    if (s_master_length_frames > 0 && track != 0) {
-        slot->state = SYNTH_LOOPER_TRACK_WAITING;
-        slot->record_armed = true;
-        slot->sync_to_master = true;
-        slot->length_frames = 0;
-        slot->play_position = 0;
-        slot->record_position = 0;
-        slot->record_start_frame = 0;
-        slot->target_record_frames = s_master_length_frames;
-        slot->count_in_beat_frames = 0;
-        set_message_locked("BOUNCE SYNC");
-    } else {
-        uint32_t target_frames = bars_to_frames(bars == 0 ? 1 : bars, s_current_bpm);
-        if (target_frames > s_capacity_frames) {
-            target_frames = s_capacity_frames;
-        }
-        start_recording_locked(track, target_frames);
-        set_message_locked("BOUNCE");
-    }
-
-    if (track_out != NULL) {
-        *track_out = track;
-    }
-    portEXIT_CRITICAL(&s_mux);
-
-    ESP_LOGI(TAG, "auto bounce track=%u bars=%u bpm=%u", (unsigned)(track + 1), (unsigned)bars, (unsigned)bpm);
+    *request_id = next_id;
     return ESP_OK;
+}
+
+bool synth_looper_poll_auto_bounce(synth_looper_request_id_t request_id,
+                                   esp_err_t *result,
+                                   uint8_t *track_out)
+{
+    if (!s_initialized || request_id == 0) {
+        return false;
+    }
+
+    synth_looper_runtime_view_t view;
+    if (!synth_looper_snapshot_read(&s_snapshot_store, &view) ||
+        view.last_bounce_request_id != request_id) {
+        return false;
+    }
+
+    if (result != NULL) {
+        *result = view.last_bounce_result;
+    }
+    if (track_out != NULL) {
+        *track_out = view.last_bounce_track;
+    }
+    uint32_t expected_id = request_id;
+    atomic_compare_exchange_strong_explicit(&s_pending_bounce_request,
+                                            &expected_id,
+                                            0,
+                                            memory_order_release,
+                                            memory_order_relaxed);
+    return true;
 }
 
 bool synth_looper_current_track_is_waiting(void)
 {
-    bool waiting = false;
     if (!s_initialized) {
         return false;
     }
 
-    portENTER_CRITICAL(&s_mux);
-    waiting = s_tracks[s_current_track].state == SYNTH_LOOPER_TRACK_WAITING;
-    portEXIT_CRITICAL(&s_mux);
-    return waiting;
+    synth_looper_runtime_view_t view;
+    return synth_looper_snapshot_read(&s_snapshot_store, &view) &&
+           view.track_state[view.current_track] == SYNTH_LOOPER_TRACK_WAITING;
 }
 
 void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot)
@@ -1274,67 +1568,38 @@ void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot)
         return;
     }
 
-    portENTER_CRITICAL(&s_mux);
-    for (uint8_t i = 0; i < SYNTH_LOOPER_TRACK_COUNT; ++i) {
-        snapshot->track_state[i] = s_tracks[i].state;
-        snapshot->track_ms[i] = frames_to_ms(s_tracks[i].length_frames);
-        snapshot->track_position_ms[i] = frames_to_ms(s_tracks[i].play_position);
-        snapshot->track_volume_percent[i] = s_tracks[i].volume_percent;
-        snapshot->track_muted[i] = (s_mute_mask & track_bit(i)) != 0;
-        snapshot->track_soloed[i] = (s_solo_mask & track_bit(i)) != 0;
-        if (s_tracks[i].state == SYNTH_LOOPER_TRACK_RECORDING) {
-            snapshot->track_ms[i] = frames_to_ms(s_tracks[i].record_position);
-            snapshot->track_position_ms[i] = snapshot->track_ms[i];
-        }
+    synth_looper_runtime_view_t view;
+    if (synth_looper_snapshot_read(&s_snapshot_store, &view)) {
+        runtime_view_to_snapshot(&view, snapshot);
     }
-#if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-    snapshot->meter = s_meter;
-#endif
-    snapshot->current_track = s_current_track;
-    snapshot->page = s_current_track / SYNTH_LOOPER_TRACKS_PER_PAGE;
-    snapshot->bar_count = s_bar_count;
-    snapshot->paused = s_paused;
-    snapshot->metronome_enabled = synth_metronome_is_enabled(&s_global_metronome);
-    snapshot->record_metronome_enabled = s_record_metronome_enabled;
-    snapshot->record_metronome_active = synth_metronome_is_enabled(&s_record_metronome);
-    snapshot->solo_active = s_solo_mask != 0;
-    snapshot->master_ms = frames_to_ms(s_master_length_frames);
-    snapshot->max_seconds = SYNTH_LOOPER_MAX_SECONDS;
-    const synth_looper_track_t *current = &s_tracks[s_current_track];
-    snapshot->current_track_armed = current->record_armed;
-    snapshot->waiting_for_sync = current->state == SYNTH_LOOPER_TRACK_WAITING &&
-                                 current->record_armed &&
-                                 current->sync_to_master;
-    if (current->state == SYNTH_LOOPER_TRACK_WAITING && current->record_armed) {
-        if (current->sync_to_master && s_master_length_frames > 0) {
-            uint32_t master_position = s_tracks[0].play_position;
-            if (master_position >= s_master_length_frames) {
-                master_position = 0;
-            }
-            uint32_t wait_frames = master_position == 0 ? 0 : s_master_length_frames - master_position;
-            snapshot->progress_ms = frames_to_ms(master_position);
-            snapshot->progress_total_ms = frames_to_ms(s_master_length_frames);
-            snapshot->wait_ms = frames_to_ms(wait_frames);
-        } else if (!current->sync_to_master && current->record_start_frame > s_global_frame) {
-            uint64_t wait_frames = current->record_start_frame - s_global_frame;
-            uint64_t total_wait_frames = (uint64_t)current->count_in_beat_frames * 4ULL;
-            snapshot->wait_ms = frames64_to_ms(wait_frames);
-            snapshot->progress_total_ms = frames64_to_ms(total_wait_frames);
-            if (total_wait_frames > wait_frames) {
-                snapshot->progress_ms = frames64_to_ms(total_wait_frames - wait_frames);
-            }
-        }
-    } else if (current->state == SYNTH_LOOPER_TRACK_RECORDING) {
-        snapshot->progress_ms = frames_to_ms(current->record_position);
-        if (current->target_record_frames > 0) {
-            snapshot->progress_total_ms = frames_to_ms(current->target_record_frames);
-        }
-    } else if (current->state == SYNTH_LOOPER_TRACK_LOOPING && current->length_frames > 0) {
-        snapshot->progress_ms = frames_to_ms(current->play_position);
-        snapshot->progress_total_ms = frames_to_ms(current->length_frames);
+}
+
+void synth_looper_get_diagnostics(synth_looper_diagnostics_t *diagnostics)
+{
+    if (diagnostics == NULL) {
+        return;
     }
-    strlcpy(snapshot->message, s_message, sizeof(snapshot->message));
-    portEXIT_CRITICAL(&s_mux);
+
+    *diagnostics = (synth_looper_diagnostics_t){
+        .command_queue_high_water = synth_looper_command_queue_high_water(&s_command_queue),
+        .command_rejected = synth_looper_command_queue_rejected(&s_command_queue),
+        .command_depth = synth_looper_command_queue_depth(&s_command_queue),
+        .max_command_latency_blocks =
+            atomic_load_explicit(&s_max_command_latency_blocks, memory_order_relaxed),
+        .snapshot_reader_retries = synth_looper_snapshot_reader_retries(&s_snapshot_store),
+        .snapshot_publish_skipped = synth_looper_snapshot_publish_skipped(&s_snapshot_store),
+        .max_process_us = atomic_load_explicit(&s_max_process_us, memory_order_relaxed),
+        .process_over_budget =
+            atomic_load_explicit(&s_process_over_budget, memory_order_relaxed),
+    };
+}
+
+void synth_looper_record_process_time(uint32_t process_us, uint32_t audio_block_budget_us)
+{
+    update_atomic_max(&s_max_process_us, process_us);
+    if (process_us > audio_block_budget_us) {
+        atomic_fetch_add_explicit(&s_process_over_budget, 1, memory_order_relaxed);
+    }
 }
 
 const char *synth_looper_track_state_name(synth_looper_track_state_t state)

@@ -355,12 +355,32 @@ void synth_app_drums_stop_loop(synth_app_drum_modes_t *drums)
     }
 }
 
-void synth_app_drums_mark_bounce(synth_app_drum_modes_t *drums, uint8_t track)
+void synth_app_drums_mark_bounce_request(synth_app_drum_modes_t *drums,
+                                         synth_looper_request_id_t request_id)
 {
-    if (drums != NULL) {
-        drums->bounce_track = track;
+    if (drums != NULL && request_id != 0) {
+        drums->bounce_request_id = request_id;
         drums->bounce_style = drums->loop_style;
     }
+}
+
+bool synth_app_drums_resolve_bounce_request(synth_app_drum_modes_t *drums,
+                                            synth_looper_request_id_t request_id,
+                                            uint8_t track)
+{
+    if (drums == NULL || request_id == 0 || drums->bounce_request_id != request_id) {
+        return false;
+    }
+    drums->bounce_request_id = 0;
+    if (track < SYNTH_LOOPER_TRACK_COUNT) {
+        drums->bounce_track = track;
+    }
+    return true;
+}
+
+bool synth_app_drums_bounce_request_pending(const synth_app_drum_modes_t *drums)
+{
+    return drums != NULL && drums->bounce_request_id != 0;
 }
 
 bool synth_app_drums_bounce_pending(const synth_app_drum_modes_t *drums)
@@ -391,6 +411,7 @@ bool synth_app_drums_loop_active(const synth_app_drum_modes_t *drums)
 {
     return drums != NULL &&
            (drums->loop_running ||
+            drums->bounce_request_id != 0 ||
             drums->bounce_track != SYNTH_APP_DRUM_NO_BOUNCE_TRACK ||
             drums->owned_track != SYNTH_APP_DRUM_NO_BOUNCE_TRACK);
 }

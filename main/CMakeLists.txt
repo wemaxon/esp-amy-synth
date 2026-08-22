@@ -46,6 +46,7 @@ idf_component_register(
         "synth/drums.c"
         "synth/looper.c"
         "synth/looper_dsp.c"
+        "synth/looper_transport.c"
         "synth/metronome.c"
         "synth/play_mode.c"
         "synth/sound.c"

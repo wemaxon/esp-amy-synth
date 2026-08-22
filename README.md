@@ -126,7 +126,9 @@ python tools/host_parity_check.py
 ```
 
 The modernization baseline, compatibility boundaries, parity gates, and bug
-audit live in `docs/refactor-baseline.md` and `docs/bug-audit.md`.
+audit live in `docs/refactor-baseline.md` and `docs/bug-audit.md`. The looper
+ownership model and AUD-004 hardware profile are in
+`docs/looper-realtime-architecture.md`.
 
 ## Prereqisites
 

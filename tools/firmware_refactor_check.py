@@ -60,7 +60,10 @@ def check_public_facades() -> None:
             "synth_looper_init",
             "synth_looper_process_audio",
             "synth_looper_click",
+            "synth_looper_request_auto_bounce",
+            "synth_looper_poll_auto_bounce",
             "synth_looper_get_snapshot",
+            "synth_looper_get_diagnostics",
         ),
     )
     require_public_symbols(
@@ -123,6 +126,40 @@ def check_board_contracts() -> None:
         )
 
 
+def check_looper_realtime_boundary() -> None:
+    looper = source("main/synth/looper.c")
+    transport = source("main/synth/looper_transport.h")
+    app = source("main/synth/app.c")
+    audio = source("main/synth/amy_audio.c")
+    cmake = source("main/CMakeLists.txt")
+
+    require("portENTER_CRITICAL" not in looper and "portEXIT_CRITICAL" not in looper,
+            "looper reintroduced a shared critical section")
+    require(re.search(r"\b\w+_locked\b", looper) is None,
+            "looper retained a stale lock-coupled helper")
+    require("#define SYNTH_LOOPER_COMMAND_CAPACITY 32U" in transport,
+            "looper command queue is no longer the reviewed 32-entry bound")
+    require("#define SYNTH_LOOPER_SNAPSHOT_SLOT_COUNT 3U" in transport,
+            "looper snapshot exchange is no longer triple buffered")
+    require('"synth/looper_transport.c"' in cmake,
+            "looper transport is missing from the firmware component")
+    require("synth_looper_request_auto_bounce" in app,
+            "application bounce path no longer uses the asynchronous API")
+    require("synth_looper_auto_bounce" not in looper and
+            "synth_looper_auto_bounce" not in source("main/synth/looper.h"),
+            "synchronous looper compatibility API returned")
+    require("heap_caps_malloc(buffer_bytes, MALLOC_CAP_8BIT)" not in looper,
+            "looper storage reintroduced an internal-RAM fallback")
+    require("bpm == 0 ? 120" not in looper and "command->bars == 0 ?" not in looper,
+            "looper reintroduced implicit BPM or bounce-length substitution")
+    require("synth_looper_record_process_time" in audio,
+            "audio callback no longer records looper deadline telemetry")
+    allocation = looper.find("esp_err_t allocation_err = allocate_all_track_buffers()")
+    initialized = looper.find("s_initialized = true", allocation)
+    require(allocation >= 0 and initialized > allocation,
+            "looper exposes initialized state before track preallocation succeeds")
+
+
 def check_obsolete_test_removed() -> None:
     require(not (ROOT / "pytest_hello_world.py").exists(),
             "obsolete hello-world pytest returned")
@@ -137,6 +174,7 @@ def main() -> None:
     check_persistence_contracts()
     check_dependency_boundary()
     check_board_contracts()
+    check_looper_realtime_boundary()
     check_obsolete_test_removed()
     print("PASS: firmware refactor compatibility contracts hold")
 

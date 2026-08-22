@@ -58,9 +58,24 @@ typedef struct {
     char message[22];
 } synth_looper_snapshot_t;
 
+typedef uint32_t synth_looper_request_id_t;
+
+typedef struct {
+    uint32_t command_queue_high_water;
+    uint32_t command_rejected;
+    uint32_t command_depth;
+    uint32_t max_command_latency_blocks;
+    uint32_t snapshot_reader_retries;
+    uint32_t snapshot_publish_skipped;
+    uint32_t max_process_us;
+    uint32_t process_over_budget;
+} synth_looper_diagnostics_t;
+
 esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count);
 void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channels);
 
+/* Control APIs are single-producer and apply accepted commands next audio block. */
+/* BPM must be nonzero; invalid values are rejected rather than substituted. */
 esp_err_t synth_looper_click(uint16_t bpm);
 esp_err_t synth_looper_select_track(int8_t steps);
 esp_err_t synth_looper_set_track_volume(uint8_t track, uint8_t percent);
@@ -74,10 +89,19 @@ esp_err_t synth_looper_adjust_bars(int8_t steps);
 esp_err_t synth_looper_toggle_pause(void);
 esp_err_t synth_looper_clear_all(void);
 esp_err_t synth_looper_clear_track(uint8_t track);
-esp_err_t synth_looper_auto_bounce(uint8_t bars, uint16_t bpm, uint8_t *track_out);
+/* One non-blocking auto-bounce request may be outstanding; bars must be 1..8. */
+esp_err_t synth_looper_request_auto_bounce(uint8_t bars,
+                                           uint16_t bpm,
+                                           synth_looper_request_id_t *request_id);
+bool synth_looper_poll_auto_bounce(synth_looper_request_id_t request_id,
+                                   esp_err_t *result,
+                                   uint8_t *track_out);
 bool synth_looper_current_track_is_waiting(void);
 
+/* Snapshots are coherent copies and never make the audio task wait. */
 void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot);
+void synth_looper_get_diagnostics(synth_looper_diagnostics_t *diagnostics);
+void synth_looper_record_process_time(uint32_t process_us, uint32_t audio_block_budget_us);
 const char *synth_looper_track_state_name(synth_looper_track_state_t state);
 const char *synth_looper_track_state_short_name(synth_looper_track_state_t state);
 

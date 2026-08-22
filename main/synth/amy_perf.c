@@ -8,6 +8,7 @@
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "synth/looper.h"
 
 typedef struct {
     uint32_t blocks;
@@ -154,11 +155,13 @@ void synth_amy_perf_record_block(uint32_t render_us,
         uint32_t internal_heap = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         UBaseType_t stack_words = uxTaskGetStackHighWaterMark(NULL);
         amy_osc_stats_t amy_oscs = amy_runtime_osc_stats();
+        synth_looper_diagnostics_t looper = {0};
+        synth_looper_get_diagnostics(&looper);
 
         esp_log_level_t level = s_perf.slow_blocks > 0 ? ESP_LOG_WARN : ESP_LOG_INFO;
         ESP_LOG_LEVEL(level,
                       TAG,
-                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u amy_us avg=%u max=%u flanger_us avg=%u max=%u mixer_us avg=%u max=%u i2s_us avg=%u max=%u cycle_us avg=%u max=%u over=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
+                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u amy_us avg=%u max=%u flanger_us avg=%u max=%u mixer_us avg=%u max=%u i2s_us avg=%u max=%u cycle_us avg=%u max=%u over=%u looper_queue depth=%u high=%u rejected=%u latency_blocks=%u snapshot_retries=%u snapshot_skipped=%u looper_lifetime_max_us=%u looper_over_budget=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
                       (unsigned)s_perf.blocks,
                       (unsigned)app_active_oscs,
                       (unsigned)amy_oscs.audible,
@@ -183,6 +186,14 @@ void synth_amy_perf_record_block(uint32_t render_us,
                       (unsigned)cycle_avg,
                       (unsigned)s_perf.cycle_us_max,
                       (unsigned)s_perf.cycle_over_budget_blocks,
+                      (unsigned)looper.command_depth,
+                      (unsigned)looper.command_queue_high_water,
+                      (unsigned)looper.command_rejected,
+                      (unsigned)looper.max_command_latency_blocks,
+                      (unsigned)looper.snapshot_reader_retries,
+                      (unsigned)looper.snapshot_publish_skipped,
+                      (unsigned)looper.max_process_us,
+                      (unsigned)looper.process_over_budget,
                       (unsigned)free_heap,
                       (unsigned)min_heap,
                       (unsigned)largest_heap,

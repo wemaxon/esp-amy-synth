@@ -21,6 +21,7 @@ extern "C" {
         .kit = SYNTH_DRUM_KIT_TIGHT, \
         .loop_style = SYNTH_DRUM_LOOP_ROCK, \
         .loop_variation = SYNTH_DRUM_LOOP_VARIATION_ORIGINAL, \
+        .bounce_request_id = 0, \
         .bounce_track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK, \
         .bounce_style = SYNTH_DRUM_LOOP_ROCK, \
         .owned_track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK, \
@@ -47,6 +48,7 @@ typedef struct {
     synth_rhythm_rate_t auto_rate[SYNTH_DRUM_VOICE_COUNT];
     uint32_t auto_step_index[SYNTH_DRUM_VOICE_COUNT];
     TickType_t auto_next_tick[SYNTH_DRUM_VOICE_COUNT];
+    synth_looper_request_id_t bounce_request_id;
     uint8_t bounce_track;
     synth_drum_loop_style_t bounce_style;
     uint8_t owned_track;
@@ -73,7 +75,12 @@ synth_app_drum_result_t synth_app_drums_joystick(synth_app_drum_modes_t *drums,
 bool synth_app_drums_update(synth_app_drum_modes_t *drums, uint16_t bpm, TickType_t now);
 void synth_app_drums_stop_auto(synth_app_drum_modes_t *drums);
 void synth_app_drums_stop_loop(synth_app_drum_modes_t *drums);
-void synth_app_drums_mark_bounce(synth_app_drum_modes_t *drums, uint8_t track);
+void synth_app_drums_mark_bounce_request(synth_app_drum_modes_t *drums,
+                                         synth_looper_request_id_t request_id);
+bool synth_app_drums_resolve_bounce_request(synth_app_drum_modes_t *drums,
+                                            synth_looper_request_id_t request_id,
+                                            uint8_t track);
+bool synth_app_drums_bounce_request_pending(const synth_app_drum_modes_t *drums);
 bool synth_app_drums_bounce_pending(const synth_app_drum_modes_t *drums);
 bool synth_app_drums_finish_bounce_if_complete(synth_app_drum_modes_t *drums,
                                                synth_looper_track_state_t track_state);

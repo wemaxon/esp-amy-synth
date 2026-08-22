@@ -74,6 +74,7 @@ persistence, and looper record/playback/synchronization.
 | Consolidate calibration | NVS schemas, defaults, normalization, capture, save, and reset remain compatible. | Shared NVS lifecycle and pure normalization helpers replace duplicated paths. | Schema checks, math vectors, and both target builds. |
 | Consolidate PCF transport | PCF8574/PCF8575 facades, byte order, latches, and error propagation remain stable. | Shared I2C transport removes duplicate device/read/write plumbing. | Fake-I2C C vectors and both target builds. |
 | Repair target configuration | ESP32 starts its ES8388 at 100%; ESP32-P4 starts its ES8390 at 80%. | Board profiles now own both defaults and disabled private helpers are compile-guarded. | Board-contract check and isolated clean builds for both targets. |
+| Isolate looper real-time ownership | Six-track record/play, metronome, controls, DSP, and UI fields remain stable; commands apply at the next audio block and bounce is async-only. | The audio task solely owns mutable looper state, fed by a bounded SPSC queue and publishing immutable triple-buffered snapshots. | Transport C vectors, structural no-lock/async-only checks, both target builds, and the pending WT0132P4 profile matrix. |
 
 ## Separate migration tasks
 
@@ -83,9 +84,9 @@ The following are intentionally not part of behavior-preserving refactoring:
   compatibility matrix, release-note review, clean builds, and hardware soak.
 - Public facade changes and calibration/NVS layout changes need versioned API
   and data migrations rather than opportunistic signature or struct edits.
-- Audio/control task topology, multicore rendering, PSRAM pools, and replacing
-  looper critical sections are architecture changes that need timing telemetry
-  and underrun/stress baselines first.
+- Broader audio/control task topology changes, multicore rendering, and PSRAM
+  pool redesign remain separate architecture migrations with their own timing
+  and underrun/stress baselines.
 - Implementing currently visible but unsupported play modes, or changing the
   control queue overflow policy, is a functional feature task with UI/manual
   parity tests.

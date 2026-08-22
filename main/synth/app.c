@@ -716,23 +716,58 @@ static void apply_drum_result(const synth_app_drum_result_t *result)
 
 static void start_drum_loop_bounce(void)
 {
-    if (!s_app.drums.loop_running || synth_app_drums_bounce_pending(&s_app.drums)) {
+    if (!s_app.drums.loop_running ||
+        synth_app_drums_bounce_request_pending(&s_app.drums) ||
+        synth_app_drums_bounce_pending(&s_app.drums)) {
         return;
     }
 
-    uint8_t track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK;
-    esp_err_t err = synth_looper_auto_bounce(1, current_bpm(), &track);
+    synth_looper_request_id_t request_id = 0;
+    esp_err_t err = synth_looper_request_auto_bounce(1, current_bpm(), &request_id);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "drum loop auto-bounce failed: %s", esp_err_to_name(err));
         return;
     }
 
-    synth_app_drums_mark_bounce(&s_app.drums, track);
+    synth_app_drums_mark_bounce_request(&s_app.drums, request_id);
     set_status("BEAT BOUNCE");
 }
 
 static void update_drum_bounce(void)
 {
+    if (synth_app_drums_bounce_request_pending(&s_app.drums)) {
+        synth_looper_request_id_t request_id = s_app.drums.bounce_request_id;
+        esp_err_t result = ESP_OK;
+        uint8_t track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK;
+        if (!synth_looper_poll_auto_bounce(request_id, &result, &track)) {
+            return;
+        }
+
+        if (result != ESP_OK || track >= SYNTH_LOOPER_TRACK_COUNT) {
+            synth_app_drums_resolve_bounce_request(&s_app.drums,
+                                                   request_id,
+                                                   SYNTH_APP_DRUM_NO_BOUNCE_TRACK);
+            ESP_LOGW(TAG, "drum loop auto-bounce failed: %s", esp_err_to_name(result));
+            return;
+        }
+        if (!s_app.drums.loop_running) {
+            synth_app_drums_resolve_bounce_request(&s_app.drums,
+                                                   request_id,
+                                                   SYNTH_APP_DRUM_NO_BOUNCE_TRACK);
+            esp_err_t clear_err = synth_looper_clear_track(track);
+            if (clear_err != ESP_OK) {
+                ESP_LOGW(TAG,
+                         "clear cancelled drum bounce track=%u failed: %s",
+                         (unsigned)(track + 1),
+                         esp_err_to_name(clear_err));
+            }
+            return;
+        }
+
+        synth_app_drums_resolve_bounce_request(&s_app.drums, request_id, track);
+        set_status("BEAT BOUNCE");
+    }
+
     if (!synth_app_drums_bounce_pending(&s_app.drums)) {
         return;
     }

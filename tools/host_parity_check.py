@@ -79,6 +79,16 @@ SUITES = {
         "host_vector_limited_counter": 2,
         "host_vector_clip_counter": 1,
     },
+    "looper_transport": {
+        "host_vector_looper_command_fifo": 12,
+        "host_vector_looper_command_full": 0x101,
+        "host_vector_looper_command_wrap": 15,
+        "host_vector_looper_command_high_water": 3,
+        "host_vector_looper_command_rejected": 104,
+        "host_vector_looper_snapshot_consistent": 24,
+        "host_vector_looper_snapshot_pinned": 1,
+        "host_vector_looper_snapshot_skipped": 17,
+    },
     "control_logic": {
         "host_vector_direction_center": 0,
         "host_vector_direction_up": 1,

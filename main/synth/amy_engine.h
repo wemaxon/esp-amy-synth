@@ -23,6 +23,8 @@ extern "C" {
 #endif
 
 esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw);
+/* Exclusive-mode reset: discard pending events and restore a fresh AMY graph. */
+esp_err_t synth_amy_reset_exclusive(void);
 esp_err_t synth_amy_set_sound(synth_sound_t sound);
 float synth_amy_sound_velocity(synth_sound_t sound);
 bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, const char **patch_label);
@@ -32,6 +34,10 @@ esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
 esp_err_t synth_amy_builtin_patch_note_on(uint8_t midi_note, float velocity);
 esp_err_t synth_amy_builtin_patch_note_off(uint8_t midi_note);
 esp_err_t synth_amy_drum_hit(uint8_t pcm_preset, uint8_t midi_note, uint8_t velocity);
+esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
+                                      uint8_t midi_note,
+                                      uint8_t velocity,
+                                      float level_gain);
 esp_err_t synth_amy_set_volume(float normalized_volume);
 esp_err_t synth_amy_set_filter_enabled(bool enabled);
 esp_err_t synth_amy_set_filter_cutoff(float cutoff_hz);

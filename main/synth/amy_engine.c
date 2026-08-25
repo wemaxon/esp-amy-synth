@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "amy.h"
 #include "esp_check.h"
@@ -18,6 +19,7 @@
 #include "synth/amy_runtime.h"
 #include "synth/amy_voice_map.h"
 #include "synth/looper.h"
+#include "synth/level_calibration.h"
 
 
 #define SYNTH_DELAY_MAX_SAMPLES 32768U
@@ -88,6 +90,7 @@ static uint8_t s_drum_next_osc;
 static uint16_t s_patch_number;
 static uint8_t s_patch_voice_count;
 static uint8_t s_patch_oscs_per_voice;
+static float s_patch_level_gain = 1.0f;
 static bool s_filter_enabled = true;
 static float s_filter_cutoff_hz = FILTER_CUTOFF_MAX_HZ;
 static bool s_lfo_enabled;
@@ -321,7 +324,8 @@ static float raw_amp_for_voice(uint8_t voice, const amy_sound_runtime_t *runtime
     if (voice >= AMY_MUSICAL_VOICE_COUNT || runtime == NULL) {
         return 0.0f;
     }
-    return RAW_NOTE_AMP * runtime->raw.amp * amy_voice_map_role_amp(voice) * amp_scale;
+    return RAW_NOTE_AMP * runtime->raw.amp * amy_voice_map_role_amp(voice) * amp_scale *
+           synth_level_calibration_sound_gain(s_sound);
 }
 
 static void amy_note_on_raw_osc(uint8_t voice,
@@ -787,7 +791,9 @@ static void release_slot_voices(uint8_t slot)
     }
 }
 
-static void configure_patch_synth_instance(uint8_t synth_id, const amy_sound_runtime_t *runtime)
+static void configure_patch_synth_instance(uint8_t synth_id,
+                                           const amy_sound_runtime_t *runtime,
+                                           float level_gain)
 {
     if (runtime == NULL || runtime->backend != AMY_SOUND_BACKEND_PATCH) {
         return;
@@ -797,39 +803,47 @@ static void configure_patch_synth_instance(uint8_t synth_id, const amy_sound_run
     event.synth = synth_id;
     event.patch_number = runtime->patch_number;
     event.num_voices = amy_runtime_voice_limit(runtime, s_voice_limit);
+    event.synth_level = level_gain;
     amy_add_event(&event);
 }
 
-static void configure_patch_synth(const amy_sound_runtime_t *runtime)
+static void configure_patch_synth_with_gain(const amy_sound_runtime_t *runtime, float level_gain)
 {
     if (!s_initialized || runtime == NULL || runtime->backend != AMY_SOUND_BACKEND_PATCH) {
         return;
     }
 
     uint8_t voices = amy_runtime_voice_limit(runtime, s_voice_limit);
-    configure_patch_synth_instance(AMY_PATCH_MAIN_SYNTH, runtime);
+    configure_patch_synth_instance(AMY_PATCH_MAIN_SYNTH, runtime, level_gain);
 
     s_patch_loaded = true;
     s_patch_pair_loaded = false;
     s_patch_number = runtime->patch_number;
     s_patch_voice_count = voices;
     s_patch_oscs_per_voice = runtime->oscs_per_voice;
+    s_patch_level_gain = level_gain;
 
     if (amy_runtime_supports_stereo_pairs(runtime, s_stereo_enabled)) {
-        configure_patch_synth_instance(AMY_PATCH_PAIR_SYNTH, runtime);
+        configure_patch_synth_instance(AMY_PATCH_PAIR_SYNTH, runtime, level_gain);
         s_patch_pair_loaded = true;
     }
 
     apply_patch_pan();
     apply_patch_runtime_controls(false);
     ESP_LOGI(TAG,
-             "patch synths=%u patch=%u %s voices=%u oscs_per_voice=%u alloc_oscs=%u",
+             "patch synths=%u patch=%u %s voices=%u oscs_per_voice=%u level_gain=%.4f alloc_oscs=%u",
              (unsigned)(1U + (s_patch_pair_loaded ? 1U : 0U)),
              runtime->patch_number,
              runtime->patch_label != NULL ? runtime->patch_label : "",
              voices,
              runtime->oscs_per_voice,
+             level_gain,
              (unsigned)allocated_patch_osc_count());
+}
+
+static void configure_patch_synth(const amy_sound_runtime_t *runtime)
+{
+    configure_patch_synth_with_gain(runtime, synth_level_calibration_sound_gain(s_sound));
 }
 
 static void replay_active_patch_voices(const amy_sound_runtime_t *runtime)
@@ -880,6 +894,7 @@ static void release_patch_synth(void)
     s_patch_number = 0;
     s_patch_voice_count = 0;
     s_patch_oscs_per_voice = 0;
+    s_patch_level_gain = 1.0f;
 }
 
 esp_err_t synth_amy_set_sound(synth_sound_t sound)
@@ -987,7 +1002,7 @@ esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
         .velocity = 0.55f,
         .patch_label = "diagnostic",
     };
-    configure_patch_synth(&runtime);
+    configure_patch_synth_with_gain(&runtime, 1.0f);
     amy_graph_unlock();
     return ESP_OK;
 }
@@ -1020,12 +1035,15 @@ esp_err_t synth_amy_builtin_patch_note_off(uint8_t midi_note)
     return ESP_OK;
 }
 
-esp_err_t synth_amy_drum_hit(uint8_t pcm_preset, uint8_t midi_note, uint8_t velocity)
+esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
+                                      uint8_t midi_note,
+                                      uint8_t velocity,
+                                      float level_gain)
 {
     if (!s_initialized || SYNTH_AMY_DRUM_OSC_COUNT == 0) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (pcm_preset >= pcm_samples) {
+    if (pcm_preset >= pcm_samples || !isfinite(level_gain) || level_gain < 0.0f) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -1038,12 +1056,17 @@ esp_err_t synth_amy_drum_hit(uint8_t pcm_preset, uint8_t midi_note, uint8_t velo
     event.preset = pcm_preset;
     event.midi_note = midi_note;
     event.velocity = clamp_float((float)velocity / 127.0f, 0.0f, 1.0f);
-    event.amp_coefs[COEF_CONST] = SYNTH_AMY_DRUM_AMP;
+    event.amp_coefs[COEF_CONST] = SYNTH_AMY_DRUM_AMP * level_gain;
     event.feedback = 0.0f;
     event.filter_type = FILTER_NONE;
     event.pan_coefs[COEF_CONST] = 0.5f;
     amy_add_event(&event);
     return ESP_OK;
+}
+
+esp_err_t synth_amy_drum_hit(uint8_t pcm_preset, uint8_t midi_note, uint8_t velocity)
+{
+    return synth_amy_drum_hit_with_gain(pcm_preset, midi_note, velocity, 1.0f);
 }
 
 esp_err_t synth_amy_set_volume(float normalized_volume)
@@ -1212,7 +1235,7 @@ esp_err_t synth_amy_set_stereo_enabled(bool enabled)
     const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
     if (runtime->backend == AMY_SOUND_BACKEND_PATCH) {
         if (s_patch_loaded && s_stereo_enabled && !s_patch_pair_loaded) {
-            configure_patch_synth_instance(AMY_PATCH_PAIR_SYNTH, runtime);
+            configure_patch_synth_instance(AMY_PATCH_PAIR_SYNTH, runtime, s_patch_level_gain);
             s_patch_pair_loaded = true;
             apply_patch_pan();
             apply_patch_runtime_controls(false);
@@ -1484,6 +1507,41 @@ esp_err_t synth_amy_chord_off(uint8_t slot)
     }
 
     release_slot_voices(slot);
+    return ESP_OK;
+}
+
+esp_err_t synth_amy_reset_exclusive(void)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    amy_graph_lock();
+    amy_deltas_reset();
+    amy_reset_oscs();
+
+    memset(s_voices, 0, sizeof(s_voices));
+    s_voice_age = 0;
+    s_voice_limit = AMY_MUSICAL_VOICE_COUNT;
+    s_envelope_override_enabled = false;
+    s_portamento_ms = 0;
+    s_sound = SYNTH_SOUND_SAW;
+    s_patch_loaded = false;
+    s_patch_pair_loaded = false;
+    s_patch_number = 0;
+    s_patch_voice_count = 0;
+    s_patch_oscs_per_voice = 0;
+    s_patch_level_gain = 1.0f;
+    s_drum_next_osc = 0;
+    s_filter_enabled = true;
+    s_filter_cutoff_hz = FILTER_CUTOFF_MAX_HZ;
+    s_lfo_enabled = false;
+    s_lfo_pitch_octaves = 0.0f;
+    s_tremolo_enabled = false;
+    s_tremolo_amp_offset = 0.0f;
+    s_stereo_enabled = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
+    enqueue_master_volume((float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f);
+    amy_graph_unlock();
     return ESP_OK;
 }
 

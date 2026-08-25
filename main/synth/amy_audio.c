@@ -13,6 +13,10 @@
 #include "synth/amy_perf.h"
 #include "synth/looper.h"
 
+#if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+#include "synth/audio_meter.h"
+#endif
+
 #if ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ != AMY_SAMPLE_RATE
 #error "ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ must match AMY_SAMPLE_RATE"
 #endif
@@ -34,14 +38,29 @@ static void audio_task(void *arg)
 
     while (true) {
         int64_t render_start_us = esp_timer_get_time();
+#if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+        synth_audio_meter_begin_block();
+#endif
         int16_t *block = s_config.render();
         int64_t amy_done_us = esp_timer_get_time();
+#if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+        synth_audio_meter_process(SYNTH_AUDIO_METER_TAP_DRY,
+                                  block,
+                                  AMY_BLOCK_SIZE,
+                                  AMY_NCHANS);
+#endif
         synth_amy_flanger_process(block);
         int64_t flanger_done_us = esp_timer_get_time();
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
         int64_t looper_done_us = esp_timer_get_time();
         synth_looper_record_process_time((uint32_t)(looper_done_us - flanger_done_us),
                                          SYNTH_AUDIO_BLOCK_US);
+#if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+        synth_audio_meter_process(SYNTH_AUDIO_METER_TAP_OUTPUT,
+                                  block,
+                                  AMY_BLOCK_SIZE,
+                                  AMY_NCHANS);
+#endif
         int64_t render_done_us = esp_timer_get_time();
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(
@@ -90,6 +109,14 @@ esp_err_t synth_amy_audio_start(const synth_amy_audio_config_t *config)
     }
 
     s_config = *config;
+#if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+    esp_err_t meter_err = synth_audio_meter_init(AMY_SAMPLE_RATE,
+                                                 AMY_BLOCK_SIZE,
+                                                 SYNTH_AUDIO_BLOCK_US);
+    if (meter_err != ESP_OK) {
+        return meter_err;
+    }
+#endif
     BaseType_t task_created = xTaskCreatePinnedToCore(
         audio_task,
         "amy_audio",

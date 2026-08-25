@@ -140,7 +140,7 @@ def check_amy_upgrade_contracts() -> None:
 def check_board_contracts() -> None:
     expected_volumes = {
         "main/boards/ai_thinker_a1s.h": "100",
-        "main/boards/wt0132p4_a1.h": "80",
+        "main/boards/wt0132p4_a1.h": "100",
     }
     for relative, volume in expected_volumes.items():
         text = source(relative)

@@ -4,6 +4,7 @@ idf_component_register(
         "diagnostics/amy_patch_browser.c"
         "diagnostics/diagnostic_ui.c"
         "diagnostics/i2c_scan.c"
+        "diagnostics/level_calibration.c"
         "diagnostics/sine_output.c"
         "esp_pocket_audio.c"
         "hal/audio_codec.c"
@@ -19,6 +20,7 @@ idf_component_register(
         "hmi/switch_expander.c"
         "hmi/wheel_calibration.c"
         "synth/amy_audio.c"
+        "synth/audio_meter.c"
         "synth/amy_flanger.c"
         "synth/amy_perf.c"
         "synth/amy_runtime.c"
@@ -47,6 +49,7 @@ idf_component_register(
         "synth/looper.c"
         "synth/looper_dsp.c"
         "synth/looper_transport.c"
+        "synth/level_calibration.c"
         "synth/metronome.c"
         "synth/play_mode.c"
         "synth/sound.c"
@@ -67,3 +70,13 @@ idf_component_register(
     INCLUDE_DIRS
         "."
 )
+
+# Diagnostic builds opt in explicitly without changing a board definition.
+foreach(level_calibration_option
+        ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+        ESP_POCKET_AUDIO_AUTO_LEVEL_CALIBRATION_MODE)
+    if(DEFINED ${level_calibration_option})
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE
+            ${level_calibration_option}=${${level_calibration_option}})
+    endif()
+endforeach()

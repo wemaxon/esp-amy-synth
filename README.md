@@ -123,6 +123,7 @@ Fast source-level chord checks:
 python tools/chord_engine_spec_check.py
 python tools/firmware_refactor_check.py
 python tools/host_parity_check.py
+python tools/level_calibration_check.py
 ```
 
 The modernization baseline, compatibility boundaries, parity gates, and bug
@@ -130,6 +131,8 @@ audit live in `docs/refactor-baseline.md` and `docs/bug-audit.md`. The looper
 ownership model and AUD-004 hardware profile are in
 `docs/looper-realtime-architecture.md`. The AMY dependency migration is
 documented in `docs/amy-1.2.152-upgrade.md`.
+The automatic instrument loudness workflow and its real-time constraints are
+documented in `docs/level-calibration.md`.
 
 ## Prereqisites
 
@@ -170,5 +173,5 @@ pip install -e .
   - profiling
 
 - Fix sounds stopping playing to early
-- Fix volume levels of drums and everything
+- Capture and review the WT0132P4 level report, then commit generated canonical gains
 - Fix octaves

@@ -35,7 +35,15 @@ def find_clang() -> Path:
     raise RuntimeError("Espressif clang not found; set ESP_CLANG to clang.exe")
 
 
+COMPILE_ONLY_SUITES = ("audio_meter",)
+
+
 SUITES = {
+    "amy_prng": {
+        "host_vector_amy_prng_repeatable": 1,
+        "host_vector_amy_prng_streams_are_distinct": 1,
+        "host_vector_amy_prng_order_independent": 1,
+    },
     "calibration_store": {
         "host_vector_store_load_valid": 42,
         "host_vector_store_namespace_missing": 0x105,
@@ -125,7 +133,8 @@ def parse_constant_return(ir: str, function: str) -> int:
 
 def main() -> None:
     with tempfile.TemporaryDirectory(prefix="esp-amy-host-") as temporary:
-        for suite, vectors in SUITES.items():
+        for suite in (*COMPILE_ONLY_SUITES, *SUITES):
+            vectors = SUITES.get(suite, {})
             llvm_ir = Path(temporary) / f"{suite}.ll"
             subprocess.run(
                 [
@@ -140,6 +149,7 @@ def main() -> None:
                     "-Icomponents/pcf857x",
                     "-Icomponents/pcf8574",
                     "-Icomponents/pcf8575",
+                    "-Icomponents/amy/amy/src",
                     f"test/host/{suite}_harness.c",
                     "-o",
                     str(llvm_ir),

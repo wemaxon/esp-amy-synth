@@ -19,6 +19,28 @@
 #define ESP_POCKET_AUDIO_AUTO_DIAGNOSTIC_MODE    0
 #endif
 
+/*
+ * On-device loudness calibration is deliberately absent from production audio
+ * builds.  Enable the meter for a diagnostic firmware, and enable the runner
+ * only when that firmware should start a complete fixture sweep at boot.
+ */
+#ifndef ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+#define ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED 0
+#endif
+
+#ifndef ESP_POCKET_AUDIO_AUTO_LEVEL_CALIBRATION_MODE
+#define ESP_POCKET_AUDIO_AUTO_LEVEL_CALIBRATION_MODE 0
+#endif
+
+#if ESP_POCKET_AUDIO_AUTO_LEVEL_CALIBRATION_MODE && !ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
+#error "automatic level calibration requires ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED"
+#endif
+
+#if ESP_POCKET_AUDIO_AUTO_LEVEL_CALIBRATION_MODE && \
+    (ESP_POCKET_AUDIO_AUTO_DIAGNOSTIC_MODE || ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE)
+#error "level calibration must be the only automatic diagnostic mode"
+#endif
+
 #ifndef ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE
 #define ESP_POCKET_AUDIO_AUTO_SINE_DIAGNOSTIC_MODE 0
 #endif

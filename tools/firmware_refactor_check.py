@@ -60,8 +60,6 @@ def check_public_facades() -> None:
             "synth_looper_init",
             "synth_looper_process_audio",
             "synth_looper_click",
-            "synth_looper_request_auto_bounce",
-            "synth_looper_poll_auto_bounce",
             "synth_looper_get_snapshot",
             "synth_looper_get_diagnostics",
         ),
@@ -156,9 +154,11 @@ def check_board_contracts() -> None:
 
 def check_looper_realtime_boundary() -> None:
     looper = source("main/synth/looper.c")
+    looper_dsp = source("main/synth/looper_dsp.c")
     transport = source("main/synth/looper_transport.h")
     app = source("main/synth/app.c")
     audio = source("main/synth/amy_audio.c")
+    drum_transport = source("main/synth/app/drum_transport.c")
     cmake = source("main/CMakeLists.txt")
 
     require("portENTER_CRITICAL" not in looper and "portEXIT_CRITICAL" not in looper,
@@ -171,17 +171,28 @@ def check_looper_realtime_boundary() -> None:
             "looper snapshot exchange is no longer triple buffered")
     require('"synth/looper_transport.c"' in cmake,
             "looper transport is missing from the firmware component")
-    require("synth_looper_request_auto_bounce" in app,
-            "application bounce path no longer uses the asynchronous API")
-    require("synth_looper_auto_bounce" not in looper and
-            "synth_looper_auto_bounce" not in source("main/synth/looper.h"),
-            "synchronous looper compatibility API returned")
+    require('"synth/app/drum_transport.c"' in cmake and
+            "synth_app_drum_transport_update" in drum_transport,
+            "persistent drum transport is missing from the application")
+    require("bounce" not in app.lower() and
+            "bounce" not in looper.lower() and
+            "bounce" not in source("main/synth/looper.h").lower() and
+            "bounce" not in transport.lower(),
+            "deleted automatic bounce path returned")
     require("heap_caps_malloc(buffer_bytes, MALLOC_CAP_8BIT)" not in looper,
             "looper storage reintroduced an internal-RAM fallback")
-    require("bpm == 0 ? 120" not in looper and "command->bars == 0 ?" not in looper,
-            "looper reintroduced implicit BPM or bounce-length substitution")
+    require("bpm == 0 ? 120" not in looper,
+            "looper reintroduced implicit BPM substitution")
     require("synth_looper_record_process_time" in audio,
             "audio callback no longer records looper deadline telemetry")
+    require(re.search(r"LOOP_TRACK_DEFAULT_VOLUME_PERCENT\s*=\s*100", looper) is not None and
+            re.search(r"LOOP_BUS_GAIN_BY_TRACKS_Q8[^=]*=\s*\{\s*0,\s*256,", looper_dsp, re.S)
+            is not None,
+            "single-track looper playback is no longer unity gain")
+    require("LIVE_MIX_GAIN" not in looper and "synth_looper_dsp_soft_limit" not in looper,
+            "looper reintroduced hidden live attenuation or nonlinear limiting")
+    require("synth_looper_dsp_condition_seam" in looper and "crossfade" not in looper.lower(),
+            "looper seam is no longer conditioned once at recording finalization")
     allocation = looper.find("esp_err_t allocation_err = allocate_all_track_buffers()")
     initialized = looper.find("s_initialized = true", allocation)
     require(allocation >= 0 and initialized > allocation,

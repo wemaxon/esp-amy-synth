@@ -2,10 +2,8 @@
 
 #include <stdint.h>
 
-#include "esp_check.h"
 #include "esp_log.h"
 #include "synth/app/rhythm.h"
-#include "synth/looper.h"
 
 #define DRUM_BIT(voice) ((uint8_t)(1U << (uint8_t)(voice)))
 
@@ -46,49 +44,16 @@ static bool direction_rate(control_joystick_direction_t direction, synth_rhythm_
     }
 }
 
-static TickType_t interval_ticks(synth_rhythm_rate_t rate, uint16_t bpm, uint32_t step)
-{
-    TickType_t ticks = pdMS_TO_TICKS(synth_app_rhythm_interval_ms(rate, bpm, step));
-    return ticks == 0 ? 1 : ticks;
-}
-
 static void trigger_voice(synth_app_drum_modes_t *drums, synth_drum_voice_t voice, bool accented)
 {
     if (drums == NULL || voice >= SYNTH_DRUM_VOICE_COUNT) {
         return;
     }
     uint8_t velocity = synth_drums_default_velocity(voice, accented);
-    esp_err_t err = synth_drums_hit(drums->kit, voice, velocity);
+    esp_err_t err = synth_drums_hit(drums->loop.kit, voice, velocity);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "drum hit failed voice=%u err=%s", (unsigned)voice, esp_err_to_name(err));
     }
-}
-
-static void trigger_pattern_step(synth_app_drum_modes_t *drums, uint8_t step)
-{
-    synth_drum_pattern_step_t pattern =
-        synth_drum_pattern_step(drums->loop_style, drums->loop_variation, step);
-
-    for (uint8_t voice = 0; voice < SYNTH_DRUM_VOICE_COUNT; ++voice) {
-        uint8_t bit = DRUM_BIT(voice);
-        if ((pattern.mask & bit) != 0) {
-            trigger_voice(drums, (synth_drum_voice_t)voice, (pattern.accent_mask & bit) != 0);
-        }
-    }
-}
-
-static synth_app_drum_result_t result_clear_track(uint8_t track,
-                                                  const char *status,
-                                                  const char *label)
-{
-    return (synth_app_drum_result_t){
-        .handled = true,
-        .ui_dirty = true,
-        .clear_track = true,
-        .action_track = track,
-        .status = status,
-        .label = label,
-    };
 }
 
 bool synth_app_drums_mode_uses_buttons(synth_play_mode_t mode)
@@ -104,13 +69,13 @@ synth_app_drum_result_t synth_app_drums_set_kit_for_button(synth_app_drum_modes_
     if (drums == NULL) {
         return (synth_app_drum_result_t){0};
     }
-    drums->kit = synth_drum_kit_for_button(button);
-    ESP_LOGI(TAG, "kit=%s", synth_drum_kit_name(drums->kit));
+    drums->loop.kit = synth_drum_kit_for_button(button);
+    ESP_LOGI(TAG, "kit=%s", synth_drum_kit_name(drums->loop.kit));
     return (synth_app_drum_result_t){
         .handled = true,
         .ui_dirty = true,
         .status = "KIT",
-        .label = synth_drum_kit_name(drums->kit),
+        .label = synth_drum_kit_name(drums->loop.kit),
     };
 }
 
@@ -127,22 +92,7 @@ synth_app_drum_result_t synth_app_drums_button_press(synth_app_drum_modes_t *dru
 
     if (mode == SYNTH_PLAY_MODE_DRUM_LOOPS) {
         synth_drum_loop_style_t style = synth_drum_loop_style_for_button(button);
-        if (drums->bounce_track != SYNTH_APP_DRUM_NO_BOUNCE_TRACK) {
-            uint8_t track = drums->bounce_track;
-            bool same_style = drums->bounce_style == style;
-            drums->bounce_track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK;
-            if (same_style) {
-                synth_app_drums_stop_loop(drums);
-                return result_clear_track(track, "BEAT OFF", synth_drum_loop_style_name(style));
-            }
-
-            drums->loop_style = style;
-            drums->loop_running = true;
-            drums->loop_step_index = 0;
-            drums->loop_next_tick = now;
-            return result_clear_track(track, "BEAT ON", synth_drum_loop_style_name(style));
-        }
-        if (drums->loop_running && drums->loop_style == style) {
+        if (drums->loop.running && drums->loop.style == style) {
             synth_app_drums_stop_loop(drums);
             return (synth_app_drum_result_t){
                 .handled = true,
@@ -151,36 +101,12 @@ synth_app_drum_result_t synth_app_drums_button_press(synth_app_drum_modes_t *dru
                 .label = synth_drum_loop_style_name(style),
             };
         }
-        if (drums->owned_track != SYNTH_APP_DRUM_NO_BOUNCE_TRACK) {
-            uint8_t track = drums->owned_track;
-            bool same_style = drums->owned_style == style;
-            drums->owned_track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK;
-            if (same_style) {
-                return result_clear_track(track, "BEAT OFF", synth_drum_loop_style_name(style));
-            }
-
-            drums->loop_style = style;
-            drums->loop_running = true;
-            drums->loop_step_index = 0;
-            drums->loop_next_tick = now;
-            ESP_LOGI(TAG,
-                     "replace owned drum loop track=%u style=%s variation=%s kit=%s",
-                     (unsigned)(track + 1),
-                     synth_drum_loop_style_name(drums->loop_style),
-                     synth_drum_loop_variation_name(drums->loop_variation),
-                     synth_drum_kit_name(drums->kit));
-            return result_clear_track(track, "BEAT ON", synth_drum_loop_style_name(style));
-        }
-
-        drums->loop_style = style;
-        drums->loop_running = true;
-        drums->loop_step_index = 0;
-        drums->loop_next_tick = now;
+        synth_app_drum_transport_start(&drums->loop, style, now);
         ESP_LOGI(TAG,
                  "drum loop style=%s variation=%s kit=%s",
-                 synth_drum_loop_style_name(drums->loop_style),
-                 synth_drum_loop_variation_name(drums->loop_variation),
-                 synth_drum_kit_name(drums->kit));
+                 synth_drum_loop_style_name(drums->loop.style),
+                 synth_drum_loop_variation_name(drums->loop.variation),
+                 synth_drum_kit_name(drums->loop.kit));
         return (synth_app_drum_result_t){
             .handled = true,
             .ui_dirty = true,
@@ -197,7 +123,12 @@ synth_app_drum_result_t synth_app_drums_button_press(synth_app_drum_modes_t *dru
         drums->auto_mask |= DRUM_BIT(voice);
         drums->auto_rate[voice] = rate;
         drums->auto_step_index[voice] = 0;
-        drums->auto_next_tick[voice] = now + interval_ticks(rate, bpm, 0);
+        drums->auto_next_tick[voice] = synth_app_rhythm_advance_deadline(
+            now,
+            rate,
+            bpm,
+            &drums->auto_step_index[voice],
+            now);
     }
 
     return (synth_app_drum_result_t){
@@ -239,40 +170,40 @@ synth_app_drum_result_t synth_app_drums_joystick(synth_app_drum_modes_t *drums,
     if (mode == SYNTH_PLAY_MODE_DRUM_LOOPS) {
         switch (direction) {
         case CONTROL_JOYSTICK_LEFT:
-            drums->kit = synth_drum_kit_step(drums->kit, -1);
+            drums->loop.kit = synth_drum_kit_step(drums->loop.kit, -1);
             return (synth_app_drum_result_t){
                 .handled = true,
                 .ui_dirty = true,
                 .status = "KIT",
-                .label = synth_drum_kit_name(drums->kit),
+                .label = synth_drum_kit_name(drums->loop.kit),
             };
         case CONTROL_JOYSTICK_RIGHT:
-            drums->kit = synth_drum_kit_step(drums->kit, 1);
+            drums->loop.kit = synth_drum_kit_step(drums->loop.kit, 1);
             return (synth_app_drum_result_t){
                 .handled = true,
                 .ui_dirty = true,
                 .status = "KIT",
-                .label = synth_drum_kit_name(drums->kit),
+                .label = synth_drum_kit_name(drums->loop.kit),
             };
         case CONTROL_JOYSTICK_UP:
             if (held_mask != 0) {
-                drums->loop_variation = synth_drum_loop_variation_step(drums->loop_variation, 1);
+                drums->loop.variation = synth_drum_loop_variation_step(drums->loop.variation, 1);
                 return (synth_app_drum_result_t){
                     .handled = true,
                     .ui_dirty = true,
                     .status = "VAR",
-                    .label = synth_drum_loop_variation_short_name(drums->loop_variation),
+                    .label = synth_drum_loop_variation_short_name(drums->loop.variation),
                 };
             }
             break;
         case CONTROL_JOYSTICK_DOWN:
             if (held_mask != 0) {
-                drums->loop_variation = synth_drum_loop_variation_step(drums->loop_variation, -1);
+                drums->loop.variation = synth_drum_loop_variation_step(drums->loop.variation, -1);
                 return (synth_app_drum_result_t){
                     .handled = true,
                     .ui_dirty = true,
                     .status = "VAR",
-                    .label = synth_drum_loop_variation_short_name(drums->loop_variation),
+                    .label = synth_drum_loop_variation_short_name(drums->loop.variation),
                 };
             }
             break;
@@ -305,7 +236,8 @@ synth_app_drum_result_t synth_app_drums_joystick(synth_app_drum_modes_t *drums,
         .handled = true,
         .ui_dirty = held_mask != 0,
         .status = has_rate && held_mask != 0 ? "AUTO DRUM" : "DRUM",
-        .label = has_rate && held_mask != 0 ? synth_rhythm_rate_name(rate) : synth_drum_kit_name(drums->kit),
+        .label = has_rate && held_mask != 0 ?
+            synth_rhythm_rate_name(rate) : synth_drum_kit_name(drums->loop.kit),
     };
 }
 
@@ -315,15 +247,7 @@ bool synth_app_drums_update(synth_app_drum_modes_t *drums, uint16_t bpm, TickTyp
         return false;
     }
 
-    bool changed = false;
-    if (drums->loop_running && (int32_t)(now - drums->loop_next_tick) >= 0) {
-        uint8_t step = (uint8_t)(drums->loop_step_index % SYNTH_DRUM_PATTERN_STEPS);
-        trigger_pattern_step(drums, step);
-        drums->loop_next_tick =
-            now + interval_ticks(SYNTH_RHYTHM_RATE_SIXTEENTH, bpm, drums->loop_step_index);
-        ++drums->loop_step_index;
-        changed = true;
-    }
+    bool changed = synth_app_drum_transport_update(&drums->loop, bpm, now);
 
     for (uint8_t voice = 0; voice < SYNTH_DRUM_VOICE_COUNT; ++voice) {
         uint8_t bit = DRUM_BIT(voice);
@@ -332,9 +256,12 @@ bool synth_app_drums_update(synth_app_drum_modes_t *drums, uint16_t bpm, TickTyp
             continue;
         }
         trigger_voice(drums, (synth_drum_voice_t)voice, true);
-        drums->auto_next_tick[voice] =
-            now + interval_ticks(drums->auto_rate[voice], bpm, drums->auto_step_index[voice]);
-        ++drums->auto_step_index[voice];
+        drums->auto_next_tick[voice] = synth_app_rhythm_advance_deadline(
+            drums->auto_next_tick[voice],
+            drums->auto_rate[voice],
+            bpm,
+            &drums->auto_step_index[voice],
+            now);
         changed = true;
     }
     return changed;
@@ -350,70 +277,13 @@ void synth_app_drums_stop_auto(synth_app_drum_modes_t *drums)
 void synth_app_drums_stop_loop(synth_app_drum_modes_t *drums)
 {
     if (drums != NULL) {
-        drums->loop_running = false;
-        drums->loop_step_index = 0;
+        synth_app_drum_transport_stop(&drums->loop);
     }
-}
-
-void synth_app_drums_mark_bounce_request(synth_app_drum_modes_t *drums,
-                                         synth_looper_request_id_t request_id)
-{
-    if (drums != NULL && request_id != 0) {
-        drums->bounce_request_id = request_id;
-        drums->bounce_style = drums->loop_style;
-    }
-}
-
-bool synth_app_drums_resolve_bounce_request(synth_app_drum_modes_t *drums,
-                                            synth_looper_request_id_t request_id,
-                                            uint8_t track)
-{
-    if (drums == NULL || request_id == 0 || drums->bounce_request_id != request_id) {
-        return false;
-    }
-    drums->bounce_request_id = 0;
-    if (track < SYNTH_LOOPER_TRACK_COUNT) {
-        drums->bounce_track = track;
-    }
-    return true;
-}
-
-bool synth_app_drums_bounce_request_pending(const synth_app_drum_modes_t *drums)
-{
-    return drums != NULL && drums->bounce_request_id != 0;
-}
-
-bool synth_app_drums_bounce_pending(const synth_app_drum_modes_t *drums)
-{
-    return drums != NULL && drums->bounce_track != SYNTH_APP_DRUM_NO_BOUNCE_TRACK;
-}
-
-bool synth_app_drums_finish_bounce_if_complete(synth_app_drum_modes_t *drums,
-                                               synth_looper_track_state_t track_state)
-{
-    if (drums == NULL || drums->bounce_track == SYNTH_APP_DRUM_NO_BOUNCE_TRACK) {
-        return false;
-    }
-    if (track_state != SYNTH_LOOPER_TRACK_LOOPING && track_state != SYNTH_LOOPER_TRACK_OFF) {
-        return false;
-    }
-
-    if (track_state == SYNTH_LOOPER_TRACK_LOOPING) {
-        drums->owned_track = drums->bounce_track;
-        drums->owned_style = drums->bounce_style;
-    }
-    synth_app_drums_stop_loop(drums);
-    drums->bounce_track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK;
-    return true;
 }
 
 bool synth_app_drums_loop_active(const synth_app_drum_modes_t *drums)
 {
-    return drums != NULL &&
-           (drums->loop_running ||
-            drums->bounce_request_id != 0 ||
-            drums->bounce_track != SYNTH_APP_DRUM_NO_BOUNCE_TRACK ||
-            drums->owned_track != SYNTH_APP_DRUM_NO_BOUNCE_TRACK);
+    return drums != NULL && drums->loop.running;
 }
 
 const char *synth_app_drums_auto_rate_name(const synth_app_drum_modes_t *drums)

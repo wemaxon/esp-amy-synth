@@ -39,17 +39,14 @@ typedef enum {
     SYNTH_LOOPER_COMMAND_TOGGLE_PAUSE,
     SYNTH_LOOPER_COMMAND_CLEAR_ALL,
     SYNTH_LOOPER_COMMAND_CLEAR_TRACK,
-    SYNTH_LOOPER_COMMAND_AUTO_BOUNCE,
 } synth_looper_command_type_t;
 
 typedef struct {
     synth_looper_command_type_t type;
     uint32_t submitted_block;
-    uint32_t request_id;
     int16_t value;
     uint16_t bpm;
     uint8_t track;
-    uint8_t bars;
 } synth_looper_command_t;
 
 typedef struct {
@@ -88,8 +85,6 @@ typedef enum {
     SYNTH_LOOPER_MESSAGE_PAUSED,
     SYNTH_LOOPER_MESSAGE_RESUMED,
     SYNTH_LOOPER_MESSAGE_NO_LOOP,
-    SYNTH_LOOPER_MESSAGE_BOUNCE,
-    SYNTH_LOOPER_MESSAGE_BOUNCE_SYNC,
 } synth_looper_message_code_t;
 
 typedef struct {
@@ -106,9 +101,6 @@ typedef struct {
     uint64_t record_start_frame;
     uint32_t count_in_beat_frames;
     uint32_t audio_block;
-    uint32_t last_bounce_request_id;
-    esp_err_t last_bounce_result;
-    uint8_t last_bounce_track;
     uint8_t current_track;
     uint8_t bar_count;
     synth_looper_message_code_t message_code;

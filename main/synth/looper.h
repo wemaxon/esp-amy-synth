@@ -28,8 +28,7 @@ typedef struct {
     uint8_t live_peak_percent;
     uint8_t loop_peak_percent;
     uint8_t output_peak_percent;
-    uint16_t limited_samples;
-    uint16_t would_clip_samples;
+    uint16_t clipped_samples;
 } synth_looper_meter_t;
 
 typedef struct {
@@ -57,8 +56,6 @@ typedef struct {
     bool waiting_for_sync;
     char message[22];
 } synth_looper_snapshot_t;
-
-typedef uint32_t synth_looper_request_id_t;
 
 typedef struct {
     uint32_t command_queue_high_water;
@@ -89,13 +86,6 @@ esp_err_t synth_looper_adjust_bars(int8_t steps);
 esp_err_t synth_looper_toggle_pause(void);
 esp_err_t synth_looper_clear_all(void);
 esp_err_t synth_looper_clear_track(uint8_t track);
-/* One non-blocking auto-bounce request may be outstanding; bars must be 1..8. */
-esp_err_t synth_looper_request_auto_bounce(uint8_t bars,
-                                           uint16_t bpm,
-                                           synth_looper_request_id_t *request_id);
-bool synth_looper_poll_auto_bounce(synth_looper_request_id_t request_id,
-                                   esp_err_t *result,
-                                   uint8_t *track_out);
 bool synth_looper_current_track_is_waiting(void);
 
 /* Snapshots are coherent copies and never make the audio task wait. */

@@ -1669,7 +1669,7 @@ esp_err_t synth_amy_chord_voice_on(uint8_t slot, const synth_chord_t *chord, uin
     return ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t synth_amy_all_off(void)
+esp_err_t synth_amy_musical_all_off(void)
 {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -1677,6 +1677,15 @@ esp_err_t synth_amy_all_off(void)
 
     for (uint8_t i = 0; i < AMY_MUSICAL_VOICE_COUNT; ++i) {
         release_voice(i);
+    }
+    return ESP_OK;
+}
+
+esp_err_t synth_amy_all_off(void)
+{
+    esp_err_t err = synth_amy_musical_all_off();
+    if (err != ESP_OK) {
+        return err;
     }
     for (uint8_t i = 0; i < SYNTH_AMY_DRUM_OSC_COUNT; ++i) {
         amy_note_off_raw_osc((uint16_t)(s_drum_osc_base + i));

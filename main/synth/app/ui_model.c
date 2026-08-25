@@ -42,9 +42,9 @@ void synth_app_ui_render(const synth_app_state_t *state, play_ui_screen_t screen
     model.arp_rate = state->play.arp_rate;
     model.arp_chord_mode = state->play.arp_chord_mode;
     model.repeat_rate = state->play.repeat_rate;
-    model.drum_kit = state->drums.kit;
-    model.drum_loop_style = state->drums.loop_style;
-    model.drum_loop_variation = state->drums.loop_variation;
+    model.drum_kit = state->drums.loop.kit;
+    model.drum_loop_style = state->drums.loop.style;
+    model.drum_loop_variation = state->drums.loop.variation;
     model.drum_loop_running = synth_app_drums_loop_active(&state->drums);
     strlcpy(model.drum_auto_rate,
             synth_app_drums_auto_rate_name(&state->drums),

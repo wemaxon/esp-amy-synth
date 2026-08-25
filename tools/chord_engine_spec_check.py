@@ -297,16 +297,10 @@ def assert_app_and_api_invariants(
     require("#define SYNTH_APP_BUTTON_OCTAVE_MAX 1" in app_key_h, "button octave max must be +1")
     require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in app_c, "app must use shared global octave default")
     require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in play_ui_c, "play UI must use shared global octave default")
-    require(
-        re.search(
-            r"s_app\.drums\.loop_running\s*&&\s*"
-            r"synth_app_drums_mode_uses_buttons\(previous\)\s*&&\s*"
-            r"!synth_app_drums_mode_uses_buttons\(next\)\s*\)\s*\{\s*"
-            r"start_drum_loop_bounce\(\);",
-            app_c,
-        ) is not None,
-        "leaving the drum-mode family with a live loop must start the existing bounce path",
-    )
+    require("bounce" not in app_c.lower(),
+            "mode navigation must not bounce or replace the live drum transport")
+    require("synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount());" in app_c,
+            "persistent drum transport must update independently of the selected UI mode")
     require(
         app_c.count("handle_mode_button_tap();") == 1
         and re.search(

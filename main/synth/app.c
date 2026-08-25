@@ -186,7 +186,7 @@ static void start_strum(uint8_t slot, const synth_chord_t *chord)
         return;
     }
 
-    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
     synth_app_play_start_strum(&s_app.play, slot, chord, xTaskGetTickCount());
     set_status("STRUM");
 }
@@ -694,15 +694,6 @@ static void apply_drum_result(const synth_app_drum_result_t *result)
     if (result == NULL || !result->handled) {
         return;
     }
-    if (result->clear_track) {
-        esp_err_t err = synth_looper_clear_track(result->action_track);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG,
-                     "clear drum-owned looper track=%u failed: %s",
-                     (unsigned)(result->action_track + 1),
-                     esp_err_to_name(err));
-        }
-    }
     if (result->label != NULL) {
         strlcpy(s_app.chord_name, result->label, sizeof(s_app.chord_name));
     }
@@ -710,77 +701,6 @@ static void apply_drum_result(const synth_app_drum_result_t *result)
         set_status(result->status);
     }
     if (result->ui_dirty) {
-        update_ui();
-    }
-}
-
-static void start_drum_loop_bounce(void)
-{
-    if (!s_app.drums.loop_running ||
-        synth_app_drums_bounce_request_pending(&s_app.drums) ||
-        synth_app_drums_bounce_pending(&s_app.drums)) {
-        return;
-    }
-
-    synth_looper_request_id_t request_id = 0;
-    esp_err_t err = synth_looper_request_auto_bounce(1, current_bpm(), &request_id);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "drum loop auto-bounce failed: %s", esp_err_to_name(err));
-        return;
-    }
-
-    synth_app_drums_mark_bounce_request(&s_app.drums, request_id);
-    set_status("BEAT BOUNCE");
-}
-
-static void update_drum_bounce(void)
-{
-    if (synth_app_drums_bounce_request_pending(&s_app.drums)) {
-        synth_looper_request_id_t request_id = s_app.drums.bounce_request_id;
-        esp_err_t result = ESP_OK;
-        uint8_t track = SYNTH_APP_DRUM_NO_BOUNCE_TRACK;
-        if (!synth_looper_poll_auto_bounce(request_id, &result, &track)) {
-            return;
-        }
-
-        if (result != ESP_OK || track >= SYNTH_LOOPER_TRACK_COUNT) {
-            synth_app_drums_resolve_bounce_request(&s_app.drums,
-                                                   request_id,
-                                                   SYNTH_APP_DRUM_NO_BOUNCE_TRACK);
-            ESP_LOGW(TAG, "drum loop auto-bounce failed: %s", esp_err_to_name(result));
-            return;
-        }
-        if (!s_app.drums.loop_running) {
-            synth_app_drums_resolve_bounce_request(&s_app.drums,
-                                                   request_id,
-                                                   SYNTH_APP_DRUM_NO_BOUNCE_TRACK);
-            esp_err_t clear_err = synth_looper_clear_track(track);
-            if (clear_err != ESP_OK) {
-                ESP_LOGW(TAG,
-                         "clear cancelled drum bounce track=%u failed: %s",
-                         (unsigned)(track + 1),
-                         esp_err_to_name(clear_err));
-            }
-            return;
-        }
-
-        synth_app_drums_resolve_bounce_request(&s_app.drums, request_id, track);
-        set_status("BEAT BOUNCE");
-    }
-
-    if (!synth_app_drums_bounce_pending(&s_app.drums)) {
-        return;
-    }
-
-    synth_looper_snapshot_t snapshot = {0};
-    synth_looper_get_snapshot(&snapshot);
-    uint8_t track = s_app.drums.bounce_track;
-    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
-        return;
-    }
-
-    if (synth_app_drums_finish_bounce_if_complete(&s_app.drums, snapshot.track_state[track])) {
-        set_status("BEAT LOOPED");
         update_ui();
     }
 }
@@ -1414,14 +1334,17 @@ static void cycle_mode_param(void)
         break;
     case SYNTH_PLAY_MODE_DRUM_MODE:
     case SYNTH_PLAY_MODE_AUTO_DRUM:
-        s_app.drums.kit = synth_drum_kit_step(s_app.drums.kit, 1);
-        ESP_LOGI(TAG, "drum kit=%s", synth_drum_kit_name(s_app.drums.kit));
-        set_status(synth_drum_kit_name(s_app.drums.kit));
+        s_app.drums.loop.kit = synth_drum_kit_step(s_app.drums.loop.kit, 1);
+        ESP_LOGI(TAG, "drum kit=%s", synth_drum_kit_name(s_app.drums.loop.kit));
+        set_status(synth_drum_kit_name(s_app.drums.loop.kit));
         break;
     case SYNTH_PLAY_MODE_DRUM_LOOPS:
-        s_app.drums.loop_variation = synth_drum_loop_variation_step(s_app.drums.loop_variation, 1);
-        ESP_LOGI(TAG, "drum variation=%s", synth_drum_loop_variation_name(s_app.drums.loop_variation));
-        set_status(synth_drum_loop_variation_short_name(s_app.drums.loop_variation));
+        s_app.drums.loop.variation =
+            synth_drum_loop_variation_step(s_app.drums.loop.variation, 1);
+        ESP_LOGI(TAG,
+                 "drum variation=%s",
+                 synth_drum_loop_variation_name(s_app.drums.loop.variation));
+        set_status(synth_drum_loop_variation_short_name(s_app.drums.loop.variation));
         break;
     default:
         if (!synth_play_mode_is_implemented(s_app.mode)) {
@@ -1536,11 +1459,6 @@ static void step_mode(int8_t steps)
         s_app.drone_active = false;
         s_app.drone_slot = SYNTH_APP_PLAY_NO_SLOT;
     }
-    if (s_app.drums.loop_running &&
-        synth_app_drums_mode_uses_buttons(previous) &&
-        !synth_app_drums_mode_uses_buttons(next)) {
-        start_drum_loop_bounce();
-    }
     if ((previous == SYNTH_PLAY_MODE_DRUM_MODE || previous == SYNTH_PLAY_MODE_AUTO_DRUM) && previous != next) {
         synth_app_drums_stop_auto(&s_app.drums);
     }
@@ -1556,24 +1474,24 @@ static void step_mode(int8_t steps)
     s_app.mode_bpm_submenu = false;
     apply_current_envelope_if_modified();
     if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
         synth_app_chord_state_clear_held(&s_app.chords);
         synth_app_play_clear_arp_sources(&s_app.play, xTaskGetTickCount());
         synth_app_looper_hide(&s_app.looper);
         set_status("MIXER");
     } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
         synth_app_play_clear_arp_sources(&s_app.play, xTaskGetTickCount());
         refresh_held_chords();
     } else if (synth_app_drums_mode_uses_buttons(s_app.mode)) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
         synth_app_chord_state_clear_held(&s_app.chords);
         strlcpy(s_app.chord_name, synth_play_mode_short_name(s_app.mode), sizeof(s_app.chord_name));
-        set_status(synth_drum_kit_name(s_app.drums.kit));
+        set_status(synth_drum_kit_name(s_app.drums.loop.kit));
     } else if (synth_play_mode_is_implemented(s_app.mode) && s_app.chords.held_mask != 0) {
         refresh_held_chords();
     } else if (!synth_play_mode_is_implemented(s_app.mode)) {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_all_off());
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
         warn_unimplemented_mode(s_app.mode);
     }
 
@@ -1862,7 +1780,6 @@ static void app_task(void *arg)
         update_arp();
         update_repeat();
         synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount());
-        update_drum_bounce();
         update_lfo();
         update_tremolo();
         update_wheel();

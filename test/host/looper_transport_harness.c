@@ -10,7 +10,7 @@ int32_t host_vector_looper_command_fifo(void)
     for (uint32_t i = 0; i < 3; ++i) {
         synth_looper_command_t command = {
             .type = SYNTH_LOOPER_COMMAND_SET_TRACK_VOLUME,
-            .request_id = i + 10U,
+            .value = (int16_t)(i + 10U),
         };
         if (synth_looper_command_queue_push(&queue, &command) != ESP_OK) {
             return -1;
@@ -23,7 +23,7 @@ int32_t host_vector_looper_command_fifo(void)
         if (!synth_looper_command_queue_pop(&queue, &command)) {
             return -2;
         }
-        result = result * 10 + (int32_t)(command.request_id - 10U);
+        result = result * 10 + (int32_t)(command.value - 10);
     }
     return result;
 }
@@ -34,7 +34,7 @@ int32_t host_vector_looper_command_full(void)
     synth_looper_command_queue_init(&queue);
     synth_looper_command_t command = {0};
     for (uint32_t i = 0; i < SYNTH_LOOPER_COMMAND_CAPACITY; ++i) {
-        command.request_id = i;
+        command.value = (int16_t)i;
         if (synth_looper_command_queue_push(&queue, &command) != ESP_OK) {
             return -1;
         }
@@ -49,7 +49,7 @@ int32_t host_vector_looper_command_wrap(void)
     synth_looper_command_t command = {0};
     for (uint32_t cycle = 0; cycle < 4; ++cycle) {
         for (uint32_t i = 0; i < SYNTH_LOOPER_COMMAND_CAPACITY; ++i) {
-            command.request_id = cycle * SYNTH_LOOPER_COMMAND_CAPACITY + i;
+            command.value = (int16_t)(cycle * SYNTH_LOOPER_COMMAND_CAPACITY + i);
             if (synth_looper_command_queue_push(&queue, &command) != ESP_OK) {
                 return -1;
             }
@@ -60,7 +60,7 @@ int32_t host_vector_looper_command_wrap(void)
             }
         }
     }
-    return (int32_t)command.request_id;
+    return command.value;
 }
 
 int32_t host_vector_looper_command_high_water(void)

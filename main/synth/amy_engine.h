@@ -56,6 +56,7 @@ esp_err_t synth_amy_set_portamento(uint16_t portamento_ms);
 esp_err_t synth_amy_chord_on(uint8_t slot, const synth_chord_t *chord);
 esp_err_t synth_amy_chord_voice_on(uint8_t slot, const synth_chord_t *chord, uint8_t voice_index);
 esp_err_t synth_amy_chord_off(uint8_t slot);
+esp_err_t synth_amy_musical_all_off(void);
 esp_err_t synth_amy_all_off(void);
 
 #ifdef __cplusplus

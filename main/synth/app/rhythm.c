@@ -56,6 +56,26 @@ uint32_t synth_app_rhythm_interval_ms(synth_rhythm_rate_t rate,
     return (uint32_t)(interval_ms + 0.5f);
 }
 
+TickType_t synth_app_rhythm_advance_deadline(TickType_t deadline,
+                                             synth_rhythm_rate_t rate,
+                                             uint16_t bpm,
+                                             uint32_t *step_index,
+                                             TickType_t now)
+{
+    if (step_index == NULL) {
+        return deadline;
+    }
+
+    do {
+        TickType_t interval = pdMS_TO_TICKS(
+            synth_app_rhythm_interval_ms(rate, bpm, *step_index));
+        deadline += interval == 0 ? 1 : interval;
+        ++(*step_index);
+    } while ((int32_t)(now - deadline) >= 0);
+
+    return deadline;
+}
+
 static void sort_notes(uint8_t *notes, uint8_t note_count)
 {
     for (uint8_t i = 1; i < note_count; ++i) {

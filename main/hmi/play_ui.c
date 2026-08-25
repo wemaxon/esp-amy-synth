@@ -422,7 +422,7 @@ static void draw_looper_meter(pocket_oled_t *display, const play_ui_model_t *mod
 {
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
     const synth_looper_meter_t *meter = &model->looper.meter;
-    const char *limit = meter->would_clip_samples > 0 ? "!" : "";
+    const char *limit = meter->clipped_samples > 0 ? "!" : "";
     draw_rowf(display,
               row,
               "M IN%3u LP%3u O%3u%s",

@@ -11,7 +11,6 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
-#include "synth/crossfade.h"
 #include "synth/looper_dsp.h"
 #include "synth/looper_transport.h"
 #include "synth/metronome.h"
@@ -47,10 +46,8 @@ typedef struct {
 
 static const char *TAG = "SYNTH_LOOPER";
 
-static const uint16_t LIVE_MIX_GAIN_Q8 = 192;
-static const uint8_t LOOP_TRACK_DEFAULT_VOLUME_PERCENT = 85;
+static const uint8_t LOOP_TRACK_DEFAULT_VOLUME_PERCENT = 100;
 static const uint32_t MIN_RECORD_MS = 120;
-static const uint32_t LOOP_SEAM_CROSSFADE_MS = 50;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
 static const uint32_t METER_LOG_INTERVAL_MS = 1000;
 static const uint32_t CLIP_LOG_INTERVAL_MS = 500;
@@ -76,9 +73,6 @@ static synth_looper_message_code_t s_message_code = SYNTH_LOOPER_MESSAGE_EMPTY;
 static uint8_t s_message_arg0;
 static uint8_t s_message_arg1;
 static _Atomic uint32_t s_audio_block;
-static uint32_t s_last_bounce_request_id;
-static esp_err_t s_last_bounce_result = ESP_ERR_NOT_FOUND;
-static uint8_t s_last_bounce_track = SYNTH_LOOPER_TRACK_COUNT;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
 static synth_looper_meter_t s_meter;
 static uint64_t s_next_meter_log_frame;
@@ -87,8 +81,6 @@ static uint64_t s_next_clip_log_frame;
 /* Application-to-audio commands and audio-to-application immutable views. */
 static synth_looper_command_queue_t s_command_queue;
 static synth_looper_snapshot_store_t s_snapshot_store;
-static _Atomic uint32_t s_next_request_id;
-static _Atomic uint32_t s_pending_bounce_request;
 static _Atomic uint32_t s_max_command_latency_blocks;
 static _Atomic uint32_t s_max_process_us;
 static _Atomic uint32_t s_process_over_budget;
@@ -231,16 +223,6 @@ static uint8_t next_empty_track(uint8_t from_track)
     return from_track;
 }
 
-static uint8_t first_empty_track(void)
-{
-    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
-        if (s_tracks[track].state == SYNTH_LOOPER_TRACK_EMPTY) {
-            return track;
-        }
-    }
-    return SYNTH_LOOPER_TRACK_COUNT;
-}
-
 static uint8_t track_bit(uint8_t track)
 {
     return (uint8_t)(1U << track);
@@ -255,16 +237,6 @@ static bool track_is_audible(uint8_t track)
     return (s_mute_mask & bit) == 0;
 }
 
-static uint32_t seam_crossfade_frames_for_length(uint32_t length_frames)
-{
-    uint32_t frames = ms_to_frames(LOOP_SEAM_CROSSFADE_MS);
-    uint32_t max_frames = length_frames / 4U;
-    if (frames > max_frames) {
-        frames = max_frames;
-    }
-    return frames;
-}
-
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
 static void log_meter_if_due(const synth_looper_meter_t *meter,
                              uint64_t block_start_frame,
@@ -274,34 +246,33 @@ static void log_meter_if_due(const synth_looper_meter_t *meter,
         return;
     }
 
-    bool would_clip = meter->would_clip_samples > 0;
-    uint64_t *next_log_frame = would_clip ? &s_next_clip_log_frame : &s_next_meter_log_frame;
+    bool clipped = meter->clipped_samples > 0;
+    uint64_t *next_log_frame = clipped ? &s_next_clip_log_frame : &s_next_meter_log_frame;
     if (block_start_frame < *next_log_frame) {
         return;
     }
 
-    uint32_t interval_frames = ms_to_frames(would_clip ? CLIP_LOG_INTERVAL_MS : METER_LOG_INTERVAL_MS);
+    uint32_t interval_frames = ms_to_frames(clipped ? CLIP_LOG_INTERVAL_MS : METER_LOG_INTERVAL_MS);
     if (interval_frames == 0) {
         interval_frames = 1;
     }
     *next_log_frame = block_start_frame + interval_frames;
 
-    if (would_clip) {
+    if (clipped) {
         ESP_LOGW(TAG,
-                 "mix limiter live=%u%% loop=%u%% out=%u%% limited=%u would_clip=%u audible_tracks=%u",
+                 "mix clipped live=%u%% loop=%u%% out=%u%% clipped=%u audible_tracks=%u",
                  (unsigned)meter->live_peak_percent,
                  (unsigned)meter->loop_peak_percent,
                  (unsigned)meter->output_peak_percent,
-                 (unsigned)meter->limited_samples,
-                 (unsigned)meter->would_clip_samples,
+                 (unsigned)meter->clipped_samples,
                  (unsigned)max_audible_tracks);
     } else {
         ESP_LOGD(TAG,
-                 "mix meter live=%u%% loop=%u%% out=%u%% limited=%u audible_tracks=%u",
+                 "mix meter live=%u%% loop=%u%% out=%u%% clipped=%u audible_tracks=%u",
                  (unsigned)meter->live_peak_percent,
                  (unsigned)meter->loop_peak_percent,
                  (unsigned)meter->output_peak_percent,
-                 (unsigned)meter->limited_samples,
+                 (unsigned)meter->clipped_samples,
                  (unsigned)max_audible_tracks);
     }
 }
@@ -386,6 +357,8 @@ static void finalize_recording(uint8_t track, bool auto_advance, bool completed_
     if (length > s_capacity_frames) {
         length = s_capacity_frames;
     }
+
+    synth_looper_dsp_condition_seam(slot->samples, length, s_sample_rate_hz);
 
     slot->length_frames = length;
     slot->play_position = 0;
@@ -497,6 +470,8 @@ static void finish_process_recording(synth_looper_process_track_t *track,
         length = s_capacity_frames;
     }
 
+    synth_looper_dsp_condition_seam(track->samples, length, s_sample_rate_hz);
+
     track->state = SYNTH_LOOPER_TRACK_LOOPING;
     track->record_armed = false;
     track->sync_to_master = false;
@@ -570,12 +545,6 @@ static bool process_track_playback(synth_looper_process_track_t *track,
     }
 
     int32_t sample = track->samples[position];
-    uint32_t crossfade_frames = seam_crossfade_frames_for_length(track->length_frames);
-    if (crossfade_frames > 0 && position >= track->length_frames - crossfade_frames) {
-        uint32_t tail_offset = position - (track->length_frames - crossfade_frames);
-        int32_t head = track->samples[0];
-        sample = synth_crossfade_smooth_i32(sample, head, tail_offset, crossfade_frames);
-    }
     sample = synth_looper_dsp_apply_percent_gain(sample, track->volume_percent);
     *mixed_sample += sample;
     return true;
@@ -599,9 +568,6 @@ static void build_runtime_view(synth_looper_runtime_view_t *view)
         .global_frame = s_global_frame,
         .master_length_frames = s_master_length_frames,
         .audio_block = atomic_load_explicit(&s_audio_block, memory_order_relaxed),
-        .last_bounce_request_id = s_last_bounce_request_id,
-        .last_bounce_result = s_last_bounce_result,
-        .last_bounce_track = s_last_bounce_track,
         .current_track = s_current_track,
         .bar_count = s_bar_count,
         .message_code = s_message_code,
@@ -724,12 +690,6 @@ static void format_message(const synth_looper_runtime_view_t *view, char *messag
     case SYNTH_LOOPER_MESSAGE_NO_LOOP:
         strlcpy(message, "NO LOOP", size);
         break;
-    case SYNTH_LOOPER_MESSAGE_BOUNCE:
-        strlcpy(message, "BOUNCE", size);
-        break;
-    case SYNTH_LOOPER_MESSAGE_BOUNCE_SYNC:
-        strlcpy(message, "BOUNCE SYNC", size);
-        break;
     case SYNTH_LOOPER_MESSAGE_EMPTY:
     default:
         strlcpy(message, "EMPTY", size);
@@ -817,8 +777,6 @@ esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
     synth_metronome_init(&s_record_metronome, sample_rate_hz);
     synth_looper_command_queue_init(&s_command_queue);
     atomic_init(&s_audio_block, 0);
-    atomic_init(&s_next_request_id, 1);
-    atomic_init(&s_pending_bounce_request, 0);
     atomic_init(&s_max_command_latency_blocks, 0);
     atomic_init(&s_max_process_us, 0);
     atomic_init(&s_process_over_budget, 0);
@@ -901,42 +859,6 @@ static void apply_click_command(uint16_t bpm)
     if (!has_any_loop()) {
         s_paused = false;
     }
-}
-
-static void apply_auto_bounce_command(const synth_looper_command_t *command)
-{
-    uint8_t track = first_empty_track();
-    esp_err_t result = ESP_OK;
-    if (track >= SYNTH_LOOPER_TRACK_COUNT) {
-        result = ESP_ERR_NOT_FOUND;
-    } else {
-        set_current_bpm(command->bpm);
-        s_current_track = track;
-        synth_looper_track_t *slot = &s_tracks[track];
-        if (s_master_length_frames > 0 && track != 0) {
-            slot->state = SYNTH_LOOPER_TRACK_WAITING;
-            slot->record_armed = true;
-            slot->sync_to_master = true;
-            slot->length_frames = 0;
-            slot->play_position = 0;
-            slot->record_position = 0;
-            slot->record_start_frame = 0;
-            slot->target_record_frames = s_master_length_frames;
-            slot->count_in_beat_frames = 0;
-            set_message(SYNTH_LOOPER_MESSAGE_BOUNCE_SYNC, 0, 0);
-        } else {
-            uint32_t target_frames = bars_to_frames(command->bars, s_current_bpm);
-            if (target_frames > s_capacity_frames) {
-                target_frames = s_capacity_frames;
-            }
-            start_recording(track, target_frames);
-            set_message(SYNTH_LOOPER_MESSAGE_BOUNCE, 0, 0);
-        }
-    }
-
-    s_last_bounce_request_id = command->request_id;
-    s_last_bounce_result = result;
-    s_last_bounce_track = result == ESP_OK ? track : SYNTH_LOOPER_TRACK_COUNT;
 }
 
 static void apply_command(const synth_looper_command_t *command)
@@ -1069,9 +991,6 @@ static void apply_command(const synth_looper_command_t *command)
             }
             set_message(SYNTH_LOOPER_MESSAGE_CLEARED, 0, 0);
         }
-        break;
-    case SYNTH_LOOPER_COMMAND_AUTO_BOUNCE:
-        apply_auto_bounce_command(command);
         break;
     default:
         break;
@@ -1239,13 +1158,12 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
             synth_looper_dsp_meter_peak(&live_peak, live_input);
 #endif
-            int32_t live = synth_looper_dsp_apply_gain_q8(live_input, LIVE_MIX_GAIN_Q8);
-            int32_t mixed = live + loop_mix;
+            int32_t mixed = live_input + loop_mix;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
-            block[sample_index + channel] = synth_looper_dsp_soft_limit(mixed, &block_meter);
+            block[sample_index + channel] = synth_looper_dsp_saturate(mixed, &block_meter);
             synth_looper_dsp_meter_peak(&output_peak, block[sample_index + channel]);
 #else
-            block[sample_index + channel] = synth_looper_dsp_soft_limit(mixed, NULL);
+            block[sample_index + channel] = synth_looper_dsp_saturate(mixed, NULL);
 #endif
         }
     }
@@ -1467,82 +1385,6 @@ esp_err_t synth_looper_clear_track(uint8_t track)
         .type = SYNTH_LOOPER_COMMAND_CLEAR_TRACK,
         .track = track,
     });
-}
-
-esp_err_t synth_looper_request_auto_bounce(uint8_t bars,
-                                           uint16_t bpm,
-                                           synth_looper_request_id_t *request_id)
-{
-    if (!s_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (request_id == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (bars == 0 || bars > SYNTH_LOOPER_MAX_BARS || bpm == 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    uint32_t next_id = atomic_fetch_add_explicit(&s_next_request_id, 1, memory_order_relaxed);
-    if (next_id == 0) {
-        next_id = atomic_fetch_add_explicit(&s_next_request_id, 1, memory_order_relaxed);
-    }
-    uint32_t no_pending_request = 0;
-    if (!atomic_compare_exchange_strong_explicit(&s_pending_bounce_request,
-                                                 &no_pending_request,
-                                                 next_id,
-                                                 memory_order_acq_rel,
-                                                 memory_order_acquire)) {
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    esp_err_t err = enqueue_command((synth_looper_command_t){
-        .type = SYNTH_LOOPER_COMMAND_AUTO_BOUNCE,
-        .request_id = next_id,
-        .bpm = bpm,
-        .bars = bars,
-    });
-    if (err != ESP_OK) {
-        uint32_t expected_id = next_id;
-        atomic_compare_exchange_strong_explicit(&s_pending_bounce_request,
-                                                &expected_id,
-                                                0,
-                                                memory_order_release,
-                                                memory_order_relaxed);
-        return err;
-    }
-
-    *request_id = next_id;
-    return ESP_OK;
-}
-
-bool synth_looper_poll_auto_bounce(synth_looper_request_id_t request_id,
-                                   esp_err_t *result,
-                                   uint8_t *track_out)
-{
-    if (!s_initialized || request_id == 0) {
-        return false;
-    }
-
-    synth_looper_runtime_view_t view;
-    if (!synth_looper_snapshot_read(&s_snapshot_store, &view) ||
-        view.last_bounce_request_id != request_id) {
-        return false;
-    }
-
-    if (result != NULL) {
-        *result = view.last_bounce_result;
-    }
-    if (track_out != NULL) {
-        *track_out = view.last_bounce_track;
-    }
-    uint32_t expected_id = request_id;
-    atomic_compare_exchange_strong_explicit(&s_pending_bounce_request,
-                                            &expected_id,
-                                            0,
-                                            memory_order_release,
-                                            memory_order_relaxed);
-    return true;
 }
 
 bool synth_looper_current_track_is_waiting(void)

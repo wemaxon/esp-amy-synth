@@ -173,5 +173,5 @@ pip install -e .
   - profiling
 
 - Fix sounds stopping playing to early
-- Capture and review the WT0132P4 level report, then commit generated canonical gains
 - Fix octaves
+- Fix drum loop weird button behavior and broken rythm

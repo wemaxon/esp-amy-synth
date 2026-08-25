@@ -1536,8 +1536,8 @@ static void step_mode(int8_t steps)
         s_app.drone_active = false;
         s_app.drone_slot = SYNTH_APP_PLAY_NO_SLOT;
     }
-    if (previous == SYNTH_PLAY_MODE_DRUM_LOOPS &&
-        next != SYNTH_PLAY_MODE_DRUM_LOOPS &&
+    if (s_app.drums.loop_running &&
+        synth_app_drums_mode_uses_buttons(previous) &&
         !synth_app_drums_mode_uses_buttons(next)) {
         start_drum_loop_bounce();
     }

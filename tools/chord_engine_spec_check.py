@@ -291,12 +291,31 @@ def assert_app_and_api_invariants(
 
     require("#define SYNTH_CHORD_INVERSION_COUNT 3" in chord_h, "inversion count must be 3")
     require("#define SYNTH_APP_GLOBAL_OCTAVE_DEFAULT 0" in app_key_h, "global octave default must be 0")
-    require("#define SYNTH_APP_GLOBAL_OCTAVE_MIN -1" in app_key_h, "global octave min must be -1")
+    require("#define SYNTH_APP_GLOBAL_OCTAVE_MIN -2" in app_key_h, "global octave min must be -2")
     require("#define SYNTH_APP_GLOBAL_OCTAVE_MAX 2" in app_key_h, "global octave max must be +2")
     require("#define SYNTH_APP_BUTTON_OCTAVE_MIN -2" in app_key_h, "button octave min must be -2")
     require("#define SYNTH_APP_BUTTON_OCTAVE_MAX 1" in app_key_h, "button octave max must be +1")
     require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in app_c, "app must use shared global octave default")
     require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in play_ui_c, "play UI must use shared global octave default")
+    require(
+        re.search(
+            r"s_app\.drums\.loop_running\s*&&\s*"
+            r"synth_app_drums_mode_uses_buttons\(previous\)\s*&&\s*"
+            r"!synth_app_drums_mode_uses_buttons\(next\)\s*\)\s*\{\s*"
+            r"start_drum_loop_bounce\(\);",
+            app_c,
+        ) is not None,
+        "leaving the drum-mode family with a live loop must start the existing bounce path",
+    )
+    require(
+        app_c.count("handle_mode_button_tap();") == 1
+        and re.search(
+            r"event->sw\s*==\s*CONTROL_MODE_MENU\)\s*\{\s*"
+            r"handle_mode_button_tap\(\);",
+            app_c,
+        ) is not None,
+        "Mode-button presses must retain tap-tempo behavior",
+    )
     require("synth_app_key_step" in app_key_c and "--octave_value" in app_key_c and "++octave_value" in app_key_c,
             "key stepping must carry octave across B/C wraps")
     require("root - 24" in chord_c, "ROOT bass must be two octaves below the chord root")

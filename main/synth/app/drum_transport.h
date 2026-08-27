@@ -24,11 +24,14 @@ typedef struct {
     synth_drum_loop_variation_t variation;
     bool running;
     uint32_t step_index;
+    TickType_t origin_tick;
     TickType_t next_tick;
+    uint16_t scheduled_bpm;
 } synth_app_drum_transport_t;
 
 void synth_app_drum_transport_start(synth_app_drum_transport_t *transport,
                                     synth_drum_loop_style_t style,
+                                    uint16_t bpm,
                                     TickType_t now);
 void synth_app_drum_transport_stop(synth_app_drum_transport_t *transport);
 bool synth_app_drum_transport_update(synth_app_drum_transport_t *transport,

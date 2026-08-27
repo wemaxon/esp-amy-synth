@@ -378,7 +378,8 @@ def assert_voice_count_control(
     require("static uint8_t s_voice_limit = AMY_MUSICAL_VOICE_COUNT;" in amy_c, "voice-limit state missing")
     require("amy_runtime_voice_limit(runtime, s_voice_limit)" in runtime_body, "runtime voice limit must honor user cap")
     require("clamp_voice_count(requested_voice_limit)" in runtime_helper_body, "runtime voice helper must clamp user cap")
-    require("synth_amy_all_off()" in setter_body, "voice-limit changes must silence stale roles")
+    require("synth_amy_musical_all_off()" in setter_body,
+            "voice-limit changes must silence stale musical roles without resetting drums")
     require(
         "configure_patch_synth(amy_runtime_for_sound(s_sound))" in setter_body,
         "voice-limit changes must reconfigure loaded patch synths",

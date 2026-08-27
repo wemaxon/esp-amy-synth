@@ -2,11 +2,22 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
-#include "synth/app/rhythm.h"
+#include "synth/transport_timing.h"
 
 #define DRUM_BIT(voice) ((uint8_t)(1U << (uint8_t)(voice)))
 
 static const char *TAG = "DRUM_TRANSPORT";
+
+static TickType_t step_deadline(const synth_app_drum_transport_t *transport,
+                                uint16_t bpm,
+                                uint32_t step_index)
+{
+    uint64_t offset = synth_transport_step_offset(configTICK_RATE_HZ,
+                                                  bpm,
+                                                  step_index,
+                                                  4);
+    return transport->origin_tick + (TickType_t)offset;
+}
 
 static void trigger_voice(const synth_app_drum_transport_t *transport,
                           synth_drum_voice_t voice,
@@ -36,6 +47,7 @@ static void trigger_step(const synth_app_drum_transport_t *transport, uint8_t st
 
 void synth_app_drum_transport_start(synth_app_drum_transport_t *transport,
                                     synth_drum_loop_style_t style,
+                                    uint16_t bpm,
                                     TickType_t now)
 {
     if (transport == NULL) {
@@ -45,7 +57,9 @@ void synth_app_drum_transport_start(synth_app_drum_transport_t *transport,
     transport->style = style;
     transport->running = true;
     transport->step_index = 0;
+    transport->origin_tick = now;
     transport->next_tick = now;
+    transport->scheduled_bpm = bpm;
 }
 
 void synth_app_drum_transport_stop(synth_app_drum_transport_t *transport)
@@ -56,6 +70,7 @@ void synth_app_drum_transport_stop(synth_app_drum_transport_t *transport)
 
     transport->running = false;
     transport->step_index = 0;
+    transport->scheduled_bpm = 0;
 }
 
 bool synth_app_drum_transport_update(synth_app_drum_transport_t *transport,
@@ -67,13 +82,25 @@ bool synth_app_drum_transport_update(synth_app_drum_transport_t *transport,
         return false;
     }
 
+    if (bpm == 0) {
+        return false;
+    }
+    if (transport->scheduled_bpm != bpm) {
+        TickType_t offset = (TickType_t)synth_transport_step_offset(configTICK_RATE_HZ,
+                                                                    bpm,
+                                                                    transport->step_index,
+                                                                    4);
+        transport->origin_tick = transport->next_tick - offset;
+        transport->scheduled_bpm = bpm;
+    }
+
     trigger_step(transport,
                  (uint8_t)(transport->step_index % SYNTH_DRUM_PATTERN_STEPS));
-    transport->next_tick = synth_app_rhythm_advance_deadline(
-        transport->next_tick,
-        SYNTH_RHYTHM_RATE_SIXTEENTH,
-        bpm,
-        &transport->step_index,
-        now);
+    ++transport->step_index;
+    transport->next_tick = step_deadline(transport, bpm, transport->step_index);
+    while ((int32_t)(now - transport->next_tick) >= 0) {
+        ++transport->step_index;
+        transport->next_tick = step_deadline(transport, bpm, transport->step_index);
+    }
     return true;
 }

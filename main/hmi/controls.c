@@ -99,6 +99,7 @@ static TickType_t s_expander_debounce_due_tick;
 static TickType_t s_next_expander_poll_tick;
 static TickType_t s_next_io_error_log;
 static portMUX_TYPE s_event_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_gpio_irq_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_expander_irq_mux = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_service_task;
@@ -463,7 +464,9 @@ static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ti
     }
 
     if (pressed != debounce->stable_pressed && (now_ticks - debounce->changed_at) >= debounce_ticks) {
+        portENTER_CRITICAL(&s_state_mux);
         debounce->stable_pressed = pressed;
+        portEXIT_CRITICAL(&s_state_mux);
         push_event(sw, pressed);
         log_switch_event(sw, pressed);
     }
@@ -544,13 +547,12 @@ static void update_gpio_switches(TickType_t now_ticks)
 
 static esp_err_t update_joystick(void)
 {
+    control_joystick_state_t next = {0};
 #if ESP_POCKET_AUDIO_ADS1115_ENABLED
     if (!s_ads1115_present) {
-        s_joystick.x.raw = 0;
-        s_joystick.x.value = 0.0f;
-        s_joystick.y.raw = 0;
-        s_joystick.y.value = 0.0f;
-        s_joystick.direction = CONTROL_JOYSTICK_CENTER;
+        portENTER_CRITICAL(&s_state_mux);
+        s_joystick = next;
+        portEXIT_CRITICAL(&s_state_mux);
         return ESP_OK;
     }
 
@@ -568,18 +570,17 @@ static esp_err_t update_joystick(void)
         return err;
     }
 
-    s_joystick.x.raw = raw_x;
-    s_joystick.x.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_X, raw_x);
-    s_joystick.y.raw = raw_y;
-    s_joystick.y.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_Y, raw_y);
-    s_joystick.direction = controls_joystick_direction_from_axes(s_joystick.x.value, s_joystick.y.value);
+    next.x.raw = raw_x;
+    next.x.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_X, raw_x);
+    next.y.raw = raw_y;
+    next.y.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_Y, raw_y);
+    next.direction = controls_joystick_direction_from_axes(next.x.value, next.y.value);
 #else
-    s_joystick.x.raw = 0;
-    s_joystick.x.value = 0.0f;
-    s_joystick.y.raw = 0;
-    s_joystick.y.value = 0.0f;
-    s_joystick.direction = CONTROL_JOYSTICK_CENTER;
+    next.direction = CONTROL_JOYSTICK_CENTER;
 #endif
+    portENTER_CRITICAL(&s_state_mux);
+    s_joystick = next;
+    portEXIT_CRITICAL(&s_state_mux);
     return ESP_OK;
 }
 
@@ -597,10 +598,15 @@ static float clamp01(float value)
 static void set_wheel_state(int16_t raw, float value, bool present)
 {
     value = clamp01(value);
-    s_wheel.present = present;
-    s_wheel.raw = raw;
-    s_wheel.value = value;
-    s_wheel.percent = (uint8_t)((value * 100.0f) + 0.5f);
+    control_wheel_state_t next = {
+        .present = present,
+        .raw = raw,
+        .value = value,
+        .percent = (uint8_t)((value * 100.0f) + 0.5f),
+    };
+    portENTER_CRITICAL(&s_state_mux);
+    s_wheel = next;
+    portEXIT_CRITICAL(&s_state_mux);
 }
 
 static esp_err_t update_wheel(void)
@@ -816,17 +822,25 @@ gpio_num_t controls_expander_interrupt_gpio(void)
 
 bool controls_switch_is_pressed(control_switch_t sw)
 {
-    return sw < CONTROL_SWITCH_COUNT ? s_switches[sw].stable_pressed : false;
+    if (sw >= CONTROL_SWITCH_COUNT) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_state_mux);
+    bool pressed = s_switches[sw].stable_pressed;
+    portEXIT_CRITICAL(&s_state_mux);
+    return pressed;
 }
 
 uint32_t controls_pressed_mask(void)
 {
     uint32_t mask = 0;
+    portENTER_CRITICAL(&s_state_mux);
     for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
         if (s_switches[i].stable_pressed) {
             mask |= 1UL << i;
         }
     }
+    portEXIT_CRITICAL(&s_state_mux);
     return mask;
 }
 
@@ -848,7 +862,9 @@ esp_err_t controls_axis_read(control_axis_t axis, control_axis_state_t *state)
         return ESP_ERR_INVALID_ARG;
     }
 
+    portENTER_CRITICAL(&s_state_mux);
     *state = axis == CONTROL_AXIS_X ? s_joystick.x : s_joystick.y;
+    portEXIT_CRITICAL(&s_state_mux);
     return ESP_OK;
 }
 
@@ -858,7 +874,9 @@ esp_err_t controls_joystick_read(control_joystick_state_t *state)
         return ESP_ERR_INVALID_ARG;
     }
 
+    portENTER_CRITICAL(&s_state_mux);
     *state = s_joystick;
+    portEXIT_CRITICAL(&s_state_mux);
     return ESP_OK;
 }
 
@@ -868,6 +886,8 @@ esp_err_t controls_wheel_read(control_wheel_state_t *state)
         return ESP_ERR_INVALID_ARG;
     }
 
+    portENTER_CRITICAL(&s_state_mux);
     *state = s_wheel;
+    portEXIT_CRITICAL(&s_state_mux);
     return ESP_OK;
 }

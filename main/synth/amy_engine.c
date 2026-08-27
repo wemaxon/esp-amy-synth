@@ -60,6 +60,7 @@ static const float SYNTH_DELAY_FILTER_COEF = 0.28f;
 static const float SYNTH_TREMOLO_MAX_DEPTH = 0.95f;
 static const float LFO_MAX_PITCH_SEMITONES = 2.0f;
 static const uint8_t SYNTH_AMY_DRUM_OSC_COUNT = 8;
+static const uint16_t AMY_DRUM_OSC_RESERVATION_OWNER = UINT16_MAX - 1U;
 static const float SYNTH_AMY_DRUM_AMP = 0.56f;
 static const uint32_t ENVELOPE_ATTACK_MIN_MS = 1;
 static const uint32_t ENVELOPE_ATTACK_MAX_MS = 2000;
@@ -573,6 +574,17 @@ static bool patch_voice_base_osc(uint16_t voice, uint16_t *base_osc)
     return false;
 }
 
+static void reserve_drum_oscillators(void)
+{
+    if (osc_to_voice == NULL) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < SYNTH_AMY_DRUM_OSC_COUNT; ++i) {
+        osc_to_voice[s_drum_osc_base + i] = AMY_DRUM_OSC_RESERVATION_OWNER;
+    }
+}
+
 static void apply_patch_pan_to_voice(uint16_t voice, float pan)
 {
     uint16_t base_osc = 0;
@@ -914,13 +926,12 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
     }
 
     if (s_initialized) {
-        esp_err_t err = synth_amy_all_off();
+        esp_err_t err = synth_amy_musical_all_off();
         if (err != ESP_OK) {
             amy_graph_unlock();
-            ESP_LOGE(TAG, "all off failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "musical all off failed: %s", esp_err_to_name(err));
             return err;
         }
-        amy_hard_all_notes_off();
         release_patch_synth();
     }
 
@@ -1318,7 +1329,7 @@ esp_err_t synth_amy_set_voice_limit(uint8_t voices)
     }
 
     amy_graph_lock();
-    esp_err_t err = synth_amy_all_off();
+    esp_err_t err = synth_amy_musical_all_off();
     if (err == ESP_OK && s_patch_loaded) {
         configure_patch_synth(amy_runtime_for_sound(s_sound));
     }
@@ -1463,6 +1474,7 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     s_drum_osc_base = (uint16_t)(config.max_oscs - SYNTH_AMY_DRUM_OSC_COUNT);
     s_drum_next_osc = 0;
     amy_start(config);
+    reserve_drum_oscillators();
     enqueue_master_volume((float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f);
     synth_amy_perf_reset();
     ESP_RETURN_ON_ERROR(synth_looper_init(AMY_SAMPLE_RATE, AMY_NCHANS),
@@ -1519,6 +1531,7 @@ esp_err_t synth_amy_reset_exclusive(void)
     amy_graph_lock();
     amy_deltas_reset();
     amy_reset_oscs();
+    reserve_drum_oscillators();
 
     memset(s_voices, 0, sizeof(s_voices));
     s_voice_age = 0;

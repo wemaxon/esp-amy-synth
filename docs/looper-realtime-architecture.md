@@ -2,75 +2,73 @@
 
 ## Contract
 
-The looper keeps its existing six-track public API, sample format, state
-transitions, metronome behavior, mixing arithmetic, and UI snapshot contents.
-Control commands now take effect at the next audio-block boundary instead of
-mutating state from the application task. At 44.1 kHz with 256-frame blocks,
-that boundary is at most one nominal 5.804 ms block away while audio is
-running.
+The looper keeps its six-track public API, mono `int16_t` storage, metronome,
+mixing, and UI snapshot contents. Control commands take effect at the next
+audio-block boundary. At 44.1 kHz with 256-frame blocks, that is at most one
+nominal 5.804 ms block while audio is running.
 
-Auto-bounce is exposed only through `synth_looper_request_auto_bounce()` and
-`synth_looper_poll_auto_bounce()`, so the application task never waits for the
-audio task. There is no synchronous compatibility facade.
+FREE recording remains manually stopped. Fixed `1..8` bar recording uses an
+exact integer frame span derived from sample rate and BPM. Drum-pattern step
+deadlines use the same rational timing rule in RTOS ticks, so neither path
+accumulates a rounded per-step interval. Recorded samples are preserved
+verbatim; the looper does not crossfade or rewrite percussion transients at a
+wrap boundary.
 
-The boundary is strict: looper buffers require PSRAM, BPM must be nonzero, and
-auto-bounce bars must be in `1..8`. Invalid configuration is returned to the
-caller; it is never substituted with an internal-RAM allocation, 120 BPM, or a
-one-bar default.
+A live built-in drum pattern persists across mode changes. If the user records
+that generator into a looper track, the application detects the
+`RECORDING -> LOOPING` handoff and stops the generator, leaving only the
+captured audio. Manual drum-pad recordings do not alter generator state.
 
 ## Ownership
 
 | Data | Writer | Readers | Exchange |
 | --- | --- | --- | --- |
 | Track state, sample positions, metronomes, transport state | Audio task | Audio task | Direct, single-owner access |
-| Preallocated PSRAM track sample buffers | Initialization, then audio task | Audio task | Stable pointers after initialization; initialization fails if PSRAM is unavailable |
+| Preallocated PSRAM mono sample buffers | Initialization, then audio task | Audio task | Stable pointers after initialization |
 | Control intent | Application task | Audio task | 32-entry bounded SPSC command queue |
 | UI/runtime view | Audio task | Application task | Three immutable snapshot slots with reader pins |
+| Drum capture completion | Audio snapshot publisher | Application task | Track-state transition detector |
 | Diagnostics | Producer/audio atomics | Application/profile code | Relaxed counters and maxima |
 
-Initialization finishes all allocations before the audio task starts. No
+There is one authoritative `synth_looper_track_t` per track. The previous
+per-buffer shadow copy and end-of-buffer reconciliation are gone. No
 allocation, formatting, logging, UI work, blocking wait, or shared critical
 section is present in `synth_looper_process_audio()`.
 
-The command channel is deliberately SPSC: firmware control calls originate on
-the application task and the audio task is the only consumer. A full queue
-rejects the new command with `ESP_ERR_NO_MEM`; it never overwrites or reorders
-accepted commands. Auto-bounce permits one outstanding request, and its result
-is published in the same runtime snapshot as the resulting track state.
+The command channel is SPSC: firmware control calls originate on the
+application task and the audio task is the only consumer. A full queue rejects
+the new command with `ESP_ERR_NO_MEM`; accepted commands are not overwritten
+or reordered. The snapshot writer never waits for a reader. If both alternate
+slots are pinned, publication for that block is skipped and the previous
+coherent snapshot remains visible.
 
-The snapshot writer never waits for a reader. It writes only an unpinned,
-currently unpublished slot; if both alternatives are pinned, publication for
-that block is skipped and the previous coherent snapshot remains visible.
+## Regression checks
 
-## Reviewable implementation passes
-
-| Pass | Current behavior | Structural improvement | Stability check |
-| --- | --- | --- | --- |
-| Bound the cross-task channel | UI actions previously changed looper state synchronously under one spinlock. | Public mutation facades enqueue FIFO commands which the audio task applies before processing a block. | Command FIFO/full/wrap/high-water C vectors; command transition and audible hardware matrix below. |
-| Make audio the state owner | DSP copied state under the shared lock and reconciled it after the block. | The audio task is the only runtime writer; lock-coupled helper names and every looper critical section are removed. | Structural gate rejects critical sections and stale `_locked` helpers; both target builds must pass. |
-| Publish immutable UI state | UI snapshot construction copied and converted live state while holding the audio lock. | Audio publishes raw, coherent views through a triple buffer; the app performs formatting and frame-to-ms conversion after copying. | Snapshot consistency/pinned-slot C vectors plus OLED state/progress parity on hardware. |
-| Make bounce asynchronous | Drum auto-bounce synchronously selected a track and returned it to the app. | Request/poll completion carries the audio-owned result; the synchronous API is removed. | Structural gates require the async-only path; exercise success, no-free-track, and cancellation cases. |
-| Keep production telemetry | Maximum looper wait/processing risk was unknown. | Lifetime max process time, over-budget count, queue depth/high-water/rejections, command latency, and snapshot contention counters stay enabled. Existing optional AMY performance logs include them. | Stress profile requires zero audio deadline misses/rejections/skipped publications and command latency no greater than one processed block. |
+| Behavior | Structural improvement | Stability check |
+| --- | --- | --- |
+| Sound-menu joystick input changes the selected instrument without becoming a drum command. | One explicit priority route owns each joystick update. | Control-route vectors cover Sound menu over Drum mode and normal Drum routing. |
+| Instrument changes release musical voices but do not stop or reconfigure drum hits. | Musical and drum oscillator ownership is separate; drum oscillators are excluded from AMY patch allocation. | Structural AMY ownership gate plus device test while cycling raw and patch sounds over a running beat. |
+| Fixed-bar recordings wrap on the musical grid. | Drum steps and looper lengths share rational transport arithmetic. | Exact 127 BPM step/bar and long-run timing vectors. |
+| Captured PCM remains the audio that was recorded. | Removed seam conditioning and isolated pure track record/play state. | Raw-capture, exact-wrap, muted-position, and exact-target C vectors. |
+| Capturing a live built-in beat does not leave a doubled generator. | Small snapshot transition coordinator stops it only after successful capture. | Completion, manual-recording, and cancellation vectors. |
+| Switch, joystick, and wheel readers see coherent values. | The control service publishes complete state under a task-level state mux. | Target build plus device input stress test. |
 
 ## Hardware profiling gate
 
-No trustworthy legacy lock-hold baseline can be produced without running the
-WT0132P4 hardware. The architectural lock hold after this change is zero by
-construction; AUD-004 is not considered hardware-closed until the new audio
-path is profiled on-device.
-
+AUD-004 remains hardware-validation pending until the WT0132P4 is profiled.
 Capture at least five minutes per scenario from the `SYNTH_AMY` performance
 line:
 
 1. Idle synth and looper.
-2. Record a free-length track, stop it manually, and play it back.
-3. Record a fixed-bar master, then add a master-synchronized track.
-4. Play all six tracks while repeatedly changing selection, volume, mute,
-   solo, pause, bars, BPM, and both metronomes.
-5. Run the drum auto-bounce flow, including leaving the mode while a bounce
-   request is pending.
-6. Repeat the heaviest case with the highest practical synth voice load and
-   continuous OLED interaction.
+2. Record and manually stop a FREE track.
+3. Record fixed 1-, 2-, and 8-bar drum-pad tracks at awkward BPM values such
+   as 127, then listen through at least 20 wraps.
+4. Capture a running built-in drum pattern and verify the live generator stops
+   exactly once after the track enters playback.
+5. Add master-synchronized tracks, then play all six while changing selection,
+   volume, mute, solo, pause, bars, BPM, and metronomes.
+6. Keep a beat running while cycling every raw and patch instrument in the
+   Sound menu and operating the OLED and joystick continuously.
 
 Acceptance criteria:
 
@@ -78,13 +76,16 @@ Acceptance criteria:
 - `looper_queue ... rejected=0` and `latency_blocks<=1`.
 - `snapshot_skipped=0`; retries may be nonzero but must not produce torn or
   visibly regressing UI state.
-- No clicks, gaps, underruns, watchdog resets, stuck tracks, incorrect bounce
-  ownership, or loss/reordering of accepted controls.
-- Record/play lengths, count-in, master synchronization, mute/solo/volume,
-  metronome state, pause, clear, and OLED progress/message behavior match the
-  pre-refactor firmware.
+- Drum timbre and rhythm do not change during sound browsing.
+- Fixed recordings have no periodic drift, doubled downbeat, altered first
+  transient, or short/long wrap.
+- FREE recording, count-in, master synchronization, mute/solo/volume,
+  metronome state, pause, clear, and OLED progress/message behavior remain
+  stable.
+- No underruns, watchdog resets, stuck tracks, clicks, or gaps attributable to
+  control interaction.
 
 Save the firmware revision, board revision, configuration, scenario duration,
-worst log line, and pass/fail notes with the audit. If a gate fails, retain this
-ownership model and optimize the bounded audio-owned operation responsible;
-do not restore a cross-task looper lock.
+worst log line, and pass/fail notes with the audit. If a gate fails, retain the
+single-owner model and optimize the bounded operation responsible; do not
+restore a cross-task looper lock or destructive seam processing.

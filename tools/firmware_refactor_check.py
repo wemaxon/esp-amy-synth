@@ -42,6 +42,13 @@ def require_public_symbols(relative: str, symbols: tuple[str, ...]) -> None:
                 f"{relative} lost public symbol {symbol}")
 
 
+def function_slice(text: str, symbol: str, next_symbol: str) -> str:
+    start = text.find(symbol)
+    end = text.find(next_symbol, start + len(symbol))
+    require(start >= 0 and end > start, f"could not isolate {symbol}")
+    return text[start:end]
+
+
 def check_public_facades() -> None:
     require_public_symbols("main/synth/app.h", ("synth_app_start",))
     require_public_symbols(
@@ -133,6 +140,22 @@ def check_amy_upgrade_contracts() -> None:
             "AMY audio task lost its ESP-IDF TaskFunction_t-compatible signature")
     require("synth[i] != NULL && synth[i]->status == SYNTH_AUDIBLE" in amy_patches,
             "AMY all-notes-off path lost its reserved-osc null guard")
+    require(engine.count("reserve_drum_oscillators();") >= 2 and
+            "osc_to_voice[s_drum_osc_base + i] = AMY_DRUM_OSC_RESERVATION_OWNER" in engine,
+            "AMY patch allocation can reclaim reserved drum oscillators")
+
+    set_sound = function_slice(engine,
+                               "esp_err_t synth_amy_set_sound",
+                               "float synth_amy_sound_velocity")
+    set_voice_limit = function_slice(engine,
+                                     "esp_err_t synth_amy_set_voice_limit",
+                                     "esp_err_t synth_amy_set_envelope")
+    for name, body in (("sound selection", set_sound),
+                       ("voice-limit selection", set_voice_limit)):
+        require("synth_amy_musical_all_off" in body,
+                f"{name} no longer releases only application-owned musical voices")
+        require("amy_hard_all_notes_off" not in body and "synth_amy_all_off" not in body,
+                f"{name} can reset reserved drum oscillators")
 
 
 def check_board_contracts() -> None:
@@ -159,6 +182,11 @@ def check_looper_realtime_boundary() -> None:
     app = source("main/synth/app.c")
     audio = source("main/synth/amy_audio.c")
     drum_transport = source("main/synth/app/drum_transport.c")
+    looper_track = source("main/synth/looper_track.c")
+    timing = source("main/synth/transport_timing.c")
+    control_route = source("main/synth/app/control_route.c")
+    drum_capture = source("main/synth/app/drum_capture.c")
+    controls = source("main/hmi/controls.c")
     cmake = source("main/CMakeLists.txt")
 
     require("portENTER_CRITICAL" not in looper and "portEXIT_CRITICAL" not in looper,
@@ -174,6 +202,24 @@ def check_looper_realtime_boundary() -> None:
     require('"synth/app/drum_transport.c"' in cmake and
             "synth_app_drum_transport_update" in drum_transport,
             "persistent drum transport is missing from the application")
+    require('"synth/transport_timing.c"' in cmake and
+            "synth_transport_step_offset" in timing and
+            "synth_transport_bar_span" in timing,
+            "drum and looper transports no longer share rational timing")
+    require('"synth/app/control_route.c"' in cmake and
+            "SYNTH_APP_CONTROL_ROUTE_SOUND_MENU" in control_route,
+            "joystick ownership routing is missing")
+    require("static portMUX_TYPE s_state_mux" in controls and
+            "s_joystick = next" in controls and
+            "s_wheel = next" in controls and
+            "uint32_t pressed = controls_pressed_mask();" in app,
+            "control state or menu ownership is no longer published coherently")
+    require('"synth/app/drum_capture.c"' in cmake and
+            "synth_app_drum_capture_update" in drum_capture,
+            "drum-generator capture handoff is missing")
+    require('"synth/looper_track.c"' in cmake and
+            "synth_looper_track_mix_playback" in looper_track,
+            "authoritative looper track state module is missing")
     require("bounce" not in app.lower() and
             "bounce" not in looper.lower() and
             "bounce" not in source("main/synth/looper.h").lower() and
@@ -191,8 +237,12 @@ def check_looper_realtime_boundary() -> None:
             "single-track looper playback is no longer unity gain")
     require("LIVE_MIX_GAIN" not in looper and "synth_looper_dsp_soft_limit" not in looper,
             "looper reintroduced hidden live attenuation or nonlinear limiting")
-    require("synth_looper_dsp_condition_seam" in looper and "crossfade" not in looper.lower(),
-            "looper seam is no longer conditioned once at recording finalization")
+    require("synth_looper_process_track_t" not in looper,
+            "looper reintroduced per-buffer shadow track state")
+    require("synth_looper_dsp_condition_seam" not in looper and
+            "synth_looper_dsp_condition_seam" not in looper_dsp and
+            "crossfade" not in looper.lower(),
+            "looper reintroduced destructive seam rewriting")
     allocation = looper.find("esp_err_t allocation_err = allocate_all_track_buffers()")
     initialized = looper.find("s_initialized = true", allocation)
     require(allocation >= 0 and initialized > allocation,

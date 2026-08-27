@@ -101,7 +101,7 @@ synth_app_drum_result_t synth_app_drums_button_press(synth_app_drum_modes_t *dru
                 .label = synth_drum_loop_style_name(style),
             };
         }
-        synth_app_drum_transport_start(&drums->loop, style, now);
+        synth_app_drum_transport_start(&drums->loop, style, bpm, now);
         ESP_LOGI(TAG,
                  "drum loop style=%s variation=%s kit=%s",
                  synth_drum_loop_style_name(drums->loop.style),

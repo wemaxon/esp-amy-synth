@@ -784,8 +784,9 @@ Behavior:
 - Pre-programmed drum patterns.
 - Seven styles × eight variations = 56 beats.
 - Each chord button selects a style.
-- Drum loops persist across mode changes so user can switch to chord modes and jam.
-- Leaving Drum Loop mode while playing can auto-bounce pattern into next empty looper track.
+- Drum loops persist across mode changes so the user can switch to chord modes and jam.
+- Recording a running drum loop into a looper track stops the live generator
+  after capture completes, preventing a doubled beat.
 
 Style mapping:
 
@@ -1025,20 +1026,20 @@ State symbols:
 | Clear all tracks | Stop Track 1 |
 | Toggle metronome | Button 7 in Mixer mode |
 
-### 10.6 Auto-bounce
+### 10.6 Generator capture
 
 Behavior:
 
-- When leaving Sequencer or Drum Loop mode while a pattern is playing, record/bounce that pattern as audio into the next empty looper track.
-- Drone mode can also auto-bounce when switching away.
-- After bounce, user can switch modes and play on top.
+- A running Drum Loop continues across mode changes.
+- The user records it through the normal looper controls.
+- After a successful fixed or FREE capture reaches playback, the live drum
+  generator stops and the captured mono track continues.
 
 Acceptance criteria:
 
-- Bounced tracks obey the 6-track limit.
-- If no empty track exists, show a clear error/status.
-- Sequencer is disabled from using looper while active, then bounces on exit.
-- Drum loops persist across mode changes even without manual looper use.
+- Captured tracks obey the 6-track limit and normal looper state rules.
+- Cancelling or clearing a recording does not stop the live generator.
+- Manual drum-pad recordings do not trigger generator handoff.
 
 ## 11. Drums and Beats
 
@@ -1416,7 +1417,7 @@ Implement diagnostic states and messages for:
 - Seven kits are selectable, plus conditional User Kit.
 - Drum Loops implement 56 style/variation combinations.
 - Auto-Drum direction-rate mapping is correct.
-- Auto-bounce works for Sequencer, Drum Loops, and Drone.
+- Capturing a Drum Loop stops its live generator only after successful recording.
 
 ### 20.6 I/O, presets, power
 

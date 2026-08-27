@@ -64,24 +64,3 @@ int32_t host_vector_clip_counter(void)
     synth_looper_dsp_saturate(-40000, &meter);
     return meter.clipped_samples;
 }
-
-int32_t host_vector_seam_boundary(void)
-{
-    int16_t samples[] = {1000, 2000, 3000, 4000, 5000, 6000, 7000, -1000};
-    synth_looper_dsp_condition_seam(samples, 8, 1000);
-    return samples[0] - samples[7];
-}
-
-int32_t host_vector_seam_interior(void)
-{
-    int16_t samples[] = {1000, 2000, 3000, 4000, 5000, 6000, 7000, -1000};
-    synth_looper_dsp_condition_seam(samples, 8, 1000);
-    return samples[2] + samples[5];
-}
-
-int32_t host_vector_short_seam_unchanged(void)
-{
-    int16_t samples[] = {100, 200, 300};
-    synth_looper_dsp_condition_seam(samples, 3, 1000);
-    return samples[0] + samples[1] + samples[2];
-}

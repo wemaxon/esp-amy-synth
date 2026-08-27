@@ -3,8 +3,6 @@
 #include <stddef.h>
 
 static const uint16_t GAIN_Q8_UNITY = 256;
-static const uint32_t SEAM_SMOOTH_MS = 2;
-static const uint32_t SMOOTH_Q15_ONE = 32768U;
 static const uint16_t LOOP_BUS_GAIN_BY_TRACKS_Q8[SYNTH_LOOPER_TRACK_COUNT + 1] = {
     0,
     256,
@@ -98,52 +96,5 @@ int16_t synth_looper_dsp_saturate(int32_t sample, synth_looper_meter_t *meter)
         return INT16_MIN;
     }
     return (int16_t)sample;
-}
-
-static uint32_t smoothstep_q15(uint32_t position, uint32_t length)
-{
-    if (length <= 1U || position >= length - 1U) {
-        return SMOOTH_Q15_ONE;
-    }
-
-    uint32_t t = (uint32_t)(((uint64_t)position * SMOOTH_Q15_ONE) /
-                            (uint64_t)(length - 1U));
-    uint32_t t2 = (uint32_t)(((uint64_t)t * t) >> 15);
-    return (uint32_t)(((uint64_t)t2 *
-                       ((3U * SMOOTH_Q15_ONE) - (2U * t))) >> 15);
-}
-
-static int16_t blend_sample(int32_t from, int32_t to, uint32_t amount_q15)
-{
-    int64_t mixed = (int64_t)from * (int64_t)(SMOOTH_Q15_ONE - amount_q15) +
-                    (int64_t)to * (int64_t)amount_q15;
-    return (int16_t)(mixed / (int64_t)SMOOTH_Q15_ONE);
-}
-
-void synth_looper_dsp_condition_seam(int16_t *samples,
-                                     uint32_t length_frames,
-                                     uint32_t sample_rate_hz)
-{
-    if (samples == NULL || sample_rate_hz == 0 || length_frames < 4U) {
-        return;
-    }
-
-    uint32_t window = (uint32_t)(((uint64_t)sample_rate_hz * SEAM_SMOOTH_MS) / 1000ULL);
-    uint32_t max_window = length_frames / 4U;
-    if (window > max_window) {
-        window = max_window;
-    }
-    if (window < 2U) {
-        return;
-    }
-
-    int32_t midpoint = ((int32_t)samples[0] + (int32_t)samples[length_frames - 1U]) / 2;
-    uint32_t tail_start = length_frames - window;
-    for (uint32_t position = 0; position < window; ++position) {
-        uint32_t amount = smoothstep_q15(position, window);
-        uint32_t tail_index = tail_start + position;
-        samples[position] = blend_sample(midpoint, samples[position], amount);
-        samples[tail_index] = blend_sample(samples[tail_index], midpoint, amount);
-    }
 }
 

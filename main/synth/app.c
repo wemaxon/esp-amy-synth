@@ -15,6 +15,7 @@
 #include "synth/amy_engine.h"
 #include "synth/app/chord_tools.h"
 #include "synth/app/chords.h"
+#include "synth/app/control_route.h"
 #include "synth/app/drum_modes.h"
 #include "synth/app/effects.h"
 #include "synth/app/key.h"
@@ -1583,6 +1584,21 @@ static void update_looper_periodic_ui(void)
     }
 }
 
+static void update_drum_capture(void)
+{
+    synth_looper_snapshot_t snapshot = {0};
+    synth_looper_get_snapshot(&snapshot);
+    if (!synth_app_drum_capture_update(&s_app.drum_capture,
+                                       &snapshot,
+                                       synth_app_drums_loop_active(&s_app.drums))) {
+        return;
+    }
+
+    synth_app_drums_stop_loop(&s_app.drums);
+    set_status("BEAT LOOPED");
+    update_ui();
+}
+
 static void update_joystick(void)
 {
     control_joystick_state_t joystick = {0};
@@ -1591,31 +1607,40 @@ static void update_joystick(void)
     }
     s_app.joystick_direction = joystick.direction;
 
-    if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
+    uint32_t pressed = controls_pressed_mask();
+    synth_app_control_route_t route = synth_app_control_route(
+        (pressed & (1UL << CONTROL_KEY_MENU)) != 0,
+        (pressed & (1UL << CONTROL_SOUND_MENU)) != 0,
+        (pressed & (1UL << CONTROL_MODE_MENU)) != 0,
+        synth_app_looper_visible(&s_app.looper),
+        s_app.mode,
+        s_app.chords.held_mask != 0);
+
+    if (route == SYNTH_APP_CONTROL_ROUTE_KEY_MENU) {
         update_key_menu(joystick.direction);
         update_ui();
         return;
     }
-    if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+    if (route == SYNTH_APP_CONTROL_ROUTE_SOUND_MENU) {
         update_sound_menu(joystick.direction);
         update_ui();
         return;
     }
-    if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+    if (route == SYNTH_APP_CONTROL_ROUTE_MODE_MENU) {
         update_mode_menu(joystick.direction);
         update_ui();
         return;
     }
     s_app.last_menu_direction = CONTROL_JOYSTICK_CENTER;
 
-    if (synth_app_looper_visible(&s_app.looper) && s_app.chords.held_mask == 0) {
+    if (route == SYNTH_APP_CONTROL_ROUTE_LOOPER) {
         update_looper_joystick(joystick.direction);
         s_app.last_play_direction = CONTROL_JOYSTICK_CENTER;
         return;
     }
     synth_app_looper_reset_direction(&s_app.looper);
 
-    if (s_app.mode == SYNTH_PLAY_MODE_MIXER) {
+    if (route == SYNTH_APP_CONTROL_ROUTE_MIXER) {
         s_app.last_play_direction = joystick.direction;
         if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {
             s_app.modifier = SYNTH_CHORD_MOD_NONE;
@@ -1624,7 +1649,7 @@ static void update_joystick(void)
         return;
     }
 
-    if (synth_app_drums_mode_uses_buttons(s_app.mode)) {
+    if (route == SYNTH_APP_CONTROL_ROUTE_DRUMS) {
         if (joystick.direction != s_app.last_play_direction) {
             synth_app_drum_result_t result =
                 synth_app_drums_joystick(&s_app.drums,
@@ -1779,6 +1804,7 @@ static void app_task(void *arg)
         update_strum();
         update_arp();
         update_repeat();
+        update_drum_capture();
         synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount());
         update_lfo();
         update_tremolo();

@@ -172,6 +172,5 @@ pip install -e .
   - amy multicore/multithread
   - profiling
 
-- Fix sounds stopping playing to early
 - Fix octaves
 - Fix drum loop weird button behavior and broken rythm

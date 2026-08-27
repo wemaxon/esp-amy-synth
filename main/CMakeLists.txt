@@ -28,6 +28,8 @@ idf_component_register(
         "synth/app.c"
         "synth/app/chord_tools.c"
         "synth/app/chords.c"
+        "synth/app/control_route.c"
+        "synth/app/drum_capture.c"
         "synth/app/drum_modes.c"
         "synth/app/drum_transport.c"
         "synth/app/effects.c"
@@ -48,11 +50,13 @@ idf_component_register(
         "synth/drums.c"
         "synth/looper.c"
         "synth/looper_dsp.c"
+        "synth/looper_track.c"
         "synth/looper_transport.c"
         "synth/level_calibration.c"
         "synth/metronome.c"
         "synth/play_mode.c"
         "synth/sound.c"
+        "synth/transport_timing.c"
 
     REQUIRES
         ads1115

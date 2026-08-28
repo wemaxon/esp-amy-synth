@@ -433,13 +433,13 @@ def assert_adsr_control(
         "synth_amy_set_envelope(&envelope)" in app_c,
         "ADSR preset cycling missing",
     )
-    require("controls_switch_is_pressed(CONTROL_KEY_MENU)" in wheel_target_body, "Gray+wheel attack control missing")
+    require("1UL << CONTROL_KEY_MENU" in wheel_target_body, "Gray+wheel attack control missing")
     require("synth_app_attack_ms_from_wheel" in apply_wheel_body, "attack wheel range missing")
     require("ATTACK_MIN_MS" in app_settings_c and "ATTACK_MAX_MS" in app_settings_c, "attack wheel range missing")
-    require("controls_switch_is_pressed(CONTROL_SOUND_MENU)" in wheel_target_body, "Yellow+wheel release control missing")
+    require("1UL << CONTROL_SOUND_MENU" in wheel_target_body, "Yellow+wheel release control missing")
     require("synth_app_release_ms_from_wheel" in apply_wheel_body, "release wheel range missing")
     require("RELEASE_MIN_MS" in app_settings_c and "RELEASE_MAX_MS" in app_settings_c, "release wheel range missing")
-    require("controls_switch_is_pressed(CONTROL_MODE_MENU)" in wheel_target_body, "Red+wheel filter shortcut missing")
+    require("1UL << CONTROL_MODE_MENU" in wheel_target_body, "Red+wheel filter shortcut missing")
     require(
         "synth_app_effects_envelope(&s_app.fx" in current_envelope_body and
         "synth_app_adsr_repeat_release_cap_ms" in app_effects_c,

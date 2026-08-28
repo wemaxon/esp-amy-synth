@@ -6,18 +6,23 @@
 
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hmi/control_i2c.h"
 #include "hmi/controls.h"
 #include "hmi/joystick_calibration.h"
 #include "hmi/oled_display.h"
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
 #include "hmi/wheel_calibration.h"
+#endif
 #include "pocket_oled.h"
 
 typedef enum {
     CAL_TARGET_JOYSTICK = 0,
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
     CAL_TARGET_WHEEL,
+#endif
 } cal_target_t;
 
 typedef enum {
@@ -55,8 +60,10 @@ static const char *cal_target_name(cal_target_t target)
     switch (target) {
     case CAL_TARGET_JOYSTICK:
         return "JOY";
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
     case CAL_TARGET_WHEEL:
         return "WHL";
+#endif
     default:
         return "?";
     }
@@ -112,14 +119,24 @@ static void draw_display(const esp_pocket_audio_hw_t *hw, cal_target_t target, c
     snprintf(line, sizeof(line), "CAL %s %s", cal_target_name(target), cal_state_name(state));
     pocket_oled_draw_text_row(display, 5, line);
     if (wheel.present) {
-        snprintf(line, sizeof(line), "WHL %05d %3u%%", wheel.raw, wheel.percent);
+        if (wheel.type == CONTROL_WHEEL_ABSOLUTE) {
+            snprintf(line, sizeof(line), "WHL %05d %3u%%",
+                     wheel.data.absolute.raw,
+                     wheel.data.absolute.percent);
+        } else {
+            snprintf(line, sizeof(line), "ENC %" PRId32, wheel.data.relative.position);
+        }
     } else {
         snprintf(line, sizeof(line), "WHL disabled");
     }
     pocket_oled_draw_text_row(display, 6, line);
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
     pocket_oled_draw_text_row(display, 7, target == CAL_TARGET_JOYSTICK ?
                               "M=whl J=ctr S/K" :
                               "M=joy J=rng S/K");
+#else
+    pocket_oled_draw_text_row(display, 7, "J=joy cal S/K");
+#endif
 
     esp_err_t err = oled_display_flush_cooperatively(display, pdMS_TO_TICKS(25));
     if (err != ESP_OK) {
@@ -153,9 +170,11 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
             }
 
             if (event.sw == CONTROL_MODE_MENU) {
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
                 cal_target = cal_target == CAL_TARGET_JOYSTICK ? CAL_TARGET_WHEEL : CAL_TARGET_JOYSTICK;
                 cal_state = CAL_UI_IDLE;
                 ESP_LOGI(TAG, "calibration target: %s", cal_target_name(cal_target));
+#endif
             } else if (event.sw == CONTROL_JOYSTICK_CLICK) {
                 if (cal_target == CAL_TARGET_JOYSTICK) {
                     control_joystick_state_t joystick = {0};
@@ -163,25 +182,36 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
                     joystick_calibration_capture_center(joystick.x.raw, joystick.y.raw);
                     joystick_calibration_begin_range_capture(joystick.x.raw, joystick.y.raw);
                     cal_state = CAL_UI_CAPTURE_RANGE;
-                } else {
+                }
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
+                else {
                     control_wheel_state_t wheel = {0};
                     if (controls_wheel_read(&wheel) == ESP_OK && wheel.present) {
-                        wheel_calibration_begin_range_capture(wheel.raw);
+                        wheel_calibration_begin_range_capture(wheel.data.absolute.raw);
                         cal_state = CAL_UI_CAPTURE_RANGE;
                     } else {
                         cal_state = CAL_UI_ERROR;
                     }
                 }
+#endif
             } else if (event.sw == CONTROL_SOUND_MENU) {
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
                 esp_err_t err = cal_target == CAL_TARGET_JOYSTICK ?
                                 joystick_calibration_save() :
                                 wheel_calibration_save();
+#else
+                esp_err_t err = joystick_calibration_save();
+#endif
                 cal_state = err == ESP_OK ? CAL_UI_SAVED : CAL_UI_ERROR;
                 ESP_LOGI(TAG, "%s calibration save: %s", cal_target_name(cal_target), esp_err_to_name(err));
             } else if (event.sw == CONTROL_KEY_MENU) {
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
                 esp_err_t err = cal_target == CAL_TARGET_JOYSTICK ?
                                 joystick_calibration_reset() :
                                 wheel_calibration_reset();
+#else
+                esp_err_t err = joystick_calibration_reset();
+#endif
                 cal_state = err == ESP_OK ? CAL_UI_RESET : CAL_UI_ERROR;
                 ESP_LOGI(TAG, "%s calibration reset: %s", cal_target_name(cal_target), esp_err_to_name(err));
             }
@@ -193,12 +223,15 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
                 if (controls_joystick_read(&joystick) == ESP_OK) {
                     joystick_calibration_observe_range(joystick.x.raw, joystick.y.raw);
                 }
-            } else {
+            }
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
+            else {
                 control_wheel_state_t wheel = {0};
                 if (controls_wheel_read(&wheel) == ESP_OK && wheel.present) {
-                    wheel_calibration_observe_range(wheel.raw);
+                    wheel_calibration_observe_range(wheel.data.absolute.raw);
                 }
             }
+#endif
         }
 
         if ((int32_t)(now - next_refresh) >= 0) {

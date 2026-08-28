@@ -85,6 +85,18 @@ static uint32_t wheel_to_range_ms(uint8_t percent, uint32_t min_ms, uint32_t max
     return min_ms + ((span * (uint32_t)percent + 50U) / 100U);
 }
 
+static uint8_t range_ms_to_wheel(uint32_t value_ms, uint32_t min_ms, uint32_t max_ms)
+{
+    if (value_ms <= min_ms) {
+        return 0;
+    }
+    if (value_ms >= max_ms) {
+        return 100;
+    }
+    uint32_t span = max_ms - min_ms;
+    return (uint8_t)((((value_ms - min_ms) * 100U) + (span / 2U)) / span);
+}
+
 const char *synth_app_adsr_preset_name(uint8_t preset)
 {
     preset = normalize_index(preset, SYNTH_APP_ADSR_PRESET_COUNT);
@@ -112,6 +124,16 @@ uint32_t synth_app_attack_ms_from_wheel(uint8_t percent)
 uint32_t synth_app_release_ms_from_wheel(uint8_t percent)
 {
     return wheel_to_range_ms(percent, RELEASE_MIN_MS, RELEASE_MAX_MS);
+}
+
+uint8_t synth_app_attack_wheel_percent(uint32_t attack_ms)
+{
+    return range_ms_to_wheel(attack_ms, ATTACK_MIN_MS, ATTACK_MAX_MS);
+}
+
+uint8_t synth_app_release_wheel_percent(uint32_t release_ms)
+{
+    return range_ms_to_wheel(release_ms, RELEASE_MIN_MS, RELEASE_MAX_MS);
 }
 
 float synth_app_filter_cutoff_hz_from_wheel(uint8_t percent)

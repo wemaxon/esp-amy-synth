@@ -1,3 +1,10 @@
+set(wheel_sources)
+if(CONFIG_ESP_POCKET_AUDIO_BOARD_WT0132P4_A1)
+    list(APPEND wheel_sources "hmi/rotary_encoder.c")
+elseif(CONFIG_ESP_POCKET_AUDIO_BOARD_AI_THINKER_A1S)
+    list(APPEND wheel_sources "hmi/wheel_calibration.c")
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
@@ -18,7 +25,7 @@ idf_component_register(
         "hmi/oled_display.c"
         "hmi/play_ui.c"
         "hmi/switch_expander.c"
-        "hmi/wheel_calibration.c"
+        ${wheel_sources}
         "synth/amy_audio.c"
         "synth/audio_meter.c"
         "synth/amy_flanger.c"
@@ -66,6 +73,7 @@ idf_component_register(
         esp_driver_gpio
         esp_driver_i2c
         esp_driver_i2s
+        esp_driver_pcnt
         nvs_flash
         pcf8574
         pcf8575

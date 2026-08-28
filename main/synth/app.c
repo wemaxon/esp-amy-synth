@@ -43,7 +43,6 @@ static const BaseType_t APP_TASK_CORE = 0;
 static const TickType_t APP_UPDATE_TICKS = pdMS_TO_TICKS(20);
 static const int8_t CHORD_INVERSION_MIN = 0;
 static const int8_t CHORD_INVERSION_MAX = SYNTH_CHORD_INVERSION_COUNT - 1;
-static const uint8_t WHEEL_CHANGE_THRESHOLD_PERCENT = 2;
 static const TickType_t SOUND_BROWSE_APPLY_TICKS = pdMS_TO_TICKS(180);
 
 static synth_app_state_t s_app = {
@@ -59,7 +58,7 @@ static synth_app_state_t s_app = {
     .tempo = SYNTH_APP_TEMPO_INITIALIZER,
     .fx = SYNTH_APP_EFFECTS_INITIALIZER,
     .play = SYNTH_APP_PLAY_STATE_INITIALIZER,
-    .wheel = SYNTH_APP_WHEEL_INITIALIZER,
+    .wheel = SYNTH_APP_WHEEL_INITIALIZER(ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT),
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
@@ -1358,15 +1357,15 @@ static void cycle_mode_param(void)
     update_ui();
 }
 
-static synth_app_wheel_target_t current_wheel_target(void)
+static synth_app_wheel_target_t current_wheel_target(uint32_t pressed)
 {
-    if (controls_switch_is_pressed(CONTROL_KEY_MENU)) {
+    if ((pressed & (1UL << CONTROL_KEY_MENU)) != 0) {
         return SYNTH_APP_WHEEL_TARGET_ATTACK;
     }
-    if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
+    if ((pressed & (1UL << CONTROL_SOUND_MENU)) != 0) {
         return SYNTH_APP_WHEEL_TARGET_RELEASE;
     }
-    if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
+    if ((pressed & (1UL << CONTROL_MODE_MENU)) != 0) {
         return SYNTH_APP_WHEEL_TARGET_FILTER;
     }
     if (s_app.mode == SYNTH_PLAY_MODE_MIXER &&
@@ -1376,40 +1375,104 @@ static synth_app_wheel_target_t current_wheel_target(void)
     return SYNTH_APP_WHEEL_TARGET_VOLUME;
 }
 
-static bool apply_wheel(const control_wheel_state_t *wheel)
+static bool current_wheel_target_percent(synth_app_wheel_target_t target,
+                                         uint8_t *percent)
+{
+    if (percent == NULL) {
+        return false;
+    }
+
+    switch (target) {
+    case SYNTH_APP_WHEEL_TARGET_ATTACK:
+        *percent = synth_app_attack_wheel_percent(s_app.fx.attack_ms);
+        return true;
+    case SYNTH_APP_WHEEL_TARGET_RELEASE:
+        *percent = synth_app_release_wheel_percent(s_app.fx.release_ms);
+        return true;
+    case SYNTH_APP_WHEEL_TARGET_FILTER:
+        *percent = s_app.fx.filter_percent;
+        return true;
+    case SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK: {
+        uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
+        if (track >= SYNTH_LOOPER_TRACK_COUNT) {
+            return false;
+        }
+        synth_looper_snapshot_t snapshot = {0};
+        synth_looper_get_snapshot(&snapshot);
+        *percent = snapshot.track_volume_percent[track];
+        return true;
+    }
+    case SYNTH_APP_WHEEL_TARGET_VOLUME:
+        *percent = synth_app_wheel_volume_percent(&s_app.wheel);
+        return true;
+    case SYNTH_APP_WHEEL_TARGET_NONE:
+    default:
+        return false;
+    }
+}
+
+static bool apply_wheel(const control_wheel_state_t *wheel,
+                        int32_t relative_delta,
+                        uint32_t pressed)
 {
     if (wheel == NULL || !wheel->present) {
         return false;
     }
 
-    synth_app_wheel_target_t target = current_wheel_target();
-    if (target == SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK) {
-        uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
-        if (!synth_app_mixer_wheel_moved(&s_app.mixer,
-                                         track,
-                                         wheel->percent,
-                                         WHEEL_CHANGE_THRESHOLD_PERCENT)) {
+    synth_app_wheel_target_t target = current_wheel_target(pressed);
+    uint8_t percent = 0;
+    float volume = 0.0f;
+    if (wheel->type == CONTROL_WHEEL_ABSOLUTE) {
+        percent = wheel->data.absolute.percent;
+        volume = wheel->data.absolute.value;
+        if (target == SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK) {
+            uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
+            if (!synth_app_mixer_wheel_moved(&s_app.mixer,
+                                             track,
+                                             percent,
+                                             ESP_POCKET_AUDIO_WHEEL_STEP_PERCENT)) {
+                return false;
+            }
+        }
+        if (!synth_app_wheel_should_apply(&s_app.wheel,
+                                          target,
+                                          percent,
+                                          ESP_POCKET_AUDIO_WHEEL_STEP_PERCENT)) {
             return false;
         }
-    }
-    if (!synth_app_wheel_should_apply(&s_app.wheel,
-                                      target,
-                                      wheel->percent,
-                                      WHEEL_CHANGE_THRESHOLD_PERCENT)) {
+    } else if (wheel->type == CONTROL_WHEEL_RELATIVE) {
+        uint8_t current = 0;
+        if (relative_delta == 0 || !current_wheel_target_percent(target, &current)) {
+            return false;
+        }
+        percent = synth_app_wheel_adjust_percent(current,
+                                                 relative_delta,
+                                                 ESP_POCKET_AUDIO_WHEEL_STEP_PERCENT);
+        if (percent == current) {
+            return false;
+        }
+        volume = (float)percent / 100.0f;
+    } else {
         return false;
     }
 
     if (target == SYNTH_APP_WHEEL_TARGET_ATTACK) {
-        synth_app_effects_set_attack_ms(&s_app.fx, synth_app_attack_ms_from_wheel(wheel->percent));
+        synth_app_effects_set_attack_ms(&s_app.fx, synth_app_attack_ms_from_wheel(percent));
         apply_current_envelope();
         set_status("ATTACK");
     } else if (target == SYNTH_APP_WHEEL_TARGET_RELEASE) {
-        synth_app_effects_set_release_ms(&s_app.fx, synth_app_release_ms_from_wheel(wheel->percent));
+        synth_app_effects_set_release_ms(&s_app.fx, synth_app_release_ms_from_wheel(percent));
         apply_current_envelope();
         set_status("RELEASE");
     } else if (target == SYNTH_APP_WHEEL_TARGET_FILTER) {
-        float cutoff_hz = synth_app_filter_cutoff_hz_from_wheel(wheel->percent);
+        s_app.fx.filter_percent = percent;
+        float cutoff_hz = synth_app_filter_cutoff_hz_from_wheel(percent);
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_filter_cutoff(cutoff_hz));
+        ESP_LOGI(TAG,
+                 "filter=%u%% cutoff=%.1fHz enabled=%s",
+                 (unsigned)percent,
+                 (double)cutoff_hz,
+                 s_app.fx.enabled[PLAY_UI_EFFECT_FILTER] ? "on" : "off");
         set_status("FILTER");
     } else if (target == SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK) {
         uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
@@ -1417,11 +1480,11 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
             return false;
         }
         synth_app_mixer_mark_action(&s_app.mixer, track);
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_set_track_volume(track, wheel->percent));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_looper_set_track_volume(track, percent));
         set_status("LOOP VOL");
     } else {
-        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(wheel->value));
-        synth_app_wheel_set_volume_percent(&s_app.wheel, wheel->percent);
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(volume));
+        synth_app_wheel_set_volume_percent(&s_app.wheel, percent);
         ESP_LOGI(TAG,
                  "master volume=%u%%",
                  (unsigned)synth_app_wheel_volume_percent(&s_app.wheel));
@@ -1432,13 +1495,28 @@ static bool apply_wheel(const control_wheel_state_t *wheel)
 
 static void update_wheel(void)
 {
-    control_wheel_state_t wheel = {0};
-    if (controls_wheel_read(&wheel) != ESP_OK) {
+    control_wheel_context_t context = {0};
+    if (controls_wheel_context_read(&context) != ESP_OK) {
         return;
     }
+    const control_wheel_state_t *wheel = &context.wheel;
 
-    bool display_changed = synth_app_wheel_update(&s_app.wheel, wheel.present, wheel.percent);
-    bool applied = apply_wheel(&wheel);
+    bool display_changed = false;
+    int32_t relative_delta = 0;
+    if (wheel->type == CONTROL_WHEEL_ABSOLUTE) {
+        display_changed = synth_app_wheel_update(&s_app.wheel,
+                                                 wheel->present,
+                                                 wheel->data.absolute.percent);
+    } else if (wheel->type == CONTROL_WHEEL_RELATIVE) {
+        display_changed = synth_app_wheel_update_relative(&s_app.wheel,
+                                                          wheel->present,
+                                                          wheel->data.relative.position,
+                                                          &relative_delta);
+    } else {
+        display_changed = synth_app_wheel_update(&s_app.wheel, false,
+                                                 synth_app_wheel_percent(&s_app.wheel));
+    }
+    bool applied = apply_wheel(wheel, relative_delta, context.pressed_mask);
     if (display_changed || applied) {
         update_ui();
     }

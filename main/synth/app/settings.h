@@ -28,6 +28,8 @@ synth_amy_envelope_t synth_app_adsr_preset_envelope(uint8_t preset);
 uint32_t synth_app_adsr_repeat_release_cap_ms(void);
 uint32_t synth_app_attack_ms_from_wheel(uint8_t percent);
 uint32_t synth_app_release_ms_from_wheel(uint8_t percent);
+uint8_t synth_app_attack_wheel_percent(uint32_t attack_ms);
+uint8_t synth_app_release_wheel_percent(uint32_t release_ms);
 float synth_app_filter_cutoff_hz_from_wheel(uint8_t percent);
 
 uint8_t synth_app_lfo_level_count(void);

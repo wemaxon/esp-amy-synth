@@ -23,6 +23,7 @@ extern "C" {
         .adsr_preset = SYNTH_APP_ADSR_DEFAULT_PRESET, \
         .attack_ms = SYNTH_APP_ADSR_DEFAULT_ATTACK_MS, \
         .release_ms = SYNTH_APP_ADSR_DEFAULT_RELEASE_MS, \
+        .filter_percent = 100, \
     }
 
 typedef struct {
@@ -36,6 +37,7 @@ typedef struct {
     bool adsr_modified;
     uint32_t attack_ms;
     uint32_t release_ms;
+    uint8_t filter_percent;
     uint8_t glide_level;
 } synth_app_effects_t;
 

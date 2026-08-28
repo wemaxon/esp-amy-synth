@@ -81,15 +81,21 @@ both axes. Invalid saved data is ignored and board defaults are used.
 
 ### Wheel Input
 
-The firmware has a logical wheel input used by playback code for volume and
-filter cutoff. It is disabled by default until the hardware is wired. Enable and
-map it in `main/esp_pocket_audio_board_config.h` with:
+The logical wheel controls master volume. Holding Key, Sound, or Mode while
+turning controls attack, release, or filter cutoff; holding a mixer track
+controls that track's volume.
 
-- `ESP_POCKET_AUDIO_WHEEL_ENABLED`
-- `ESP_POCKET_AUDIO_ADS1115_WHEEL_CH`
-- `ESP_POCKET_AUDIO_WHEEL_MIN_RAW`
-- `ESP_POCKET_AUDIO_WHEEL_MAX_RAW`
-- `ESP_POCKET_AUDIO_WHEEL_INVERT`
+WT0132P4-A1 uses the ESP32-P4 PCNT peripheral for full quadrature decoding:
+
+- Encoder phase A: GPIO17
+- Encoder phase B: GPIO18
+- Encoder common: GND
+- External pull-ups on both phase signals (internal pulls are disabled)
+- Four PCNT counts per detent and a fixed 2% change per detent
+
+The encoder is relative to the active target, so selecting another target does
+not move it until the encoder is turned. The AI Thinker A1S retains its absolute
+ADS1115 wheel and saved range calibration.
 
 ### Voice Architecture
 
@@ -163,7 +169,6 @@ pip install -e .
 - Validate remaining chord-engine edge cases against hardware/manual examples.
 
 - Implement the hichord calibration flow
-- Wire and validate the ADS1115 wheel hardware (`ESP_POCKET_AUDIO_WHEEL_ENABLED`)
 - Add microphone feature
 - Beautify UI
 - Performance

@@ -79,6 +79,7 @@ def check_public_facades() -> None:
             "controls_pop_event",
             "controls_joystick_read",
             "controls_wheel_read",
+            "controls_wheel_context_read",
         ),
     )
 
@@ -175,6 +176,47 @@ def check_board_contracts() -> None:
         )
 
 
+def check_wheel_contracts() -> None:
+    p4 = source("main/boards/wt0132p4_a1.h")
+    a1s = source("main/boards/ai_thinker_a1s.h")
+    controls = source("main/hmi/controls.c")
+    rotary = source("main/hmi/rotary_encoder.c")
+    app = source("main/synth/app.c")
+    cmake = source("main/CMakeLists.txt")
+
+    for contract in (
+        "ESP_POCKET_AUDIO_WHEEL_SOURCE_PCNT_ENCODER",
+        "ESP_POCKET_AUDIO_ENCODER_PHASE_A_GPIO    GPIO_NUM_17",
+        "ESP_POCKET_AUDIO_ENCODER_PHASE_B_GPIO    GPIO_NUM_18",
+        "ESP_POCKET_AUDIO_ENCODER_COUNTS_PER_DETENT 4",
+        "ESP_POCKET_AUDIO_ENCODER_INTERNAL_PULLUPS 0",
+    ):
+        require(contract in p4, f"P4 encoder contract missing {contract}")
+    require("ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115" in a1s,
+            "AI Thinker absolute wheel source changed")
+    require("ESP_POCKET_AUDIO_WHEEL_ENABLED" not in p4 + a1s,
+            "legacy wheel enable layer returned")
+    require("pcnt_new_unit" in rotary and "pcnt_new_channel" in rotary and
+            ".accum_count = true" in rotary,
+            "rotary wheel is no longer hardware-quadrature decoded")
+    require("rotary_encoder_position_advance" in rotary,
+            "rotary wheel no longer retains partial-detent counts")
+    require("gpio_set_pull_mode" in rotary and "GPIO_FLOATING" in rotary,
+            "external-pull encoder configuration changed")
+    require("update_rotary_wheel();" in controls and
+            "update->wheel_err = update_i2c_wheel();" in controls,
+            "PCNT sampling moved into the I2C transaction")
+    require("CONTROL_WHEEL_RELATIVE" in app and
+            "synth_app_wheel_adjust_percent" in app and
+            "ESP_POCKET_AUDIO_WHEEL_STEP_PERCENT" in app and
+            "controls_wheel_context_read" in app,
+            "relative wheel routing is incomplete")
+    require('"filter=%u%% cutoff=%.1fHz enabled=%s"' in app,
+            "filter wheel changes are not logged with their effective cutoff")
+    require('"hmi/rotary_encoder.c"' in cmake and "esp_driver_pcnt" in cmake,
+            "PCNT wheel build dependency is missing")
+
+
 def check_looper_realtime_boundary() -> None:
     looper = source("main/synth/looper.c")
     looper_dsp = source("main/synth/looper_dsp.c")
@@ -264,6 +306,7 @@ def main() -> None:
     check_dependency_boundary()
     check_amy_upgrade_contracts()
     check_board_contracts()
+    check_wheel_contracts()
     check_looper_realtime_boundary()
     check_obsolete_test_removed()
     print("PASS: firmware refactor compatibility contracts hold")

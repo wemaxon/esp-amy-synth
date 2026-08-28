@@ -14,8 +14,13 @@
 #include "hmi/control_i2c.h"
 #include "hmi/control_logic.h"
 #include "hmi/joystick_calibration.h"
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_PCNT_ENCODER
+#include "hmi/rotary_encoder.h"
+#endif
 #include "hmi/switch_expander.h"
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
 #include "hmi/wheel_calibration.h"
+#endif
 
 #define CONTROLS_TASK_STACK_SIZE 4096
 
@@ -91,6 +96,9 @@ static switch_debounce_t s_switches[CONTROL_SWITCH_COUNT];
 static control_event_queue_t s_event_queue;
 static control_joystick_state_t s_joystick;
 static control_wheel_state_t s_wheel;
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_PCNT_ENCODER
+static rotary_encoder_t s_rotary_encoder;
+#endif
 static volatile uint32_t s_gpio_irq_pending_mask;
 static volatile bool s_expander_irq_pending;
 static uint32_t s_gpio_debounce_pending_mask;
@@ -584,6 +592,7 @@ static esp_err_t update_joystick(void)
     return ESP_OK;
 }
 
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
 static float clamp01(float value)
 {
     if (value < 0.0f) {
@@ -594,26 +603,48 @@ static float clamp01(float value)
     }
     return value;
 }
+#endif
 
-static void set_wheel_state(int16_t raw, float value, bool present)
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
+static void set_absolute_wheel_state(int16_t raw, float value, bool present)
 {
     value = clamp01(value);
     control_wheel_state_t next = {
         .present = present,
-        .raw = raw,
-        .value = value,
-        .percent = (uint8_t)((value * 100.0f) + 0.5f),
+        .type = CONTROL_WHEEL_ABSOLUTE,
+        .data.absolute = {
+            .raw = raw,
+            .value = value,
+            .percent = (uint8_t)((value * 100.0f) + 0.5f),
+        },
     };
     portENTER_CRITICAL(&s_state_mux);
     s_wheel = next;
     portEXIT_CRITICAL(&s_state_mux);
 }
+#endif
 
-static esp_err_t update_wheel(void)
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_PCNT_ENCODER
+static void set_relative_wheel_state(int32_t position)
 {
-#if ESP_POCKET_AUDIO_ADS1115_ENABLED && ESP_POCKET_AUDIO_WHEEL_ENABLED
+    control_wheel_state_t next = {
+        .present = true,
+        .type = CONTROL_WHEEL_RELATIVE,
+        .data.relative.position = position,
+    };
+    portENTER_CRITICAL(&s_state_mux);
+    s_wheel = next;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+#endif
+
+static esp_err_t update_i2c_wheel(void)
+{
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
     if (!s_ads1115_present) {
-        set_wheel_state(0, (float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f, false);
+        set_absolute_wheel_state(0,
+                                 (float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f,
+                                 false);
         return ESP_OK;
     }
 
@@ -624,9 +655,29 @@ static esp_err_t update_wheel(void)
         return err;
     }
 
-    set_wheel_state(raw, wheel_calibration_normalize(raw), true);
-#else
-    set_wheel_state(0, (float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f, false);
+    set_absolute_wheel_state(raw, wheel_calibration_normalize(raw), true);
+#endif
+    return ESP_OK;
+}
+
+static esp_err_t update_rotary_wheel(void)
+{
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_PCNT_ENCODER
+    int32_t position = 0;
+    esp_err_t err = rotary_encoder_get_position(&s_rotary_encoder, &position);
+    if (err != ESP_OK) {
+        log_control_io_error("rotary encoder read", err);
+        return err;
+    }
+    set_relative_wheel_state(position);
+#elif ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_NONE
+    control_wheel_state_t next = {
+        .present = false,
+        .type = CONTROL_WHEEL_NONE,
+    };
+    portENTER_CRITICAL(&s_state_mux);
+    s_wheel = next;
+    portEXIT_CRITICAL(&s_state_mux);
 #endif
     return ESP_OK;
 }
@@ -651,7 +702,7 @@ static esp_err_t update_i2c_inputs(void *ctx)
         update->switch_err = update_expander_switches(update->now);
     }
     update->joystick_err = update_joystick();
-    update->wheel_err = update_wheel();
+    update->wheel_err = update_i2c_wheel();
     if (update->switch_err != ESP_OK) {
         return update->switch_err;
     }
@@ -740,7 +791,26 @@ esp_err_t controls_init(i2c_master_bus_handle_t bus)
 
     s_i2c_bus = bus;
     ESP_RETURN_ON_ERROR(joystick_calibration_init(), TAG, "joystick calibration init failed");
+#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
     ESP_RETURN_ON_ERROR(wheel_calibration_init(), TAG, "wheel calibration init failed");
+#elif ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_PCNT_ENCODER
+    const rotary_encoder_config_t encoder_config = {
+        .phase_a_gpio = ESP_POCKET_AUDIO_ENCODER_PHASE_A_GPIO,
+        .phase_b_gpio = ESP_POCKET_AUDIO_ENCODER_PHASE_B_GPIO,
+        .counts_per_detent = ESP_POCKET_AUDIO_ENCODER_COUNTS_PER_DETENT,
+        .direction = ESP_POCKET_AUDIO_ENCODER_DIRECTION,
+        .glitch_filter_ns = ESP_POCKET_AUDIO_ENCODER_GLITCH_FILTER_NS,
+        .internal_pullups = ESP_POCKET_AUDIO_ENCODER_INTERNAL_PULLUPS != 0,
+    };
+    ESP_RETURN_ON_ERROR(rotary_encoder_init(&s_rotary_encoder, &encoder_config),
+                        TAG, "rotary encoder init failed");
+    ESP_LOGI(TAG,
+             "wheel=pcnt-encoder phase_a=%d phase_b=%d counts_per_detent=%u pulls=%s",
+             ESP_POCKET_AUDIO_ENCODER_PHASE_A_GPIO,
+             ESP_POCKET_AUDIO_ENCODER_PHASE_B_GPIO,
+             (unsigned)ESP_POCKET_AUDIO_ENCODER_COUNTS_PER_DETENT,
+             ESP_POCKET_AUDIO_ENCODER_INTERNAL_PULLUPS ? "internal" : "external");
+#endif
     ESP_RETURN_ON_ERROR(init_interrupt_pin(), TAG, "PCF interrupt pin failed");
     ESP_RETURN_ON_ERROR(control_i2c_call(init_i2c_peripherals, NULL, pdMS_TO_TICKS(500)), TAG, "control I2C peripheral init failed");
 
@@ -804,7 +874,8 @@ esp_err_t controls_update(void)
     if (i2c_err == ESP_ERR_TIMEOUT) {
         log_control_io_error("control I2C queue", i2c_err);
     }
-    return i2c_err;
+    esp_err_t rotary_err = update_rotary_wheel();
+    return i2c_err != ESP_OK ? i2c_err : rotary_err;
 }
 
 bool controls_expander_interrupt_asserted(void)
@@ -831,15 +902,21 @@ bool controls_switch_is_pressed(control_switch_t sw)
     return pressed;
 }
 
-uint32_t controls_pressed_mask(void)
+static uint32_t pressed_mask_locked(void)
 {
     uint32_t mask = 0;
-    portENTER_CRITICAL(&s_state_mux);
     for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
         if (s_switches[i].stable_pressed) {
             mask |= 1UL << i;
         }
     }
+    return mask;
+}
+
+uint32_t controls_pressed_mask(void)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    uint32_t mask = pressed_mask_locked();
     portEXIT_CRITICAL(&s_state_mux);
     return mask;
 }
@@ -888,6 +965,19 @@ esp_err_t controls_wheel_read(control_wheel_state_t *state)
 
     portENTER_CRITICAL(&s_state_mux);
     *state = s_wheel;
+    portEXIT_CRITICAL(&s_state_mux);
+    return ESP_OK;
+}
+
+esp_err_t controls_wheel_context_read(control_wheel_context_t *context)
+{
+    if (context == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    portENTER_CRITICAL(&s_state_mux);
+    context->wheel = s_wheel;
+    context->pressed_mask = pressed_mask_locked();
     portEXIT_CRITICAL(&s_state_mux);
     return ESP_OK;
 }

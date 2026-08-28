@@ -56,12 +56,31 @@ typedef struct {
     control_joystick_direction_t direction;
 } control_joystick_state_t;
 
+typedef enum {
+    CONTROL_WHEEL_NONE = 0,
+    CONTROL_WHEEL_ABSOLUTE,
+    CONTROL_WHEEL_RELATIVE,
+} control_wheel_type_t;
+
 typedef struct {
     bool present;
-    int16_t raw;
-    float value;
-    uint8_t percent;
+    control_wheel_type_t type;
+    union {
+        struct {
+            int16_t raw;
+            float value;
+            uint8_t percent;
+        } absolute;
+        struct {
+            int32_t position;
+        } relative;
+    } data;
 } control_wheel_state_t;
+
+typedef struct {
+    control_wheel_state_t wheel;
+    uint32_t pressed_mask;
+} control_wheel_context_t;
 
 typedef enum {
     CONTROL_EVENT_SWITCH_PRESSED = 0,
@@ -83,6 +102,7 @@ esp_err_t controls_pop_event(control_event_t *event);
 esp_err_t controls_axis_read(control_axis_t axis, control_axis_state_t *state);
 esp_err_t controls_joystick_read(control_joystick_state_t *state);
 esp_err_t controls_wheel_read(control_wheel_state_t *state);
+esp_err_t controls_wheel_context_read(control_wheel_context_t *context);
 
 bool controls_expander_interrupt_asserted(void);
 gpio_num_t controls_expander_interrupt_gpio(void);

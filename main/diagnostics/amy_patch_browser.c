@@ -13,6 +13,7 @@
 #include "hmi/oled_display.h"
 #include "pocket_oled.h"
 #include "synth/amy_engine.h"
+#include "synth/app/wheel.h"
 
 static const char *TAG = "DIAG_AMY_PATCH";
 
@@ -20,7 +21,6 @@ static const char *TAG = "DIAG_AMY_PATCH";
 
 static const TickType_t UI_REFRESH_TICKS = pdMS_TO_TICKS(100);
 static const TickType_t UI_PAGE_TIMEOUT_TICKS = pdMS_TO_TICKS(25);
-static const uint8_t VOLUME_CHANGE_THRESHOLD_PERCENT = 2;
 static const uint8_t PATCH_BROWSER_BANK_STEP = 8;
 static const float PATCH_BROWSER_VELOCITY = 0.55f;
 static const uint8_t TEST_NOTES[PATCH_BROWSER_KEY_COUNT] = {
@@ -302,8 +302,7 @@ typedef struct {
     int8_t octave_shift;
     bool key_down[PATCH_BROWSER_KEY_COUNT];
     uint8_t active_notes;
-    uint8_t volume_percent;
-    uint8_t last_applied_volume_percent;
+    synth_app_wheel_t volume_wheel;
     control_joystick_direction_t last_direction;
 } patch_browser_state_t;
 
@@ -516,16 +515,43 @@ static void update_volume_from_wheel(patch_browser_state_t *state)
         return;
     }
 
-    state->volume_percent = wheel.percent;
-    uint8_t last = state->last_applied_volume_percent;
-    uint8_t current = wheel.percent;
-    uint8_t delta = current > last ? (uint8_t)(current - last) : (uint8_t)(last - current);
-    if (last != UINT8_MAX && delta < VOLUME_CHANGE_THRESHOLD_PERCENT) {
+    uint8_t percent = 0;
+    float volume = 0.0f;
+    if (wheel.type == CONTROL_WHEEL_ABSOLUTE) {
+        synth_app_wheel_update(&state->volume_wheel,
+                               true,
+                               wheel.data.absolute.percent);
+        if (!synth_app_wheel_should_apply(&state->volume_wheel,
+                                          SYNTH_APP_WHEEL_TARGET_VOLUME,
+                                          wheel.data.absolute.percent,
+                                          ESP_POCKET_AUDIO_WHEEL_STEP_PERCENT)) {
+            return;
+        }
+        percent = wheel.data.absolute.percent;
+        volume = wheel.data.absolute.value;
+    } else if (wheel.type == CONTROL_WHEEL_RELATIVE) {
+        int32_t delta = 0;
+        synth_app_wheel_update_relative(&state->volume_wheel,
+                                        true,
+                                        wheel.data.relative.position,
+                                        &delta);
+        if (delta == 0) {
+            return;
+        }
+        uint8_t current = synth_app_wheel_volume_percent(&state->volume_wheel);
+        percent = synth_app_wheel_adjust_percent(current,
+                                                 delta,
+                                                 ESP_POCKET_AUDIO_WHEEL_STEP_PERCENT);
+        if (percent == current) {
+            return;
+        }
+        volume = (float)percent / 100.0f;
+    } else {
         return;
     }
 
-    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(wheel.value));
-    state->last_applied_volume_percent = current;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_set_volume(volume));
+    synth_app_wheel_set_volume_percent(&state->volume_wheel, percent);
 }
 
 static void draw_browser(const esp_pocket_audio_hw_t *hw, const patch_browser_state_t *state)
@@ -572,7 +598,7 @@ static void draw_browser(const esp_pocket_audio_hw_t *hw, const patch_browser_st
              state->active_notes == 0 ? 'S' : 'P',
              (unsigned)state->active_notes,
              note,
-             (unsigned)state->volume_percent);
+             (unsigned)synth_app_wheel_volume_percent(&state->volume_wheel));
     pocket_oled_draw_text_row(display, 4, line);
 
     snprintf(line, sizeof(line), "OCT %+d 1-7 PLAY", (int)state->octave_shift);
@@ -657,8 +683,7 @@ esp_err_t diagnostics_amy_patch_browser_run(const esp_pocket_audio_hw_t *hw)
         .patch_number = 0,
         .octave_shift = 0,
         .active_notes = 0,
-        .volume_percent = 100,
-        .last_applied_volume_percent = UINT8_MAX,
+        .volume_wheel = SYNTH_APP_WHEEL_INITIALIZER(ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT),
         .last_direction = CONTROL_JOYSTICK_CENTER,
     };
     ESP_RETURN_ON_ERROR(apply_patch_selection(&state), TAG, "initial patch failed");

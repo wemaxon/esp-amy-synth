@@ -1,6 +1,7 @@
 #include "synth/amy_audio.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include "amy.h"
 #include "driver/i2s_std.h"
@@ -21,6 +22,10 @@
 #error "ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ must match AMY_SAMPLE_RATE"
 #endif
 
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED && AMY_NCHANS != 2
+#error "Mic sampling requires stereo I2S blocks"
+#endif
+
 #define SYNTH_AUDIO_BLOCK_US (((uint32_t)AMY_BLOCK_SIZE * 1000000U) / (uint32_t)AMY_SAMPLE_RATE)
 
 static const char *TAG = "SYNTH_AMY";
@@ -31,6 +36,9 @@ static const BaseType_t AUDIO_TASK_CORE = 1;
 
 static synth_amy_audio_config_t s_config;
 static TaskHandle_t s_audio_task;
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+static int16_t s_input_block[AMY_BLOCK_SIZE * AMY_NCHANS];
+#endif
 
 static void audio_task(void *arg)
 {
@@ -62,6 +70,9 @@ static void audio_task(void *arg)
                                   AMY_NCHANS);
 #endif
         int64_t render_done_us = esp_timer_get_time();
+        if (s_config.capture_mutes_output != NULL && s_config.capture_mutes_output()) {
+            memset(block, 0, AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(*block));
+        }
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(
             s_config.hw->i2s_tx,
@@ -70,12 +81,33 @@ static void audio_task(void *arg)
             &bytes_written,
             portMAX_DELAY
         );
+        uint32_t input_us = 0;
+        bool input_error = false;
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+        size_t bytes_read = 0;
+        int64_t read_start_us = esp_timer_get_time();
+        esp_err_t read_err = i2s_channel_read(
+            s_config.hw->i2s_rx,
+            s_input_block,
+            sizeof(s_input_block),
+            &bytes_read,
+            portMAX_DELAY
+        );
+        input_us = (uint32_t)(esp_timer_get_time() - read_start_us);
+        if (read_err == ESP_OK && bytes_read == sizeof(s_input_block)) {
+            s_config.input(s_input_block, AMY_BLOCK_SIZE, AMY_NCHANS);
+        } else {
+            input_error = true;
+        }
+#endif
         int64_t write_done_us = esp_timer_get_time();
         synth_amy_perf_record_block((uint32_t)(render_done_us - render_start_us),
                                     (uint32_t)(amy_done_us - render_start_us),
                                     (uint32_t)(flanger_done_us - amy_done_us),
                                     (uint32_t)(looper_done_us - flanger_done_us),
                                     (uint32_t)(write_done_us - render_done_us),
+                                    input_us,
+                                    input_error,
                                     write_done_us,
                                     s_config.active_osc_count(),
                                     s_config.allocated_patch_osc_count(),
@@ -102,6 +134,10 @@ esp_err_t synth_amy_audio_start(const synth_amy_audio_config_t *config)
     if (config == NULL ||
         config->hw == NULL ||
         config->hw->i2s_tx == NULL ||
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+        config->hw->i2s_rx == NULL ||
+        config->input == NULL ||
+#endif
         config->render == NULL ||
         config->active_osc_count == NULL ||
         config->allocated_patch_osc_count == NULL) {

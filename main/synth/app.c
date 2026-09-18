@@ -1,7 +1,10 @@
 #include "synth/app.h"
 
+#include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_check.h"
@@ -32,6 +35,7 @@
 #include "synth/app/wheel.h"
 #include "synth/chord_engine.h"
 #include "synth/looper.h"
+#include "synth/mic_sample.h"
 #include "synth/play_mode.h"
 #include "synth/sound.h"
 
@@ -44,6 +48,8 @@ static const TickType_t APP_UPDATE_TICKS = pdMS_TO_TICKS(20);
 static const int8_t CHORD_INVERSION_MIN = 0;
 static const int8_t CHORD_INVERSION_MAX = SYNTH_CHORD_INVERSION_COUNT - 1;
 static const TickType_t SOUND_BROWSE_APPLY_TICKS = pdMS_TO_TICKS(180);
+static const TickType_t MIC_SAMPLE_UI_TICKS = pdMS_TO_TICKS(100);
+static const uint8_t MIC_GAIN_UNITY_PERCENT = 23;
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
@@ -59,6 +65,8 @@ static synth_app_state_t s_app = {
     .fx = SYNTH_APP_EFFECTS_INITIALIZER,
     .play = SYNTH_APP_PLAY_STATE_INITIALIZER,
     .wheel = SYNTH_APP_WHEEL_INITIALIZER(ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT),
+    .mic_gain_percent = 23,
+    .mic_digital_gain = 1.0f,
     .last_menu_direction = CONTROL_JOYSTICK_CENTER,
     .last_play_direction = CONTROL_JOYSTICK_CENTER,
     .joystick_direction = CONTROL_JOYSTICK_CENTER,
@@ -80,6 +88,28 @@ static uint16_t current_bpm(void)
     return synth_app_tempo_bpm(&s_app.tempo);
 }
 static void apply_pending_sound_now(void);
+
+static esp_err_t apply_mic_gain(uint8_t percent)
+{
+    float total_gain = synth_mic_gain_from_percent(percent);
+    float requested_analog_db = total_gain > 1.0f ? 20.0f * log10f(total_gain) : 0.0f;
+    float applied_analog_db = 0.0f;
+    esp_err_t err = esp_pocket_audio_mic_set_gain_db(requested_analog_db, &applied_analog_db);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    synth_mic_gain_plan_t plan = {0};
+    synth_mic_gain_plan(percent, applied_analog_db, &plan);
+    s_app.mic_gain_percent = percent;
+    s_app.mic_digital_gain = plan.digital_gain;
+    ESP_LOGI(TAG,
+             "mic gain=%.2fx analog=%.1fdB digital=%.3fx",
+             (double)plan.total_gain,
+             (double)plan.analog_gain_db,
+             (double)plan.digital_gain);
+    return ESP_OK;
+}
 
 static play_ui_screen_t active_screen(void)
 {
@@ -560,6 +590,10 @@ static void apply_sound_to_engine(synth_sound_t sound)
 
 static void apply_sound_immediately(synth_sound_t sound)
 {
+    if (sound == SYNTH_SOUND_MIC_SAMPLE && !synth_amy_mic_sample_ready()) {
+        set_status("MIC SAMPLE EMPTY");
+        return;
+    }
     synth_app_sound_mark_applied(&s_app.sound, sound);
     apply_sound_to_engine(sound);
 }
@@ -795,6 +829,18 @@ static void handle_chord_event(const control_event_t *event)
     }
 
     uint8_t slot = slot_from_degree(degree);
+
+    if (degree == 1 && event->type != CONTROL_EVENT_SWITCH_PRESSED &&
+        s_app.mic_record_button_down) {
+        s_app.mic_record_button_down = false;
+        if (synth_mic_sample_is_recording()) {
+            synth_mic_sample_request_stop();
+            set_status("MIC ANALYZE");
+            update_ui();
+        }
+        return;
+    }
+
     if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
         if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
             apply_sound_immediately(synth_sound_quick_select(degree));
@@ -832,6 +878,29 @@ static void handle_chord_event(const control_event_t *event)
             return;
         }
 
+        if (s_app.mode == SYNTH_PLAY_MODE_MIC_SAMPLE &&
+            synth_play_mode_is_implemented(s_app.mode)) {
+            if (degree != 1) {
+                set_status("USE BUTTON 1");
+                update_ui();
+                return;
+            }
+            ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
+            synth_app_chord_state_clear_held(&s_app.chords);
+            esp_err_t err = synth_mic_sample_begin(s_app.mic_digital_gain);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "mic capture start failed: %s", esp_err_to_name(err));
+                set_status("MIC START FAILED");
+            } else {
+                s_app.mic_record_button_down = true;
+                strlcpy(s_app.chord_name, "RECORDING", sizeof(s_app.chord_name));
+                set_status("MIC RECORDING");
+            }
+            synth_mic_sample_snapshot(&s_app.mic_sample);
+            update_ui();
+            return;
+        }
+
         if (synth_app_drums_mode_uses_buttons(s_app.mode)) {
             s_app.chords.held_mask |= 1U << slot;
             s_app.chords.focus_slot = slot;
@@ -863,6 +932,10 @@ static void handle_chord_event(const control_event_t *event)
         s_app.chords.focus_slot = slot;
         play_degree(degree);
     } else {
+        if (s_app.mode == SYNTH_PLAY_MODE_MIC_SAMPLE &&
+            synth_play_mode_is_implemented(s_app.mode)) {
+            return;
+        }
         if (handle_mixer_chord_event(event, degree)) {
             return;
         }
@@ -1372,6 +1445,12 @@ static synth_app_wheel_target_t current_wheel_target(uint32_t pressed)
         synth_app_mixer_first_held_track(&s_app.mixer) < SYNTH_LOOPER_TRACK_COUNT) {
         return SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK;
     }
+    if (s_app.mode == SYNTH_PLAY_MODE_MIC_SAMPLE &&
+        synth_play_mode_is_implemented(s_app.mode)) {
+        return synth_mic_sample_is_recording()
+                   ? SYNTH_APP_WHEEL_TARGET_NONE
+                   : SYNTH_APP_WHEEL_TARGET_MIC_GAIN;
+    }
     return SYNTH_APP_WHEEL_TARGET_VOLUME;
 }
 
@@ -1391,6 +1470,9 @@ static bool current_wheel_target_percent(synth_app_wheel_target_t target,
         return true;
     case SYNTH_APP_WHEEL_TARGET_FILTER:
         *percent = s_app.fx.filter_percent;
+        return true;
+    case SYNTH_APP_WHEEL_TARGET_MIC_GAIN:
+        *percent = s_app.mic_gain_percent;
         return true;
     case SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK: {
         uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
@@ -1420,6 +1502,9 @@ static bool apply_wheel(const control_wheel_state_t *wheel,
     }
 
     synth_app_wheel_target_t target = current_wheel_target(pressed);
+    if (target == SYNTH_APP_WHEEL_TARGET_NONE) {
+        return false;
+    }
     uint8_t percent = 0;
     float volume = 0.0f;
     if (wheel->type == CONTROL_WHEEL_ABSOLUTE) {
@@ -1474,6 +1559,14 @@ static bool apply_wheel(const control_wheel_state_t *wheel,
                  (double)cutoff_hz,
                  s_app.fx.enabled[PLAY_UI_EFFECT_FILTER] ? "on" : "off");
         set_status("FILTER");
+    } else if (target == SYNTH_APP_WHEEL_TARGET_MIC_GAIN) {
+        esp_err_t err = apply_mic_gain(percent);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "failed to set mic gain: %s", esp_err_to_name(err));
+            set_status("MIC GAIN FAILED");
+            return true;
+        }
+        set_status("MIC GAIN");
     } else if (target == SYNTH_APP_WHEEL_TARGET_LOOPER_TRACK) {
         uint8_t track = synth_app_mixer_first_held_track(&s_app.mixer);
         if (track >= SYNTH_LOOPER_TRACK_COUNT) {
@@ -1530,6 +1623,11 @@ static void step_mode(int8_t steps)
         return;
     }
 
+    if (previous == SYNTH_PLAY_MODE_MIC_SAMPLE &&
+        synth_play_mode_is_implemented(previous)) {
+        synth_mic_sample_cancel();
+    }
+
     stop_strum();
     stop_arp();
     stop_repeat();
@@ -1558,6 +1656,12 @@ static void step_mode(int8_t steps)
         synth_app_play_clear_arp_sources(&s_app.play, xTaskGetTickCount());
         synth_app_looper_hide(&s_app.looper);
         set_status("MIXER");
+    } else if (s_app.mode == SYNTH_PLAY_MODE_MIC_SAMPLE &&
+               synth_play_mode_is_implemented(s_app.mode)) {
+        ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
+        synth_app_chord_state_clear_held(&s_app.chords);
+        strlcpy(s_app.chord_name, "MIC SAMPLE", sizeof(s_app.chord_name));
+        set_status("HOLD BUTTON 1");
     } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO) {
         ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
         synth_app_play_clear_arp_sources(&s_app.play, xTaskGetTickCount());
@@ -1675,6 +1779,69 @@ static void update_drum_capture(void)
     synth_app_drums_stop_loop(&s_app.drums);
     set_status("BEAT LOOPED");
     update_ui();
+}
+
+static void update_mic_sample(void)
+{
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    synth_mic_sample_snapshot_t snapshot = {0};
+    synth_mic_sample_snapshot(&snapshot);
+    TickType_t now = xTaskGetTickCount();
+
+    if (snapshot.state == SYNTH_MIC_SAMPLE_CAPTURED) {
+        set_status("MIC ANALYZING");
+        s_app.mic_sample = snapshot;
+        update_ui();
+
+        esp_err_t err = synth_mic_sample_analyze();
+        synth_mic_sample_snapshot(&snapshot);
+        if (err == ESP_OK) {
+            uint32_t frames = 0;
+            const int16_t *samples = synth_mic_sample_data(&frames);
+            float reference_note = snapshot.pitch.pitched ? snapshot.pitch.midi_note : 60.0f;
+            err = synth_amy_install_mic_sample(samples, frames, reference_note);
+        }
+        synth_mic_sample_mark_installed(err == ESP_OK);
+        synth_mic_sample_snapshot(&s_app.mic_sample);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "mic sample finalization failed: %s", esp_err_to_name(err));
+            set_status("MIC SAMPLE FAILED");
+            update_ui();
+            return;
+        }
+
+        apply_sound_immediately(SYNTH_SOUND_MIC_SAMPLE);
+        step_mode((int8_t)((int)SYNTH_PLAY_MODE_LEAD - (int)s_app.mode));
+        strlcpy(s_app.chord_name, "MIC", sizeof(s_app.chord_name));
+        if (s_app.mic_sample.pitch.pitched) {
+            snprintf(s_app.status,
+                     sizeof(s_app.status),
+                     "MIC %.1fHZ READY",
+                     (double)s_app.mic_sample.pitch.frequency_hz);
+        } else {
+            set_status("MIC RAW READY");
+        }
+        ESP_LOGI(TAG,
+                 "mic capture ready frames=%" PRIu32 " peak=%d clipped=%" PRIu32
+                 " pitch=%s frequency=%.2fHz confidence=%.3f",
+                 s_app.mic_sample.frames,
+                 s_app.mic_sample.peak,
+                 s_app.mic_sample.clipped_samples,
+                 s_app.mic_sample.pitch.pitched ? "detected" : "raw",
+                 (double)s_app.mic_sample.pitch.frequency_hz,
+                 (double)s_app.mic_sample.pitch.confidence);
+        update_ui();
+        return;
+    }
+
+    if (snapshot.state == SYNTH_MIC_SAMPLE_RECORDING &&
+        (int32_t)(now - s_app.mic_last_ui_tick) >= 0) {
+        s_app.mic_sample = snapshot;
+        s_app.mic_last_ui_tick = now + MIC_SAMPLE_UI_TICKS;
+        update_ui();
+    }
+#endif
 }
 
 static void update_joystick(void)
@@ -1883,6 +2050,7 @@ static void app_task(void *arg)
         update_arp();
         update_repeat();
         update_drum_capture();
+        update_mic_sample();
         synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount());
         update_lfo();
         update_tremolo();
@@ -1899,6 +2067,10 @@ esp_err_t synth_app_start(const esp_pocket_audio_hw_t *hw)
     }
 
     ESP_RETURN_ON_ERROR(synth_amy_init(hw), TAG, "AMY synth init failed");
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    ESP_RETURN_ON_ERROR(apply_mic_gain(MIC_GAIN_UNITY_PERCENT), TAG, "mic gain setup failed");
+    synth_mic_sample_snapshot(&s_app.mic_sample);
+#endif
     ESP_RETURN_ON_ERROR(synth_amy_set_sound(synth_app_sound_current(&s_app.sound)),
                         TAG,
                         "AMY sound setup failed");

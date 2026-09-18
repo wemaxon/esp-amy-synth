@@ -1,5 +1,7 @@
 #include "synth/play_mode.h"
 
+#include "esp_pocket_audio_board_config.h"
+
 static const char *PLAY_MODE_NAMES[SYNTH_PLAY_MODE_COUNT] = {
     [SYNTH_PLAY_MODE_PLAY] = "PLAY ONESHOT",
     [SYNTH_PLAY_MODE_STRUM] = "STRUM",
@@ -94,6 +96,9 @@ bool synth_play_mode_is_implemented(synth_play_mode_t mode)
     case SYNTH_PLAY_MODE_DRONE:
     case SYNTH_PLAY_MODE_ARPEGGIO:
     case SYNTH_PLAY_MODE_REPEAT:
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    case SYNTH_PLAY_MODE_MIC_SAMPLE:
+#endif
     case SYNTH_PLAY_MODE_DRUM_MODE:
     case SYNTH_PLAY_MODE_DRUM_LOOPS:
     case SYNTH_PLAY_MODE_AUTO_DRUM:

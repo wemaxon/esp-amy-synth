@@ -26,6 +26,10 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw);
 /* Exclusive-mode reset: discard pending events and restore a fresh AMY graph. */
 esp_err_t synth_amy_reset_exclusive(void);
 esp_err_t synth_amy_set_sound(synth_sound_t sound);
+esp_err_t synth_amy_install_mic_sample(const int16_t *samples,
+                                       uint32_t frames,
+                                       float reference_midi_note);
+bool synth_amy_mic_sample_ready(void);
 float synth_amy_sound_velocity(synth_sound_t sound);
 bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, const char **patch_label);
 esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,

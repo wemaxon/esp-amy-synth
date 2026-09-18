@@ -10,6 +10,7 @@
 #include "synth/chord_engine.h"
 #include "synth/drums.h"
 #include "synth/looper.h"
+#include "synth/mic_sample.h"
 #include "synth/play_mode.h"
 #include "synth/sound.h"
 
@@ -83,6 +84,8 @@ typedef struct {
     bool wheel_present;
     uint8_t wheel_percent;
     uint8_t volume_percent;
+    uint8_t mic_gain_percent;
+    synth_mic_sample_snapshot_t mic_sample;
     control_joystick_direction_t joystick_direction;
     synth_looper_snapshot_t looper;
     char chord_name[16];

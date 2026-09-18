@@ -172,6 +172,38 @@ static void draw_volume(pocket_oled_t *display, const play_ui_model_t *model)
 
 static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
 {
+    if (model->mode == SYNTH_PLAY_MODE_MIC_SAMPLE &&
+        synth_play_mode_is_implemented(model->mode)) {
+        draw_header(display, "MIC SAMPLE");
+        float gain = synth_mic_gain_from_percent(model->mic_gain_percent);
+        draw_rowf(display, 2, "GAIN %.1fx", (double)gain);
+        uint32_t elapsed_ms = (model->mic_sample.frames * 1000U) /
+                              ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ;
+        uint32_t capacity_ms = (model->mic_sample.capacity_frames * 1000U) /
+                               ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ;
+        if (model->mic_sample.state == SYNTH_MIC_SAMPLE_RECORDING) {
+            draw_rowf(display, 3, "REC %lu.%lu/%lu.%lus",
+                      (unsigned long)(elapsed_ms / 1000U),
+                      (unsigned long)((elapsed_ms % 1000U) / 100U),
+                      (unsigned long)(capacity_ms / 1000U),
+                      (unsigned long)((capacity_ms % 1000U) / 100U));
+            draw_rowf(display, 4, "PEAK %u%% CLIP %lu",
+                      (unsigned)(((uint32_t)model->mic_sample.peak * 100U) / 32768U),
+                      (unsigned long)model->mic_sample.clipped_samples);
+            pocket_oled_draw_text_row(display, 6, "RELEASE BTN1 TO STOP");
+        } else if (model->mic_sample.state == SYNTH_MIC_SAMPLE_ANALYZING) {
+            pocket_oled_draw_text_row(display, 3, "ANALYZING PITCH...");
+        } else if (model->mic_sample.state == SYNTH_MIC_SAMPLE_ERROR) {
+            pocket_oled_draw_text_row(display, 3, "CAPTURE FAILED");
+            pocket_oled_draw_text_row(display, 6, "HOLD BTN1 TO RETRY");
+        } else {
+            pocket_oled_draw_text_row(display, 3, "HOLD BTN1 TO RECORD");
+            pocket_oled_draw_text_row(display, 4, "MAX 3.0 SECONDS");
+            pocket_oled_draw_text_row(display, 6, "WHEEL = MIC GAIN");
+        }
+        return;
+    }
+
     size_t length = strnlen(model->chord_name, sizeof(model->chord_name));
     uint8_t scale = length <= 10 ? 2 : 1;
     int width = (int)length * 6 * (int)scale;
@@ -205,6 +237,17 @@ static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model
         break;
     case SYNTH_PLAY_MODE_REPEAT:
         draw_rowf(display, row, "RATE %s", synth_rhythm_rate_name(model->repeat_rate));
+        break;
+    case SYNTH_PLAY_MODE_MIC_SAMPLE:
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+        draw_rowf(display,
+                  row,
+                  "GAIN %.1fx",
+                  (double)synth_mic_gain_from_percent(model->mic_gain_percent));
+        pocket_oled_draw_text_row(display, row + 1, "HOLD BTN1 TO RECORD");
+#else
+        pocket_oled_draw_text_row(display, row, "NOT AVAILABLE");
+#endif
         break;
     case SYNTH_PLAY_MODE_DRUM_MODE:
         draw_rowf(display, row, "KIT %s", synth_drum_kit_name(model->drum_kit));

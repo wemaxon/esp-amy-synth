@@ -1,5 +1,6 @@
 #include "synth/amy_engine.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -8,6 +9,7 @@
 
 #include "amy.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
@@ -19,6 +21,7 @@
 #include "synth/amy_runtime.h"
 #include "synth/amy_voice_map.h"
 #include "synth/looper.h"
+#include "synth/mic_sample.h"
 #include "synth/level_calibration.h"
 
 
@@ -99,6 +102,8 @@ static volatile float s_lfo_pitch_octaves;
 static bool s_tremolo_enabled;
 static volatile float s_tremolo_amp_offset;
 static bool s_stereo_enabled = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
+static bool s_mic_sample_ready;
+static uint16_t s_mic_sample_preset = 1024U;
 
 static float amy_external_coef(uint16_t channel)
 {
@@ -352,8 +357,12 @@ static void amy_note_on_raw_osc(uint8_t voice,
         .filter = current_filter_controls(),
         .envelope = effective_raw_envelope(runtime, &profile_envelope),
     };
+    amy_sound_runtime_t effective_runtime = *runtime;
+    if (s_sound == SYNTH_SOUND_MIC_SAMPLE && runtime->backend == AMY_SOUND_BACKEND_PCM) {
+        effective_runtime.pcm_preset = (int16_t)s_mic_sample_preset;
+    }
     amy_event event;
-    amy_event_build_raw_note(&event, osc, midi_note, runtime, &config);
+    amy_event_build_raw_note(&event, osc, midi_note, &effective_runtime, &config);
     amy_add_event(&event);
 }
 
@@ -914,6 +923,9 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
     if (sound >= SYNTH_SOUND_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (sound == SYNTH_SOUND_MIC_SAMPLE && !s_mic_sample_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     const amy_sound_runtime_t *runtime = amy_runtime_for_sound(sound);
     if (s_initialized && sound == s_sound &&
@@ -1073,6 +1085,50 @@ esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
     event.pan_coefs[COEF_CONST] = 0.5f;
     amy_add_event(&event);
     return ESP_OK;
+}
+
+esp_err_t synth_amy_install_mic_sample(const int16_t *samples,
+                                       uint32_t frames,
+                                       float reference_midi_note)
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (samples == NULL || frames == 0 || !isfinite(reference_midi_note)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint16_t destination = s_mic_sample_ready
+                                     ? (s_mic_sample_preset == 1024U ? 1025U : 1024U)
+                                     : 1024U;
+    amy_graph_lock();
+    int16_t *amy_samples = pcm_load(destination,
+                                    frames,
+                                    AMY_SAMPLE_RATE,
+                                    1,
+                                    reference_midi_note,
+                                    0,
+                                    frames - 1U);
+    if (amy_samples == NULL) {
+        amy_graph_unlock();
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(amy_samples, samples, (size_t)frames * sizeof(*samples));
+    s_mic_sample_preset = destination;
+    s_mic_sample_ready = true;
+    amy_graph_unlock();
+
+    ESP_LOGI(TAG,
+             "mic sample installed preset=%u frames=%" PRIu32 " reference_note=%.2f",
+             (unsigned)destination,
+             frames,
+             reference_midi_note);
+    return ESP_OK;
+}
+
+bool synth_amy_mic_sample_ready(void)
+{
+    return s_mic_sample_ready;
 }
 
 esp_err_t synth_amy_drum_hit(uint8_t pcm_preset, uint8_t midi_note, uint8_t velocity)
@@ -1444,6 +1500,16 @@ static int16_t *render_audio_block(void)
     return block;
 }
 
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+static void capture_audio_input(const int16_t *interleaved, uint32_t frames, uint8_t channels)
+{
+    synth_mic_sample_process_input(interleaved,
+                                   frames,
+                                   channels,
+                                   ESP_POCKET_AUDIO_MIC_INPUT_CHANNEL);
+}
+#endif
+
 esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
 {
     if (s_initialized) {
@@ -1471,6 +1537,9 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     config.max_memory_patches = 4;
     config.max_sequencer_tags = 8;
     config.amy_external_coef_hook = amy_external_coef;
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    config.ram_caps_sample = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#endif
     s_drum_osc_base = (uint16_t)(config.max_oscs - SYNTH_AMY_DRUM_OSC_COUNT);
     s_drum_next_osc = 0;
     amy_start(config);
@@ -1480,6 +1549,11 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     ESP_RETURN_ON_ERROR(synth_looper_init(AMY_SAMPLE_RATE, AMY_NCHANS),
                         TAG,
                         "looper init failed");
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    ESP_RETURN_ON_ERROR(synth_mic_sample_init(AMY_SAMPLE_RATE, ESP_POCKET_AUDIO_MIC_MAX_SECONDS),
+                        TAG,
+                        "mic sampler init failed");
+#endif
     s_amy_graph_lock = xSemaphoreCreateMutex();
     if (s_amy_graph_lock == NULL) {
         return ESP_ERR_NO_MEM;
@@ -1490,6 +1564,10 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
         .render = render_audio_block,
         .active_osc_count = active_osc_count,
         .allocated_patch_osc_count = allocated_patch_osc_count,
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+        .input = capture_audio_input,
+        .capture_mutes_output = synth_mic_sample_is_recording,
+#endif
     };
     ESP_RETURN_ON_ERROR(synth_amy_audio_start(&audio_config), TAG, "audio task start failed");
 

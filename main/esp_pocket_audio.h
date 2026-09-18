@@ -17,6 +17,7 @@ typedef struct {
     i2c_master_bus_handle_t codec_i2c_bus;
     i2c_master_bus_handle_t control_i2c_bus;
     i2s_chan_handle_t i2s_tx;
+    i2s_chan_handle_t i2s_rx;
     audio_codec_t codec;
     pocket_oled_t display;
 } esp_pocket_audio_hw_t;
@@ -25,6 +26,7 @@ esp_err_t esp_pocket_audio_init(void);
 const esp_pocket_audio_hw_t *esp_pocket_audio_hw(void);
 esp_err_t esp_pocket_audio_amp_set_enabled(bool enabled);
 bool esp_pocket_audio_amp_is_enabled(void);
+esp_err_t esp_pocket_audio_mic_set_gain_db(float requested_db, float *applied_db);
 
 #ifdef __cplusplus
 }

@@ -26,6 +26,11 @@ The diagnostic screen shows:
   key, mode, sound, and joystick click.
 - Raw ADS1115 joystick X/Y readings.
 - Normalized joystick X/Y values, shown as roughly `-100..+100`.
+- On microphone-enabled boards, press `MODE_MENU` to switch to `DIAG MIC INPUT`.
+  This page shows independent raw left/right I2S peaks, the selected capture
+  channel, received-frame count, and RX errors. It also logs one-second peak
+  windows and dumps the codec registers once when the page is entered. Press
+  `MODE_MENU` again to return to the controls page.
 - Joystick direction: `CENTER`, `UP`, `UP_RIGHT`, `RIGHT`, `DOWN_RIGHT`,
   `DOWN`, `DOWN_LEFT`, `LEFT`, or `UP_LEFT`.
 - Calibration state: `IDLE`, `RANGE`, `SAVED`, `RESET`, or `ERROR`.
@@ -96,6 +101,15 @@ WT0132P4-A1 uses the ESP32-P4 PCNT peripheral for full quadrature decoding:
 The encoder is relative to the active target, so selecting another target does
 not move it until the encoder is turned. The AI Thinker A1S retains its absolute
 ADS1115 wheel and saved range calibration.
+
+### Mic Sample
+
+WT0132P4-A1 uses ES8390 RIN1/ADC2 and full-duplex I2S for the RAM-only Mic
+Sample mode. The wheel sets logarithmic `0.5x..10x` mic gain; hold chord button
+1 to record up to 3 seconds, then release to pitch-detect, normalize the sample
+reference to C, and switch to Lead mode. Unpitched material remains playable as
+a raw sample. Wiring, architecture, and hardware validation are documented in
+`docs/mic-sampling.md`.
 
 ### Voice Architecture
 
@@ -169,7 +183,6 @@ pip install -e .
 - Validate remaining chord-engine edge cases against hardware/manual examples.
 
 - Implement the hichord calibration flow
-- Add microphone feature
 - Beautify UI
 - Performance
   - IRAM

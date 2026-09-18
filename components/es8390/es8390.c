@@ -1,6 +1,7 @@
 #include "es8390.h"
 
 #include <inttypes.h>
+#include <math.h>
 #include <stddef.h>
 
 #include "esp_log.h"
@@ -93,10 +94,18 @@
 
 #define ES8390_ADC_ANALOG_MOD1_RST                 ES8390_BIT(5)
 #define ES8390_ADC_ANALOG_MOD2_RST                 ES8390_BIT(4)
+#define ES8390_ADC_ANALOG_REFERENCE_ON             ES8390_BIT(7)
+#define ES8390_ADC_ANALOG_MOD2_ON                  ES8390_BIT(2)
+#define ES8390_ADC_ANALOG_PGA2_ON                  ES8390_BIT(0)
+#define ES8390_ADC_ANALOG_RIN1_ON                  (ES8390_ADC_ANALOG_REFERENCE_ON | \
+                                                     ES8390_ADC_ANALOG_MOD2_ON | \
+                                                     ES8390_ADC_ANALOG_PGA2_ON)
 #define ES8390_ADC_ANALOG_RELEASED                 0x00
 #define ES8390_ADC_ANALOG_MODULATORS_POWERDOWN     (ES8390_ADC_ANALOG_MOD1_RST | ES8390_ADC_ANALOG_MOD2_RST)
 #define ES8390_ADC_MODE_AMIC                       0x00
 #define ES8390_PGA_GAIN_NO_INPUT                   0x00
+#define ES8390_PGA2_SINGLE_ENDED                   ES8390_BIT(6)
+#define ES8390_PGA2_INPUT_1                        ES8390_BIT(4)
 #define ES8390_ADC_RESET_CFDSP                     ES8390_BIT(2)
 #define ES8390_ADC_RESET_ALC                       ES8390_BIT(1)
 #define ES8390_ADC_RESET_P2S                       ES8390_BIT(0)
@@ -133,6 +142,19 @@ typedef struct {
 } es8390_clock_config_t;
 
 static const char *TAG = "ES8390";
+
+typedef struct {
+    float db;
+    uint8_t code;
+} es8390_pga_gain_t;
+
+/* Register 0x73 has no valid encodings for codes 4 and 5. */
+static const es8390_pga_gain_t s_pga2_gains[] = {
+    {0.0f, 0x0}, {3.5f, 0x1}, {6.5f, 0x2}, {9.5f, 0x3},
+    {12.5f, 0x6}, {15.5f, 0x7}, {18.5f, 0x8}, {21.5f, 0x9},
+    {24.5f, 0xa}, {27.5f, 0xb}, {30.5f, 0xc}, {33.5f, 0xd},
+    {36.5f, 0xe},
+};
 
 static const es8390_reg_value_t s_analog_init_regs[] = {
     {ES8390_REG_ADC_HPF_CONTROL_1, ES8390_ADC_HPF1_VENDOR_INIT},
@@ -477,6 +499,58 @@ esp_err_t es8390_set_volume(es8390_t *codec, uint8_t volume_percent)
     esp_err_t err = es8390_write_reg(codec, ES8390_REG_DAC1_VOLUME, reg);
     if (err == ESP_OK) {
         err = es8390_write_reg(codec, ES8390_REG_DAC2_VOLUME, reg);
+    }
+    return err;
+}
+
+esp_err_t es8390_configure_rin1_input(es8390_t *codec)
+{
+    if (codec == NULL || codec->dev == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t serial = serial_word_length(codec->bits_per_sample) |
+                     ES8390_SERIAL_FORMAT_I2S |
+                     ES8390_SERIAL_MUTE_CH1;
+    esp_err_t err = es8390_write_reg(codec, ES8390_REG_ADC_SP_CONTROL, serial);
+    if (err == ESP_OK) {
+        err = es8390_write_reg(codec,
+                               ES8390_REG_PGA2_GAIN_CONTROL,
+                               ES8390_PGA2_SINGLE_ENDED | ES8390_PGA2_INPUT_1);
+    }
+    if (err == ESP_OK) {
+        err = es8390_write_reg(codec, ES8390_REG_ADC_ANALOG_ENABLE, ES8390_ADC_ANALOG_RIN1_ON);
+    }
+    if (err == ESP_OK) {
+        err = es8390_write_reg(codec, ES8390_REG_ADC_RESET_CONTROL, 0x00);
+    }
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "RIN1 single-ended input enabled on ADC2 at 0.0 dB PGA gain");
+    }
+    return err;
+}
+
+esp_err_t es8390_set_rin1_gain_db(es8390_t *codec, float requested_db, float *applied_db)
+{
+    if (codec == NULL || codec->dev == NULL || !isfinite(requested_db)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    size_t selected = 0;
+    for (size_t i = 1; i < sizeof(s_pga2_gains) / sizeof(s_pga2_gains[0]); ++i) {
+        if (s_pga2_gains[i].db > requested_db) {
+            break;
+        }
+        selected = i;
+    }
+
+    esp_err_t err = es8390_write_reg(codec,
+                                     ES8390_REG_PGA2_GAIN_CONTROL,
+                                     ES8390_PGA2_SINGLE_ENDED |
+                                         ES8390_PGA2_INPUT_1 |
+                                         s_pga2_gains[selected].code);
+    if (err == ESP_OK && applied_db != NULL) {
+        *applied_db = s_pga2_gains[selected].db;
     }
     return err;
 }

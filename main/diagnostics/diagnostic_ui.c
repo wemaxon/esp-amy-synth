@@ -2,7 +2,9 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -33,7 +35,31 @@ typedef enum {
     CAL_UI_ERROR,
 } cal_ui_state_t;
 
+typedef enum {
+    DIAG_PAGE_CONTROLS = 0,
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    DIAG_PAGE_MIC,
+#endif
+} diagnostic_page_t;
+
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+#define MIC_DIAG_BLOCK_FRAMES 256U
+
+typedef struct {
+    uint16_t ui_peak[2];
+    uint16_t log_peak[2];
+    uint32_t total_frames;
+    uint32_t read_errors;
+    TickType_t next_log;
+} mic_diagnostic_t;
+
+static int16_t s_mic_input_block[MIC_DIAG_BLOCK_FRAMES * 2U];
+#endif
+
 static const char *TAG = "DIAG_UI";
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+static const char *MIC_TAG = "DIAG_MIC";
+#endif
 static const TickType_t UI_REFRESH_TICKS = pdMS_TO_TICKS(100);
 
 static void pressed_line(uint32_t mask, char *line, size_t line_size)
@@ -87,11 +113,131 @@ static const char *cal_state_name(cal_ui_state_t state)
     }
 }
 
-static void draw_display(const esp_pocket_audio_hw_t *hw, cal_target_t target, cal_ui_state_t state)
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+static uint16_t sample_magnitude(int16_t sample)
+{
+    int32_t value = sample;
+    return (uint16_t)(value < 0 ? -value : value);
+}
+
+static uint32_t peak_percent(uint16_t peak)
+{
+    return ((uint32_t)peak * 100U) / 32768U;
+}
+
+static void mic_diagnostic_reset(mic_diagnostic_t *diagnostic, TickType_t now)
+{
+    memset(diagnostic, 0, sizeof(*diagnostic));
+    diagnostic->next_log = now + pdMS_TO_TICKS(1000);
+}
+
+static void mic_diagnostic_read(const esp_pocket_audio_hw_t *hw, mic_diagnostic_t *diagnostic)
+{
+    size_t bytes_read = 0;
+    esp_err_t err = i2s_channel_read(hw->i2s_rx,
+                                     s_mic_input_block,
+                                     sizeof(s_mic_input_block),
+                                     &bytes_read,
+                                     pdMS_TO_TICKS(20));
+    if (err != ESP_OK || bytes_read == 0 ||
+        (bytes_read % (2U * sizeof(s_mic_input_block[0]))) != 0) {
+        ++diagnostic->read_errors;
+        return;
+    }
+
+    uint32_t frames = (uint32_t)(bytes_read / (2U * sizeof(s_mic_input_block[0])));
+    diagnostic->total_frames += frames;
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        for (uint8_t channel = 0; channel < 2U; ++channel) {
+            uint16_t magnitude = sample_magnitude(s_mic_input_block[(frame * 2U) + channel]);
+            if (magnitude > diagnostic->ui_peak[channel]) {
+                diagnostic->ui_peak[channel] = magnitude;
+            }
+            if (magnitude > diagnostic->log_peak[channel]) {
+                diagnostic->log_peak[channel] = magnitude;
+            }
+        }
+    }
+}
+
+static void mic_diagnostic_log(mic_diagnostic_t *diagnostic, TickType_t now)
+{
+    if ((int32_t)(now - diagnostic->next_log) < 0) {
+        return;
+    }
+
+    ESP_LOGI(MIC_TAG,
+             "input left_peak=%u left=%lu%% right_peak=%u right=%lu%% frames=%" PRIu32
+             " read_errors=%" PRIu32,
+             (unsigned)diagnostic->log_peak[0],
+             (unsigned long)peak_percent(diagnostic->log_peak[0]),
+             (unsigned)diagnostic->log_peak[1],
+             (unsigned long)peak_percent(diagnostic->log_peak[1]),
+             diagnostic->total_frames,
+             diagnostic->read_errors);
+    diagnostic->log_peak[0] = 0;
+    diagnostic->log_peak[1] = 0;
+    diagnostic->next_log = now + pdMS_TO_TICKS(1000);
+}
+
+static void draw_mic_display(const esp_pocket_audio_hw_t *hw, mic_diagnostic_t *diagnostic)
+{
+    char line[24];
+    pocket_oled_t *display = (pocket_oled_t *)&hw->display;
+    pocket_oled_clear(display);
+    pocket_oled_draw_text_row(display, 0, "DIAG MIC INPUT");
+    snprintf(line, sizeof(line), "LEFT  %05u %3lu%%",
+             (unsigned)diagnostic->ui_peak[0],
+             (unsigned long)peak_percent(diagnostic->ui_peak[0]));
+    pocket_oled_draw_text_row(display, 1, line);
+    snprintf(line, sizeof(line), "RIGHT %05u %3lu%%",
+             (unsigned)diagnostic->ui_peak[1],
+             (unsigned long)peak_percent(diagnostic->ui_peak[1]));
+    pocket_oled_draw_text_row(display, 2, line);
+    snprintf(line,
+             sizeof(line),
+             "CAPTURE SELECT %s",
+             ESP_POCKET_AUDIO_MIC_INPUT_CHANNEL == ESP_POCKET_AUDIO_INPUT_CHANNEL_RIGHT ?
+                 "RIGHT" : "LEFT");
+    pocket_oled_draw_text_row(display, 3, line);
+    snprintf(line, sizeof(line), "FRAMES %" PRIu32, diagnostic->total_frames);
+    pocket_oled_draw_text_row(display, 4, line);
+    snprintf(line, sizeof(line), "RX ERR %" PRIu32, diagnostic->read_errors);
+    pocket_oled_draw_text_row(display, 5, line);
+    pocket_oled_draw_text_row(display, 6, "RAW ADC, NO DIG GAIN");
+    pocket_oled_draw_text_row(display, 7, "MODE = CONTROLS");
+
+    diagnostic->ui_peak[0] = 0;
+    diagnostic->ui_peak[1] = 0;
+}
+#endif
+
+static void draw_display(const esp_pocket_audio_hw_t *hw,
+                         diagnostic_page_t page,
+                         cal_target_t target,
+                         cal_ui_state_t state
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+                         , mic_diagnostic_t *mic
+#endif
+                         )
 {
     if (hw == NULL || !pocket_oled_is_initialized(&hw->display)) {
         return;
     }
+
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    if (page == DIAG_PAGE_MIC) {
+        draw_mic_display(hw, mic);
+        esp_err_t err = oled_display_flush_cooperatively((pocket_oled_t *)&hw->display,
+                                                         pdMS_TO_TICKS(25));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "OLED flush skipped: %s", esp_err_to_name(err));
+        }
+        return;
+    }
+#else
+    (void)page;
+#endif
 
     control_joystick_state_t joystick = {0};
     controls_joystick_read(&joystick);
@@ -130,7 +276,9 @@ static void draw_display(const esp_pocket_audio_hw_t *hw, cal_target_t target, c
         snprintf(line, sizeof(line), "WHL disabled");
     }
     pocket_oled_draw_text_row(display, 6, line);
-#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    pocket_oled_draw_text_row(display, 7, "M=mic J=cal S/K");
+#elif ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
     pocket_oled_draw_text_row(display, 7, target == CAL_TARGET_JOYSTICK ?
                               "M=whl J=ctr S/K" :
                               "M=joy J=rng S/K");
@@ -155,9 +303,14 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
 {
     ESP_LOGI(TAG, "diagnostic UI started");
 
+    diagnostic_page_t page = DIAG_PAGE_CONTROLS;
     cal_target_t cal_target = CAL_TARGET_JOYSTICK;
     cal_ui_state_t cal_state = CAL_UI_IDLE;
     TickType_t next_refresh = 0;
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    mic_diagnostic_t mic = {0};
+    mic_diagnostic_reset(&mic, xTaskGetTickCount());
+#endif
 
     while (true) {
         TickType_t now = xTaskGetTickCount();
@@ -170,12 +323,31 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
             }
 
             if (event.sw == CONTROL_MODE_MENU) {
-#if ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+                page = page == DIAG_PAGE_CONTROLS ? DIAG_PAGE_MIC : DIAG_PAGE_CONTROLS;
+                ESP_LOGI(TAG, "diagnostic page: %s", page == DIAG_PAGE_MIC ? "microphone" : "controls");
+                if (page == DIAG_PAGE_MIC) {
+                    mic_diagnostic_reset(&mic, now);
+                    ESP_LOGI(MIC_TAG,
+                             "raw stereo input meter started selected_capture_channel=%s sample_rate=%u",
+                             ESP_POCKET_AUDIO_MIC_INPUT_CHANNEL == ESP_POCKET_AUDIO_INPUT_CHANNEL_RIGHT ?
+                                 "right" : "left",
+                             ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ);
+                    ESP_ERROR_CHECK_WITHOUT_ABORT(audio_codec_dump_registers(&hw->codec, MIC_TAG));
+                }
+                continue;
+#elif ESP_POCKET_AUDIO_WHEEL_SOURCE == ESP_POCKET_AUDIO_WHEEL_SOURCE_ADS1115
                 cal_target = cal_target == CAL_TARGET_JOYSTICK ? CAL_TARGET_WHEEL : CAL_TARGET_JOYSTICK;
                 cal_state = CAL_UI_IDLE;
                 ESP_LOGI(TAG, "calibration target: %s", cal_target_name(cal_target));
 #endif
-            } else if (event.sw == CONTROL_JOYSTICK_CLICK) {
+            }
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+            if (page == DIAG_PAGE_MIC) {
+                continue;
+            }
+#endif
+            if (event.sw == CONTROL_JOYSTICK_CLICK) {
                 if (cal_target == CAL_TARGET_JOYSTICK) {
                     control_joystick_state_t joystick = {0};
                     controls_joystick_read(&joystick);
@@ -217,7 +389,14 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
             }
         }
 
-        if (cal_state == CAL_UI_CAPTURE_RANGE) {
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+        if (page == DIAG_PAGE_MIC) {
+            mic_diagnostic_read(hw, &mic);
+            mic_diagnostic_log(&mic, now);
+        }
+#endif
+
+        if (page == DIAG_PAGE_CONTROLS && cal_state == CAL_UI_CAPTURE_RANGE) {
             if (cal_target == CAL_TARGET_JOYSTICK) {
                 control_joystick_state_t joystick = {0};
                 if (controls_joystick_read(&joystick) == ESP_OK) {
@@ -235,10 +414,21 @@ void diagnostic_ui_run(const esp_pocket_audio_hw_t *hw)
         }
 
         if ((int32_t)(now - next_refresh) >= 0) {
-            draw_display(hw, cal_target, cal_state);
+            draw_display(hw,
+                         page,
+                         cal_target,
+                         cal_state
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+                         , &mic
+#endif
+                         );
             next_refresh = now + UI_REFRESH_TICKS;
         }
 
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+        vTaskDelay(page == DIAG_PAGE_MIC ? pdMS_TO_TICKS(1) : pdMS_TO_TICKS(20));
+#else
         vTaskDelay(pdMS_TO_TICKS(20));
+#endif
     }
 }

@@ -1,6 +1,7 @@
 #ifndef SYNTH_AMY_PERF_H
 #define SYNTH_AMY_PERF_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -13,6 +14,8 @@ void synth_amy_perf_record_block(uint32_t render_us,
                                  uint32_t flanger_us,
                                  uint32_t looper_us,
                                  uint32_t write_us,
+                                 uint32_t input_us,
+                                 bool input_error,
                                  int64_t now_us,
                                  uint16_t app_active_oscs,
                                  uint16_t allocated_patch_oscs,

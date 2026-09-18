@@ -28,6 +28,8 @@ esp_err_t audio_codec_init(audio_codec_t *codec, i2c_master_bus_handle_t bus);
 esp_err_t audio_codec_start(audio_codec_t *codec);
 esp_err_t audio_codec_set_volume(audio_codec_t *codec, uint8_t volume_percent);
 esp_err_t audio_codec_set_mute(audio_codec_t *codec, bool mute);
+esp_err_t audio_codec_configure_mic_input(audio_codec_t *codec);
+esp_err_t audio_codec_set_mic_gain_db(audio_codec_t *codec, float requested_db, float *applied_db);
 esp_err_t audio_codec_dump_registers(const audio_codec_t *codec, const char *tag);
 
 #ifdef __cplusplus

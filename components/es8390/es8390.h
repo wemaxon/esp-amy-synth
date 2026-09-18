@@ -102,6 +102,8 @@ esp_err_t es8390_start(es8390_t *codec);
 esp_err_t es8390_enable_dac_only_test(es8390_t *codec);
 esp_err_t es8390_set_mute(es8390_t *codec, bool mute);
 esp_err_t es8390_set_volume(es8390_t *codec, uint8_t volume_percent);
+esp_err_t es8390_configure_rin1_input(es8390_t *codec);
+esp_err_t es8390_set_rin1_gain_db(es8390_t *codec, float requested_db, float *applied_db);
 esp_err_t es8390_write_reg(es8390_t *codec, uint8_t reg, uint8_t value);
 esp_err_t es8390_read_reg(es8390_t *codec, uint8_t reg, uint8_t *value);
 esp_err_t es8390_dump_registers(es8390_t *codec, const char *tag);

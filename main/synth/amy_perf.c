@@ -24,6 +24,9 @@ typedef struct {
     uint64_t looper_us_max;
     uint64_t write_us_total;
     uint64_t write_us_max;
+    uint64_t input_us_total;
+    uint64_t input_us_max;
+    uint32_t input_errors;
     uint64_t cycle_us_total;
     uint64_t cycle_us_max;
     int64_t next_log_us;
@@ -96,6 +99,8 @@ void synth_amy_perf_record_block(uint32_t render_us,
                                  uint32_t flanger_us,
                                  uint32_t looper_us,
                                  uint32_t write_us,
+                                 uint32_t input_us,
+                                 bool input_error,
                                  int64_t now_us,
                                  uint16_t app_active_oscs,
                                  uint16_t allocated_patch_oscs,
@@ -115,6 +120,7 @@ void synth_amy_perf_record_block(uint32_t render_us,
     s_perf.flanger_us_total += flanger_us;
     s_perf.looper_us_total += looper_us;
     s_perf.write_us_total += write_us;
+    s_perf.input_us_total += input_us;
     s_perf.cycle_us_total += cycle_us;
     if (render_us > s_perf.render_us_max) {
         s_perf.render_us_max = render_us;
@@ -130,6 +136,12 @@ void synth_amy_perf_record_block(uint32_t render_us,
     }
     if (write_us > s_perf.write_us_max) {
         s_perf.write_us_max = write_us;
+    }
+    if (input_us > s_perf.input_us_max) {
+        s_perf.input_us_max = input_us;
+    }
+    if (input_error) {
+        ++s_perf.input_errors;
     }
     if (cycle_us > s_perf.cycle_us_max) {
         s_perf.cycle_us_max = cycle_us;
@@ -147,6 +159,7 @@ void synth_amy_perf_record_block(uint32_t render_us,
         uint32_t flanger_avg = (uint32_t)(s_perf.flanger_us_total / s_perf.blocks);
         uint32_t looper_avg = (uint32_t)(s_perf.looper_us_total / s_perf.blocks);
         uint32_t write_avg = (uint32_t)(s_perf.write_us_total / s_perf.blocks);
+        uint32_t input_avg = (uint32_t)(s_perf.input_us_total / s_perf.blocks);
         uint32_t cycle_avg = (uint32_t)(s_perf.cycle_us_total / s_perf.blocks);
         float render_cpu_pct = audio_block_budget_us > 0 ?
             ((float)render_avg * 100.0f) / (float)audio_block_budget_us :
@@ -163,7 +176,7 @@ void synth_amy_perf_record_block(uint32_t render_us,
         esp_log_level_t level = s_perf.slow_blocks > 0 ? ESP_LOG_WARN : ESP_LOG_INFO;
         ESP_LOG_LEVEL(level,
                       TAG,
-                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u amy_us avg=%u max=%u flanger_us avg=%u max=%u mixer_us avg=%u max=%u i2s_us avg=%u max=%u cycle_us avg=%u max=%u over=%u looper_queue depth=%u high=%u rejected=%u latency_blocks=%u snapshot_retries=%u snapshot_skipped=%u looper_lifetime_max_us=%u looper_over_budget=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
+                      "perf blocks=%u app_oscs=%u amy_audible_oscs=%u low=%u high=%u aux=%u suspended=%u alloc_oscs=%u render_us avg=%u max=%u budget=%u cpu_est=%.1f%% slow=%u amy_us avg=%u max=%u flanger_us avg=%u max=%u mixer_us avg=%u max=%u i2s_us avg=%u max=%u input_us avg=%u max=%u errors=%u cycle_us avg=%u max=%u over=%u looper_queue depth=%u high=%u rejected=%u latency_blocks=%u snapshot_retries=%u snapshot_skipped=%u looper_lifetime_max_us=%u looper_over_budget=%u heap=%u min=%u largest=%u internal=%u audio_stack_free_words=%u",
                       (unsigned)s_perf.blocks,
                       (unsigned)app_active_oscs,
                       (unsigned)amy_oscs.audible,
@@ -185,6 +198,9 @@ void synth_amy_perf_record_block(uint32_t render_us,
                       (unsigned)s_perf.looper_us_max,
                       (unsigned)write_avg,
                       (unsigned)s_perf.write_us_max,
+                      (unsigned)input_avg,
+                      (unsigned)s_perf.input_us_max,
+                      (unsigned)s_perf.input_errors,
                       (unsigned)cycle_avg,
                       (unsigned)s_perf.cycle_us_max,
                       (unsigned)s_perf.cycle_over_budget_blocks,
@@ -215,6 +231,9 @@ void synth_amy_perf_record_block(uint32_t render_us,
         s_perf.looper_us_max = 0;
         s_perf.write_us_total = 0;
         s_perf.write_us_max = 0;
+        s_perf.input_us_total = 0;
+        s_perf.input_us_max = 0;
+        s_perf.input_errors = 0;
         s_perf.cycle_us_total = 0;
         s_perf.cycle_us_max = 0;
         s_perf.next_log_us =
@@ -226,6 +245,8 @@ void synth_amy_perf_record_block(uint32_t render_us,
     (void)flanger_us;
     (void)looper_us;
     (void)write_us;
+    (void)input_us;
+    (void)input_error;
     (void)app_active_oscs;
     (void)allocated_patch_oscs;
     (void)audio_block_budget_us;
@@ -251,6 +272,8 @@ void synth_amy_perf_record_block(uint32_t render_us,
     (void)flanger_us;
     (void)looper_us;
     (void)write_us;
+    (void)input_us;
+    (void)input_error;
     (void)now_us;
     (void)app_active_oscs;
     (void)allocated_patch_oscs;

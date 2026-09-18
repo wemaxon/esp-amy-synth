@@ -132,6 +132,28 @@ esp_err_t audio_codec_set_mute(audio_codec_t *codec, bool mute)
     }
 }
 
+esp_err_t audio_codec_configure_mic_input(audio_codec_t *codec)
+{
+    if (codec == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (codec->type != ESP_POCKET_AUDIO_CODEC_ES8390) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return es8390_configure_rin1_input(&codec->dev.es8390);
+}
+
+esp_err_t audio_codec_set_mic_gain_db(audio_codec_t *codec, float requested_db, float *applied_db)
+{
+    if (codec == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (codec->type != ESP_POCKET_AUDIO_CODEC_ES8390) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return es8390_set_rin1_gain_db(&codec->dev.es8390, requested_db, applied_db);
+}
+
 esp_err_t audio_codec_dump_registers(const audio_codec_t *codec, const char *tag)
 {
     if (codec == NULL) {

@@ -35,7 +35,7 @@ def find_clang() -> Path:
     raise RuntimeError("Espressif clang not found; set ESP_CLANG to clang.exe")
 
 
-COMPILE_ONLY_SUITES = ("audio_meter",)
+COMPILE_ONLY_SUITES = ("audio_meter", "pitch_detector")
 
 
 SUITES = {
@@ -86,6 +86,13 @@ SUITES = {
         "host_vector_limit_positive": 32767,
         "host_vector_limit_negative": -32768,
         "host_vector_clip_counter": 2,
+    },
+    "mic_sample_dsp": {
+        "host_vector_mic_right_slot": 1122,
+        "host_vector_mic_channel_isolation": 60,
+        "host_vector_mic_capacity_clamp": 17,
+        "host_vector_mic_fixed_gain": 500,
+        "host_vector_mic_saturation_meter": 2,
     },
     "looper_track": {
         "host_vector_looper_raw_capture": 1,
@@ -178,7 +185,7 @@ def main() -> None:
             subprocess.run(
                 [
                     str(find_clang()),
-                    "--target=riscv32-unknown-elf",
+                    "--target=riscv32-esp-unknown-elf",
                     "-O3",
                     "-ffreestanding",
                     "-S",

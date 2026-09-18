@@ -20,6 +20,7 @@
 #include "synth/app/wheel.h"
 #include "synth/chord_engine.h"
 #include "synth/play_mode.h"
+#include "synth/mic_sample.h"
 
 /*
  * Private aggregate owned by the application task.  Keeping this definition
@@ -42,6 +43,11 @@ typedef struct {
     synth_app_modulation_t lfo;
     synth_app_modulation_t tremolo;
     synth_app_wheel_t wheel;
+    uint8_t mic_gain_percent;
+    float mic_digital_gain;
+    bool mic_record_button_down;
+    TickType_t mic_last_ui_tick;
+    synth_mic_sample_snapshot_t mic_sample;
     control_joystick_direction_t last_menu_direction;
     control_joystick_direction_t last_play_direction;
     control_joystick_direction_t joystick_direction;

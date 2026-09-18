@@ -200,16 +200,9 @@ static esp_err_t init_display_i2c(void *ctx)
 }
 #endif
 
-static esp_err_t init_i2s_clocking(void)
+static i2s_std_config_t i2s_standard_config(void)
 {
-    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(ESP_POCKET_AUDIO_I2S_PORT, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true;
-    chan_cfg.dma_desc_num = ESP_POCKET_AUDIO_I2S_DMA_DESC_NUM;
-    chan_cfg.dma_frame_num = ESP_POCKET_AUDIO_I2S_DMA_FRAME_NUM;
-
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_hw.i2s_tx, NULL), TAG, "I2S channel init failed");
-
-    i2s_std_config_t std_cfg = {
+    i2s_std_config_t config = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ),
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(ESP_POCKET_AUDIO_I2S_DATA_WIDTH, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
@@ -225,7 +218,27 @@ static esp_err_t init_i2s_clocking(void)
             },
         },
     };
-    std_cfg.clk_cfg.clk_src = ESP_POCKET_AUDIO_I2S_CLK_SRC;
+    config.clk_cfg.clk_src = ESP_POCKET_AUDIO_I2S_CLK_SRC;
+    return config;
+}
+
+static esp_err_t init_i2s_clocking(void)
+{
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(ESP_POCKET_AUDIO_I2S_PORT, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
+    chan_cfg.dma_desc_num = ESP_POCKET_AUDIO_I2S_DMA_DESC_NUM;
+    chan_cfg.dma_frame_num = ESP_POCKET_AUDIO_I2S_DMA_FRAME_NUM;
+
+    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg,
+                                        &s_hw.i2s_tx,
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+                                        &s_hw.i2s_rx
+#else
+                                        NULL
+#endif
+                                        ), TAG, "I2S channel init failed");
+
+    i2s_std_config_t std_cfg = i2s_standard_config();
 
     ESP_LOGI(TAG, "I2S: port=%d clk_src=%d mclk=%d bclk=%d ws=%d dout=%d din=%d rate=%d bits=%d dma=%ux%u",
              ESP_POCKET_AUDIO_I2S_PORT,
@@ -244,6 +257,17 @@ static esp_err_t init_i2s_clocking(void)
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_hw.i2s_tx), TAG, "I2S enable failed");
     return ESP_OK;
 }
+
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+static esp_err_t start_i2s_input(void)
+{
+    i2s_std_config_t std_cfg = i2s_standard_config();
+    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_hw.i2s_rx, &std_cfg), TAG, "I2S RX std mode init failed");
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_hw.i2s_rx), TAG, "I2S RX enable failed");
+    ESP_LOGI(TAG, "I2S microphone input enabled");
+    return ESP_OK;
+}
+#endif
 
 #if ESP_POCKET_AUDIO_AMP_ENABLED
 static int amp_shdn_level_for_enabled(bool enabled)
@@ -279,6 +303,20 @@ esp_err_t esp_pocket_audio_amp_set_enabled(bool enabled)
 bool esp_pocket_audio_amp_is_enabled(void)
 {
     return s_amp_enabled;
+}
+
+esp_err_t esp_pocket_audio_mic_set_gain_db(float requested_db, float *applied_db)
+{
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return audio_codec_set_mic_gain_db(&s_hw.codec, requested_db, applied_db);
+#else
+    (void)requested_db;
+    (void)applied_db;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 static esp_err_t init_amp_gpio(void)
@@ -324,12 +362,18 @@ esp_err_t esp_pocket_audio_init(void)
     ESP_RETURN_ON_ERROR(init_codec_i2c(), TAG, "codec I2C failed");
     ESP_RETURN_ON_ERROR(audio_codec_init(&s_hw.codec, s_hw.codec_i2c_bus), TAG, "codec init failed");
     ESP_RETURN_ON_ERROR(audio_codec_start(&s_hw.codec), TAG, "codec start failed");
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    ESP_RETURN_ON_ERROR(audio_codec_configure_mic_input(&s_hw.codec), TAG, "codec mic input failed");
+#endif
     ESP_RETURN_ON_ERROR(audio_codec_set_volume(&s_hw.codec, ESP_POCKET_AUDIO_CODEC_DEFAULT_VOLUME_PERCENT),
                         TAG,
                         "codec volume failed");
 #if ESP_POCKET_AUDIO_CODEC_START_MUTED
     ESP_RETURN_ON_ERROR(audio_codec_set_mute(&s_hw.codec, true), TAG, "codec mute failed");
     ESP_LOGI(TAG, "codec DAC muted at startup");
+#endif
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+    ESP_RETURN_ON_ERROR(start_i2s_input(), TAG, "I2S microphone input failed");
 #endif
     ESP_RETURN_ON_ERROR(init_control_i2c(), TAG, "control I2C failed");
 #if ESP_POCKET_AUDIO_CONTROL_I2C_ENABLED

@@ -64,6 +64,8 @@ void synth_app_ui_render(const synth_app_state_t *state, play_ui_screen_t screen
     model.wheel_present = synth_app_wheel_present(&state->wheel);
     model.wheel_percent = synth_app_wheel_percent(&state->wheel);
     model.volume_percent = synth_app_wheel_volume_percent(&state->wheel);
+    model.mic_gain_percent = state->mic_gain_percent;
+    model.mic_sample = state->mic_sample;
     model.joystick_direction = state->joystick_direction;
     synth_looper_get_snapshot(&model.looper);
     strlcpy(model.chord_name, state->chord_name, sizeof(model.chord_name));

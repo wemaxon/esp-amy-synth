@@ -37,6 +37,26 @@
 #error "Board must define ESP_POCKET_AUDIO_WHEEL_STEP_PERCENT"
 #endif
 
+#ifndef ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+#error "Board must define ESP_POCKET_AUDIO_MIC_INPUT_ENABLED"
+#endif
+
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
+#if ESP_POCKET_AUDIO_CODEC_TYPE != ESP_POCKET_AUDIO_CODEC_ES8390
+#error "Mic sampling currently requires the ES8390 input path"
+#endif
+#if ESP_POCKET_AUDIO_MIC_INPUT_CHANNEL != ESP_POCKET_AUDIO_INPUT_CHANNEL_LEFT && \
+    ESP_POCKET_AUDIO_MIC_INPUT_CHANNEL != ESP_POCKET_AUDIO_INPUT_CHANNEL_RIGHT
+#error "Invalid mic input channel"
+#endif
+#if ESP_POCKET_AUDIO_MIC_MAX_SECONDS < 1
+#error "Mic sample duration must be positive"
+#endif
+#if ESP_POCKET_AUDIO_I2S_BITS_PER_SAMPLE != 16
+#error "Mic sampling requires 16-bit I2S slots"
+#endif
+#endif
+
 #ifndef ESP_POCKET_AUDIO_ADS1115_ENABLED
 #define ESP_POCKET_AUDIO_ADS1115_ENABLED 1
 #endif
@@ -72,6 +92,10 @@
 
 #ifndef ESP_POCKET_AUDIO_CODEC_DAC_ONLY_TEST
 #define ESP_POCKET_AUDIO_CODEC_DAC_ONLY_TEST 0
+#endif
+
+#if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED && ESP_POCKET_AUDIO_CODEC_DAC_ONLY_TEST
+#error "Mic input and strict codec DAC-only test mode are mutually exclusive"
 #endif
 
 #ifndef ESP_POCKET_AUDIO_I2S_CLK_SRC

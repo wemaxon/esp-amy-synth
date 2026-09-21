@@ -2,6 +2,57 @@
 
 #include "synth/amy_event_builder.c"
 
+static amy_event sent[16];
+static unsigned sent_count;
+
+void amy_add_event(amy_event *event)
+{
+    sent[sent_count++] = *event;
+    /* Model mutation by the real AMY enqueue operation. */
+    event->velocity = -123.0f;
+    event->portamento_ms = 999;
+}
+
+int32_t host_vector_amy_raw_dispatch(void)
+{
+    sent_count = 0;
+    amy_event event = amy_default_event();
+    event.portamento_ms = 140;
+    event.velocity = 0.5f;
+    amy_event_send_raw_control(&event, 2, 8, true);
+    return sent_count == 2 && sent[0].osc == 2 && sent[1].osc == 8 &&
+           sent[0].portamento_ms == 140 && sent[1].portamento_ms == 140 &&
+           sent[1].velocity == 0.5f && event.velocity == 0.5f;
+}
+
+int32_t host_vector_amy_patch_dispatch(void)
+{
+    sent_count = 0;
+    amy_event event = amy_default_event();
+    event.portamento_ms = 60;
+    amy_event_send_patch_control(&event, 3, true);
+    return sent_count == 6 &&
+           sent[0].synth == 0 && sent[0].osc == 0 &&
+           sent[1].synth == 0 && sent[1].osc == 1 &&
+           sent[2].synth == 0 && sent[2].osc == 2 &&
+           sent[3].synth == 1 && sent[3].osc == 0 &&
+           sent[4].synth == 1 && sent[4].osc == 1 &&
+           sent[5].synth == 1 && sent[5].osc == 2 &&
+           sent[5].portamento_ms == 60;
+}
+
+int32_t host_vector_amy_mono_dispatch(void)
+{
+    sent_count = 0;
+    amy_event event = amy_default_event();
+    amy_event_send_raw_control(&event, 5, 11, false);
+    amy_event_send_patch_control(&event, 2, false);
+    amy_event_send_patch_control(&event, 0, true);
+    return sent_count == 3 && sent[0].osc == 5 &&
+           sent[1].synth == 0 && sent[1].osc == 0 &&
+           sent[2].synth == 0 && sent[2].osc == 1;
+}
+
 static inline __attribute__((always_inline)) amy_event build_raw_vector(void)
 {
     const amy_sound_runtime_t runtime = {

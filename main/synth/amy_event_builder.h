@@ -46,6 +46,10 @@ void amy_event_apply_filter(amy_event *event,
                             const amy_raw_profile_t *profile,
                             const amy_filter_controls_t *controls);
 void amy_event_apply_envelope(amy_event *event, const synth_amy_envelope_t *envelope);
+void amy_event_send_raw_control(const amy_event *control, uint16_t main_osc,
+                                 uint16_t pair_osc, bool pair_active);
+void amy_event_send_patch_control(const amy_event *control, uint8_t oscs_per_voice,
+                                   bool pair_loaded);
 
 #ifdef __cplusplus
 }

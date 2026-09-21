@@ -560,7 +560,6 @@ static void draw_browser(const esp_pocket_audio_hw_t *hw, const patch_browser_st
         return;
     }
 
-    char line[24];
     char label[24];
     char note[8];
     patch_short_label(state->patch_number, label, sizeof(label));
@@ -573,36 +572,28 @@ static void draw_browser(const esp_pocket_audio_hw_t *hw, const patch_browser_st
     pocket_oled_clear(display);
     pocket_oled_draw_text_row(display, 0, "AMY PATCH BROWSER");
 
-    snprintf(line,
-             sizeof(line),
+    oled_display_draw_rowf(display, 1,
              "P%03u/%03u %.7s",
              (unsigned)state->patch_number,
              (unsigned)(SYNTH_AMY_BUILTIN_PATCH_COUNT - 1U),
              patch_bank_name(state->patch_number));
-    pocket_oled_draw_text_row(display, 1, line);
 
-    snprintf(line, sizeof(line), "%.21s", label);
-    pocket_oled_draw_text_row(display, 2, line);
+    oled_display_draw_rowf(display, 2, "%.21s", label);
 
-    snprintf(line,
-             sizeof(line),
+    oled_display_draw_rowf(display, 3,
              "OSC %02u VOI %u VEL %.2f",
              (unsigned)oscs_per_voice,
              (unsigned)voices,
              PATCH_BROWSER_VELOCITY);
-    pocket_oled_draw_text_row(display, 3, line);
 
-    snprintf(line,
-             sizeof(line),
+    oled_display_draw_rowf(display, 4,
              "%c%u %s VOL %3u%%",
              state->active_notes == 0 ? 'S' : 'P',
              (unsigned)state->active_notes,
              note,
              (unsigned)synth_app_wheel_volume_percent(&state->volume_wheel));
-    pocket_oled_draw_text_row(display, 4, line);
 
-    snprintf(line, sizeof(line), "OCT %+d 1-7 PLAY", (int)state->octave_shift);
-    pocket_oled_draw_text_row(display, 5, line);
+    oled_display_draw_rowf(display, 5, "OCT %+d 1-7 PLAY", (int)state->octave_shift);
     pocket_oled_draw_text_row(display, 6, "L/R +/-1 U/D +/-8");
     pocket_oled_draw_text_row(display, 7, "M OCT J STOP K EXIT");
 

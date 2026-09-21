@@ -146,49 +146,17 @@ python tools/host_parity_check.py
 python tools/level_calibration_check.py
 ```
 
-The modernization baseline, compatibility boundaries, parity gates, and bug
-audit live in `docs/refactor-baseline.md` and `docs/bug-audit.md`. The looper
-ownership model and AUD-004 hardware profile are in
-`docs/looper-realtime-architecture.md`. The AMY dependency migration is
-documented in `docs/amy-1.2.152-upgrade.md`.
+Build commands, ownership boundaries, compatibility rules, and hardware checks
+are in [Firmware maintenance](docs/maintenance.md).
 The automatic instrument loudness workflow and its real-time constraints are
 documented in `docs/level-calibration.md`.
 
-## Prereqisites
+## Prerequisites
 
 #### ESP-IDF
 Use ESP-IDF directly.
 
-#### Python environment
-```sh
-python -m venv .venv
-.\.venv\Scripts\activate
-cd components\amy\amy
-git fetch --tags
-git checkout tags/1.2.152
-```
-
-#### Install amy python library
-```
-cd components/amy/amy
-
-git fetch --tags
-git checkout tags/1.2.152
-
-pip install -r requirements.txt
-pip install -e .
-```
-
-## ToDo
-- Validate remaining chord-engine edge cases against hardware/manual examples.
-
-- Implement the hichord calibration flow
-- Beautify UI
-- Performance
-  - IRAM
-  - PSRAM pools
-  - amy multicore/multithread
-  - profiling
-
-- Fix octaves
-- Fix drum loop weird button behavior and broken rythm
+Initialize the pinned dependencies with `git submodule update --init --recursive`
+on a fresh checkout. Preserve local submodule changes in an existing checkout.
+The AMY Python package is optional and only needed for the experiments under
+`experiments/amy`; it is not required to build or flash the firmware.

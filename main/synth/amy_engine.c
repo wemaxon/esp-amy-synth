@@ -426,19 +426,6 @@ static void amy_note_off_patch(uint8_t midi_note)
     }
 }
 
-static void apply_raw_filter_osc(uint8_t osc, const amy_raw_profile_t *profile)
-{
-    if (profile == NULL) {
-        return;
-    }
-
-    amy_event event = amy_default_event();
-    event.osc = osc;
-    amy_filter_controls_t controls = current_filter_controls();
-    amy_event_apply_filter(&event, profile, &controls);
-    amy_add_event(&event);
-}
-
 static void apply_raw_filter(uint8_t voice)
 {
     const amy_sound_runtime_t *runtime = amy_runtime_for_sound(s_sound);
@@ -447,18 +434,11 @@ static void apply_raw_filter(uint8_t voice)
         return;
     }
 
-    apply_raw_filter_osc(main_osc_for_voice(voice), &runtime->raw);
-    if (s_voices[voice].pair_active) {
-        apply_raw_filter_osc(pair_osc_for_voice(voice), &runtime->raw);
-    }
-}
-
-static void apply_raw_lfo_osc(uint8_t osc)
-{
     amy_event event = amy_default_event();
-    event.osc = osc;
-    event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
-    amy_add_event(&event);
+    amy_filter_controls_t controls = current_filter_controls();
+    amy_event_apply_filter(&event, &runtime->raw, &controls);
+    amy_event_send_raw_control(&event, main_osc_for_voice(voice),
+                               pair_osc_for_voice(voice), s_voices[voice].pair_active);
 }
 
 static void apply_raw_lfo(uint8_t voice)
@@ -466,18 +446,10 @@ static void apply_raw_lfo(uint8_t voice)
     if (voice >= AMY_MUSICAL_VOICE_COUNT) {
         return;
     }
-    apply_raw_lfo_osc(main_osc_for_voice(voice));
-    if (s_voices[voice].pair_active) {
-        apply_raw_lfo_osc(pair_osc_for_voice(voice));
-    }
-}
-
-static void apply_raw_envelope_osc(uint8_t osc, const synth_amy_envelope_t *envelope)
-{
     amy_event event = amy_default_event();
-    event.osc = osc;
-    amy_event_apply_envelope(&event, envelope);
-    amy_add_event(&event);
+    event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
+    amy_event_send_raw_control(&event, main_osc_for_voice(voice),
+                               pair_osc_for_voice(voice), s_voices[voice].pair_active);
 }
 
 static void apply_raw_envelope(uint8_t voice)
@@ -490,18 +462,10 @@ static void apply_raw_envelope(uint8_t voice)
     synth_amy_envelope_t profile_envelope = {0};
     const synth_amy_envelope_t *envelope = effective_raw_envelope(runtime, &profile_envelope);
 
-    apply_raw_envelope_osc(main_osc_for_voice(voice), envelope);
-    if (s_voices[voice].pair_active) {
-        apply_raw_envelope_osc(pair_osc_for_voice(voice), envelope);
-    }
-}
-
-static void apply_raw_portamento_osc(uint8_t osc)
-{
     amy_event event = amy_default_event();
-    event.osc = osc;
-    event.portamento_ms = s_portamento_ms;
-    amy_add_event(&event);
+    amy_event_apply_envelope(&event, envelope);
+    amy_event_send_raw_control(&event, main_osc_for_voice(voice),
+                               pair_osc_for_voice(voice), s_voices[voice].pair_active);
 }
 
 static void apply_raw_portamento(uint8_t voice)
@@ -509,18 +473,10 @@ static void apply_raw_portamento(uint8_t voice)
     if (voice >= AMY_MUSICAL_VOICE_COUNT) {
         return;
     }
-    apply_raw_portamento_osc(main_osc_for_voice(voice));
-    if (s_voices[voice].pair_active) {
-        apply_raw_portamento_osc(pair_osc_for_voice(voice));
-    }
-}
-
-static void apply_raw_tremolo_osc(uint8_t osc)
-{
     amy_event event = amy_default_event();
-    event.osc = osc;
-    event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
-    amy_add_event(&event);
+    event.portamento_ms = s_portamento_ms;
+    amy_event_send_raw_control(&event, main_osc_for_voice(voice),
+                               pair_osc_for_voice(voice), s_voices[voice].pair_active);
 }
 
 static void apply_raw_tremolo(uint8_t voice)
@@ -528,10 +484,10 @@ static void apply_raw_tremolo(uint8_t voice)
     if (voice >= AMY_MUSICAL_VOICE_COUNT) {
         return;
     }
-    apply_raw_tremolo_osc(main_osc_for_voice(voice));
-    if (s_voices[voice].pair_active) {
-        apply_raw_tremolo_osc(pair_osc_for_voice(voice));
-    }
+    amy_event event = amy_default_event();
+    event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
+    amy_event_send_raw_control(&event, main_osc_for_voice(voice),
+                               pair_osc_for_voice(voice), s_voices[voice].pair_active);
 }
 
 static void apply_raw_stereo_state(uint8_t voice, const amy_sound_runtime_t *runtime)
@@ -641,19 +597,6 @@ static void apply_patch_pan(void)
     }
 }
 
-static void apply_patch_filter_to_synth(uint8_t synth_id)
-{
-    for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
-        amy_event event = amy_default_event();
-        event.synth = synth_id;
-        event.osc = osc;
-        event.filter_type = FILTER_LPF;
-        event.filter_freq_coefs[COEF_CONST] = s_filter_cutoff_hz;
-        event.resonance = 0.55f;
-        amy_add_event(&event);
-    }
-}
-
 static bool patch_filter_override_active(void)
 {
     return s_filter_enabled && s_filter_cutoff_hz < (FILTER_CUTOFF_MAX_HZ - 1.0f);
@@ -665,21 +608,11 @@ static void apply_patch_filter(void)
         return;
     }
 
-    apply_patch_filter_to_synth(AMY_PATCH_MAIN_SYNTH);
-    if (s_patch_pair_loaded) {
-        apply_patch_filter_to_synth(AMY_PATCH_PAIR_SYNTH);
-    }
-}
-
-static void apply_patch_lfo_to_synth(uint8_t synth_id)
-{
-    for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
-        amy_event event = amy_default_event();
-        event.synth = synth_id;
-        event.osc = osc;
-        event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
-        amy_add_event(&event);
-    }
+    amy_event event = amy_default_event();
+    event.filter_type = FILTER_LPF;
+    event.filter_freq_coefs[COEF_CONST] = s_filter_cutoff_hz;
+    event.resonance = 0.55f;
+    amy_event_send_patch_control(&event, s_patch_oscs_per_voice, s_patch_pair_loaded);
 }
 
 static void apply_patch_lfo(void)
@@ -688,21 +621,9 @@ static void apply_patch_lfo(void)
         return;
     }
 
-    apply_patch_lfo_to_synth(AMY_PATCH_MAIN_SYNTH);
-    if (s_patch_pair_loaded) {
-        apply_patch_lfo_to_synth(AMY_PATCH_PAIR_SYNTH);
-    }
-}
-
-static void apply_patch_tremolo_to_synth(uint8_t synth_id)
-{
-    for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
-        amy_event event = amy_default_event();
-        event.synth = synth_id;
-        event.osc = osc;
-        event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
-        amy_add_event(&event);
-    }
+    amy_event event = amy_default_event();
+    event.freq_coefs[COEF_EXT0] = s_lfo_enabled ? 1.0f : 0.0f;
+    amy_event_send_patch_control(&event, s_patch_oscs_per_voice, s_patch_pair_loaded);
 }
 
 static void apply_patch_tremolo(void)
@@ -711,21 +632,9 @@ static void apply_patch_tremolo(void)
         return;
     }
 
-    apply_patch_tremolo_to_synth(AMY_PATCH_MAIN_SYNTH);
-    if (s_patch_pair_loaded) {
-        apply_patch_tremolo_to_synth(AMY_PATCH_PAIR_SYNTH);
-    }
-}
-
-static void apply_patch_envelope_to_synth(uint8_t synth_id)
-{
-    for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
-        amy_event event = amy_default_event();
-        event.synth = synth_id;
-        event.osc = osc;
-        amy_event_apply_envelope(&event, &s_envelope);
-        amy_add_event(&event);
-    }
+    amy_event event = amy_default_event();
+    event.amp_coefs[COEF_EXT1] = s_tremolo_enabled ? 1.0f : 0.0f;
+    amy_event_send_patch_control(&event, s_patch_oscs_per_voice, s_patch_pair_loaded);
 }
 
 static void apply_patch_envelope(void)
@@ -734,21 +643,9 @@ static void apply_patch_envelope(void)
         return;
     }
 
-    apply_patch_envelope_to_synth(AMY_PATCH_MAIN_SYNTH);
-    if (s_patch_pair_loaded) {
-        apply_patch_envelope_to_synth(AMY_PATCH_PAIR_SYNTH);
-    }
-}
-
-static void apply_patch_portamento_to_synth(uint8_t synth_id)
-{
-    for (uint8_t osc = 0; osc < s_patch_oscs_per_voice; ++osc) {
-        amy_event event = amy_default_event();
-        event.synth = synth_id;
-        event.osc = osc;
-        event.portamento_ms = s_portamento_ms;
-        amy_add_event(&event);
-    }
+    amy_event event = amy_default_event();
+    amy_event_apply_envelope(&event, &s_envelope);
+    amy_event_send_patch_control(&event, s_patch_oscs_per_voice, s_patch_pair_loaded);
 }
 
 static void apply_patch_portamento(void)
@@ -757,10 +654,9 @@ static void apply_patch_portamento(void)
         return;
     }
 
-    apply_patch_portamento_to_synth(AMY_PATCH_MAIN_SYNTH);
-    if (s_patch_pair_loaded) {
-        apply_patch_portamento_to_synth(AMY_PATCH_PAIR_SYNTH);
-    }
+    amy_event event = amy_default_event();
+    event.portamento_ms = s_portamento_ms;
+    amy_event_send_patch_control(&event, s_patch_oscs_per_voice, s_patch_pair_loaded);
 }
 
 static void apply_patch_runtime_controls(bool force_filter)

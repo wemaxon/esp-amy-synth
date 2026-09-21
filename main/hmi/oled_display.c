@@ -2,8 +2,20 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 #include "hmi/control_i2c.h"
+
+void oled_display_draw_rowf(pocket_oled_t *display, int row, const char *fmt, ...)
+{
+    char line[24];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+    pocket_oled_draw_text_row(display, row, line);
+}
 
 typedef struct {
     pocket_oled_t *display;

@@ -182,28 +182,21 @@ static void mic_diagnostic_log(mic_diagnostic_t *diagnostic, TickType_t now)
 
 static void draw_mic_display(const esp_pocket_audio_hw_t *hw, mic_diagnostic_t *diagnostic)
 {
-    char line[24];
     pocket_oled_t *display = (pocket_oled_t *)&hw->display;
     pocket_oled_clear(display);
     pocket_oled_draw_text_row(display, 0, "DIAG MIC INPUT");
-    snprintf(line, sizeof(line), "LEFT  %05u %3lu%%",
+    oled_display_draw_rowf(display, 1, "LEFT  %05u %3lu%%",
              (unsigned)diagnostic->ui_peak[0],
              (unsigned long)peak_percent(diagnostic->ui_peak[0]));
-    pocket_oled_draw_text_row(display, 1, line);
-    snprintf(line, sizeof(line), "RIGHT %05u %3lu%%",
+    oled_display_draw_rowf(display, 2, "RIGHT %05u %3lu%%",
              (unsigned)diagnostic->ui_peak[1],
              (unsigned long)peak_percent(diagnostic->ui_peak[1]));
-    pocket_oled_draw_text_row(display, 2, line);
-    snprintf(line,
-             sizeof(line),
+    oled_display_draw_rowf(display, 3,
              "CAPTURE SELECT %s",
              ESP_POCKET_AUDIO_MIC_INPUT_CHANNEL == ESP_POCKET_AUDIO_INPUT_CHANNEL_RIGHT ?
                  "RIGHT" : "LEFT");
-    pocket_oled_draw_text_row(display, 3, line);
-    snprintf(line, sizeof(line), "FRAMES %" PRIu32, diagnostic->total_frames);
-    pocket_oled_draw_text_row(display, 4, line);
-    snprintf(line, sizeof(line), "RX ERR %" PRIu32, diagnostic->read_errors);
-    pocket_oled_draw_text_row(display, 5, line);
+    oled_display_draw_rowf(display, 4, "FRAMES %" PRIu32, diagnostic->total_frames);
+    oled_display_draw_rowf(display, 5, "RX ERR %" PRIu32, diagnostic->read_errors);
     pocket_oled_draw_text_row(display, 6, "RAW ADC, NO DIG GAIN");
     pocket_oled_draw_text_row(display, 7, "MODE = CONTROLS");
 
@@ -254,16 +247,12 @@ static void draw_display(const esp_pocket_audio_hw_t *hw,
 
     int norm_x = (int)(joystick.x.value * 100.0f);
     int norm_y = (int)(joystick.y.value * 100.0f);
-    snprintf(line, sizeof(line), "X %05d %+04d", joystick.x.raw, norm_x);
-    pocket_oled_draw_text_row(display, 2, line);
-    snprintf(line, sizeof(line), "Y %05d %+04d", joystick.y.raw, norm_y);
-    pocket_oled_draw_text_row(display, 3, line);
+    oled_display_draw_rowf(display, 2, "X %05d %+04d", joystick.x.raw, norm_x);
+    oled_display_draw_rowf(display, 3, "Y %05d %+04d", joystick.y.raw, norm_y);
 
-    snprintf(line, sizeof(line), "DIR %.16s", controls_joystick_direction_name(joystick.direction));
-    pocket_oled_draw_text_row(display, 4, line);
+    oled_display_draw_rowf(display, 4, "DIR %.16s", controls_joystick_direction_name(joystick.direction));
 
-    snprintf(line, sizeof(line), "CAL %s %s", cal_target_name(target), cal_state_name(state));
-    pocket_oled_draw_text_row(display, 5, line);
+    oled_display_draw_rowf(display, 5, "CAL %s %s", cal_target_name(target), cal_state_name(state));
     if (wheel.present) {
         if (wheel.type == CONTROL_WHEEL_ABSOLUTE) {
             snprintf(line, sizeof(line), "WHL %05d %3u%%",

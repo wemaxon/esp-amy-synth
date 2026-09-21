@@ -31,6 +31,8 @@ typedef struct {
     uint8_t synth;
 } amy_event;
 
+void amy_add_event(amy_event *event);
+
 static inline amy_event amy_default_event(void)
 {
     return (amy_event){0};

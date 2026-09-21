@@ -7,6 +7,8 @@ import re
 import sys
 from pathlib import Path
 
+from c_source import function_body
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CHORD_C = ROOT / "main" / "synth" / "chord_engine.c"
@@ -45,26 +47,6 @@ def require(condition: bool, message: str) -> None:
     if not condition:
         die(message)
 
-
-def function_body(source: str, name: str) -> str:
-    marker = name + "("
-    start = source.find(marker)
-    if start < 0:
-        die(f"missing function {name}")
-    brace = source.find("{", start)
-    if brace < 0:
-        die(f"missing body for {name}")
-
-    depth = 0
-    for index in range(brace, len(source)):
-        char = source[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return source[brace + 1:index]
-    die(f"unterminated function {name}")
 
 
 def case_body(source: str, case_name: str) -> str:
@@ -369,14 +351,18 @@ def assert_voice_count_control(
     play_ui_c: str,
     play_ui_h: str,
 ) -> None:
-    runtime_body = function_body(amy_c, "runtime_voice_limit")
+    runtime_bodies = [
+        function_body(amy_c, name)
+        for name in ("configure_patch_synth_with_gain", "synth_amy_chord_on", "synth_amy_chord_voice_on")
+    ]
     runtime_helper_body = function_body(amy_runtime_c, "amy_runtime_voice_limit")
     setter_body = function_body(amy_c, "synth_amy_set_voice_limit")
     toggle_body = function_body(app_c, "toggle_current_effect")
 
     require("esp_err_t synth_amy_set_voice_limit(uint8_t voices);" in amy_h, "voice-limit API missing")
     require("static uint8_t s_voice_limit = AMY_MUSICAL_VOICE_COUNT;" in amy_c, "voice-limit state missing")
-    require("amy_runtime_voice_limit(runtime, s_voice_limit)" in runtime_body, "runtime voice limit must honor user cap")
+    require(all("amy_runtime_voice_limit(runtime, s_voice_limit)" in body for body in runtime_bodies),
+            "patch allocation and both note-on paths must honor the user voice cap")
     require("clamp_voice_count(requested_voice_limit)" in runtime_helper_body, "runtime voice helper must clamp user cap")
     require("synth_amy_musical_all_off()" in setter_body,
             "voice-limit changes must silence stale musical roles without resetting drums")
@@ -491,7 +477,7 @@ def assert_glide_control(
 def main() -> int:
     chord_c = read(CHORD_C)
     chord_h = read(CHORD_H)
-    app_c = read(APP_C)
+    app_c = read(APP_C) + "\n".join(read(path) for path in sorted((APP_C.parent / "app").glob("*.c")))
     app_chord_tools_c = read(APP_CHORD_TOOLS_C)
     app_effects_c = read(APP_EFFECTS_C)
     app_effects_h = read(APP_EFFECTS_H)

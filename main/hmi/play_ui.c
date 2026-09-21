@@ -1,7 +1,6 @@
 #include "hmi/play_ui.h"
 
 #include <stdbool.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -14,6 +13,7 @@
 #include "hmi/oled_display.h"
 #include "pocket_oled.h"
 #include "synth/app/key.h"
+#include "synth/app/settings.h"
 
 static const char *TAG = "PLAY_UI";
 
@@ -42,26 +42,6 @@ static const char *EFFECT_NAMES[PLAY_UI_EFFECT_COUNT] = {
 
 static const char *LFO_LEVEL_NAMES[] = {
     "OFF", "LOW", "MED", "HIGH",
-};
-
-static const char *DELAY_LEVEL_NAMES[] = {
-    "OFF", "1/4", "1/8", "1/16", "1/16T",
-};
-
-static const char *TREMOLO_LEVEL_NAMES[] = {
-    "OFF", "1/4", "1/8", "1/16", "1/16T", "1/32",
-};
-
-static const char *VOICE_LEVEL_NAMES[] = {
-    "8", "4", "2", "1",
-};
-
-static const char *ADSR_PRESET_NAMES[] = {
-    "LONG", "SHORT", "SWELL", "PLUCK", "TOUCH", "SUSTAIN",
-};
-
-static const char *GLIDE_LEVEL_NAMES[] = {
-    "OFF", "FAST", "MED", "SLOW",
 };
 
 static const esp_pocket_audio_hw_t *s_hw;
@@ -142,15 +122,6 @@ void play_ui_show_status(const char *status)
     }
 }
 
-static void draw_rowf(pocket_oled_t *display, int row, const char *fmt, ...)
-{
-    char line[24];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(line, sizeof(line), fmt, args);
-    va_end(args);
-    pocket_oled_draw_text_row(display, row, line);
-}
 
 static void draw_header(pocket_oled_t *display, const char *title)
 {
@@ -176,18 +147,18 @@ static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
         synth_play_mode_is_implemented(model->mode)) {
         draw_header(display, "MIC SAMPLE");
         float gain = synth_mic_gain_from_percent(model->mic_gain_percent);
-        draw_rowf(display, 2, "GAIN %.1fx", (double)gain);
+        oled_display_draw_rowf(display, 2, "GAIN %.1fx", (double)gain);
         uint32_t elapsed_ms = (model->mic_sample.frames * 1000U) /
                               ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ;
         uint32_t capacity_ms = (model->mic_sample.capacity_frames * 1000U) /
                                ESP_POCKET_AUDIO_I2S_SAMPLE_RATE_HZ;
         if (model->mic_sample.state == SYNTH_MIC_SAMPLE_RECORDING) {
-            draw_rowf(display, 3, "REC %lu.%lu/%lu.%lus",
+            oled_display_draw_rowf(display, 3, "REC %lu.%lu/%lu.%lus",
                       (unsigned long)(elapsed_ms / 1000U),
                       (unsigned long)((elapsed_ms % 1000U) / 100U),
                       (unsigned long)(capacity_ms / 1000U),
                       (unsigned long)((capacity_ms % 1000U) / 100U));
-            draw_rowf(display, 4, "PEAK %u%% CLIP %lu",
+            oled_display_draw_rowf(display, 4, "PEAK %u%% CLIP %lu",
                       (unsigned)(((uint32_t)model->mic_sample.peak * 100U) / 32768U),
                       (unsigned long)model->mic_sample.clipped_samples);
             pocket_oled_draw_text_row(display, 6, "RELEASE BTN1 TO STOP");
@@ -218,29 +189,29 @@ static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model
 {
     switch (model->mode) {
     case SYNTH_PLAY_MODE_STRUM:
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   row,
                   "SPEED %s %ums",
                   synth_strum_speed_name(model->strum_speed),
                   synth_strum_speed_delay_ms(model->strum_speed));
         break;
     case SYNTH_PLAY_MODE_ARPEGGIO:
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   row,
                   "%s %s",
                   synth_arp_pattern_name(model->arp_pattern),
                   synth_rhythm_rate_name(model->arp_rate));
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   row + 1,
                   "%.21s",
                   synth_arp_chord_mode_name(model->arp_chord_mode));
         break;
     case SYNTH_PLAY_MODE_REPEAT:
-        draw_rowf(display, row, "RATE %s", synth_rhythm_rate_name(model->repeat_rate));
+        oled_display_draw_rowf(display, row, "RATE %s", synth_rhythm_rate_name(model->repeat_rate));
         break;
     case SYNTH_PLAY_MODE_MIC_SAMPLE:
 #if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   row,
                   "GAIN %.1fx",
                   (double)synth_mic_gain_from_percent(model->mic_gain_percent));
@@ -250,28 +221,28 @@ static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model
 #endif
         break;
     case SYNTH_PLAY_MODE_DRUM_MODE:
-        draw_rowf(display, row, "KIT %s", synth_drum_kit_name(model->drum_kit));
+        oled_display_draw_rowf(display, row, "KIT %s", synth_drum_kit_name(model->drum_kit));
         pocket_oled_draw_text_row(display, row + 1, "1-7 DRUM PADS");
         break;
     case SYNTH_PLAY_MODE_DRUM_LOOPS:
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   row,
                   "%s %s",
                   synth_drum_loop_style_name(model->drum_loop_style),
                   model->drum_loop_running ? "ON" : "OFF");
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   row + 1,
                   "%s KIT %s",
                   synth_drum_loop_variation_short_name(model->drum_loop_variation),
                   synth_drum_kit_name(model->drum_kit));
         break;
     case SYNTH_PLAY_MODE_AUTO_DRUM:
-        draw_rowf(display, row, "KIT %s", synth_drum_kit_name(model->drum_kit));
-        draw_rowf(display, row + 1, "RATE %.7s", model->drum_auto_rate);
+        oled_display_draw_rowf(display, row, "KIT %s", synth_drum_kit_name(model->drum_kit));
+        oled_display_draw_rowf(display, row + 1, "RATE %.7s", model->drum_auto_rate);
         break;
     case SYNTH_PLAY_MODE_MIXER:
-        draw_rowf(display, row, "LOOP TRACK MIX");
-        draw_rowf(display, row + 1, "MET %s", model->looper.metronome_enabled ? "ON" : "OFF");
+        oled_display_draw_rowf(display, row, "LOOP TRACK MIX");
+        oled_display_draw_rowf(display, row + 1, "MET %s", model->looper.metronome_enabled ? "ON" : "OFF");
         break;
     case SYNTH_PLAY_MODE_PLAY:
         pocket_oled_draw_text_row(display, row, "PRESS = CHORD");
@@ -291,65 +262,45 @@ static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model
 static void draw_key_menu(pocket_oled_t *display, const play_ui_model_t *model)
 {
     draw_header(display, "KEY SETTINGS");
-    draw_rowf(display, 2, "KEY   %s", synth_key_name(model->key));
-    draw_rowf(display, 3, "GLOBAL OCT %+d", model->global_octave_shift);
-    draw_rowf(display, 4, "BTN%u OCT %+d", model->focus_slot + 1, model->button_octave_shift[model->focus_slot]);
-    draw_rowf(display, 5, "LOCK %s", model->chord_lock_enabled ? "ON" : "OFF");
+    oled_display_draw_rowf(display, 2, "KEY   %s", synth_key_name(model->key));
+    oled_display_draw_rowf(display, 3, "GLOBAL OCT %+d", model->global_octave_shift);
+    oled_display_draw_rowf(display, 4, "BTN%u OCT %+d", model->focus_slot + 1, model->button_octave_shift[model->focus_slot]);
+    oled_display_draw_rowf(display, 5, "LOCK %s", model->chord_lock_enabled ? "ON" : "OFF");
 }
 
 static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model)
 {
     play_ui_effect_t effect = (play_ui_effect_t)(model->effect_index % PLAY_UI_EFFECT_COUNT);
     draw_header(display, "SOUND FX");
-    draw_rowf(display, 2, "SND %s", synth_sound_name(model->sound));
-    draw_rowf(display, 3, "ENG %s", synth_sound_engine_name(model->sound));
+    oled_display_draw_rowf(display, 2, "SND %s", synth_sound_name(model->sound));
+    oled_display_draw_rowf(display, 3, "ENG %s", synth_sound_engine_name(model->sound));
     if (effect == PLAY_UI_EFFECT_JOYSTICK) {
-        draw_rowf(display, 4, "JOY %s", synth_joystick_mode_name(model->joystick_mode));
+        oled_display_draw_rowf(display, 4, "JOY %s", synth_joystick_mode_name(model->joystick_mode));
     } else if (effect == PLAY_UI_EFFECT_VOICE_LEADING) {
-        draw_rowf(display, 4, "VOICE LEAD %s", model->voice_leading_enabled ? "ON" : "OFF");
+        oled_display_draw_rowf(display, 4, "VOICE LEAD %s", model->voice_leading_enabled ? "ON" : "OFF");
     } else if (effect == PLAY_UI_EFFECT_BASS_MODE) {
-        draw_rowf(display, 4, "BASS %s", synth_bass_mode_name(model->bass_mode));
+        oled_display_draw_rowf(display, 4, "BASS %s", synth_bass_mode_name(model->bass_mode));
     } else if (effect == PLAY_UI_EFFECT_VOICE_COUNT) {
-        uint8_t voice_level = model->voice_level;
-        if (voice_level >= sizeof(VOICE_LEVEL_NAMES) / sizeof(VOICE_LEVEL_NAMES[0])) {
-            voice_level = 0;
-        }
-        draw_rowf(display, 4, "VOICES %s", VOICE_LEVEL_NAMES[voice_level]);
+        oled_display_draw_rowf(display, 4, "VOICES %s", synth_app_voice_level_name(model->voice_level));
     } else if (effect == PLAY_UI_EFFECT_ADSR) {
-        uint8_t preset = model->adsr_preset;
-        if (preset >= sizeof(ADSR_PRESET_NAMES) / sizeof(ADSR_PRESET_NAMES[0])) {
-            preset = 0;
-        }
-        draw_rowf(display, 4, "ADSR %s", ADSR_PRESET_NAMES[preset]);
-        draw_rowf(display, 5, "A%lu R%lu",
+        oled_display_draw_rowf(display, 4, "ADSR %s", synth_app_adsr_preset_name(model->adsr_preset));
+        oled_display_draw_rowf(display, 5, "A%lu R%lu",
                   (unsigned long)model->attack_ms,
                   (unsigned long)model->release_ms);
     } else if (effect == PLAY_UI_EFFECT_GLIDE) {
-        uint8_t glide_level = model->glide_level;
-        if (glide_level >= sizeof(GLIDE_LEVEL_NAMES) / sizeof(GLIDE_LEVEL_NAMES[0])) {
-            glide_level = 0;
-        }
-        draw_rowf(display, 4, "GLIDE %s", GLIDE_LEVEL_NAMES[glide_level]);
+        oled_display_draw_rowf(display, 4, "GLIDE %s", synth_app_glide_level_name(model->glide_level));
     } else if (effect == PLAY_UI_EFFECT_DELAY) {
-        uint8_t delay_level = model->delay_level;
-        if (delay_level >= sizeof(DELAY_LEVEL_NAMES) / sizeof(DELAY_LEVEL_NAMES[0])) {
-            delay_level = 0;
-        }
-        draw_rowf(display, 4, "FX DELAY %s", DELAY_LEVEL_NAMES[delay_level]);
+        oled_display_draw_rowf(display, 4, "FX DELAY %s", synth_app_delay_level_name(model->delay_level));
     } else if (effect == PLAY_UI_EFFECT_TREMOLO) {
-        uint8_t tremolo_level = model->tremolo_level;
-        if (tremolo_level >= sizeof(TREMOLO_LEVEL_NAMES) / sizeof(TREMOLO_LEVEL_NAMES[0])) {
-            tremolo_level = 0;
-        }
-        draw_rowf(display, 4, "FX TREM %s", TREMOLO_LEVEL_NAMES[tremolo_level]);
+        oled_display_draw_rowf(display, 4, "FX TREM %s", synth_app_tremolo_level_name(model->tremolo_level));
     } else if (effect == PLAY_UI_EFFECT_LFO) {
         uint8_t lfo_level = model->lfo_level;
         if (lfo_level >= sizeof(LFO_LEVEL_NAMES) / sizeof(LFO_LEVEL_NAMES[0])) {
             lfo_level = 0;
         }
-        draw_rowf(display, 4, "FX LFO %s", LFO_LEVEL_NAMES[lfo_level]);
+        oled_display_draw_rowf(display, 4, "FX LFO %s", LFO_LEVEL_NAMES[lfo_level]);
     } else {
-        draw_rowf(display, 4, "FX %s %s",
+        oled_display_draw_rowf(display, 4, "FX %s %s",
                   play_ui_effect_name(effect),
                   model->effects[effect] ? "ON" : "OFF");
     }
@@ -359,7 +310,7 @@ static void draw_mode_menu(pocket_oled_t *display, const play_ui_model_t *model)
 {
     if (model->mode_bpm_submenu) {
         draw_header(display, "BPM");
-        draw_rowf(display, 2, "TEMPO %3u BPM", model->bpm);
+        oled_display_draw_rowf(display, 2, "TEMPO %3u BPM", model->bpm);
         pocket_oled_draw_text_row(display, 4, "L/R ADJUST");
         pocket_oled_draw_text_row(display, 5, "U/D BACK");
         pocket_oled_draw_text_row(display, 6, "RANGE 40-300");
@@ -367,18 +318,18 @@ static void draw_mode_menu(pocket_oled_t *display, const play_ui_model_t *model)
     }
 
     draw_header(display, "MODES");
-    draw_rowf(display, 2, "%02u/%02u %s",
+    oled_display_draw_rowf(display, 2, "%02u/%02u %s",
               (unsigned)(model->mode + 1),
               (unsigned)SYNTH_PLAY_MODE_COUNT,
               synth_play_mode_short_name(model->mode));
-    draw_rowf(display, 2, "%.21s", synth_play_mode_name(model->mode));
+    oled_display_draw_rowf(display, 2, "%.21s", synth_play_mode_name(model->mode));
     draw_mode_param(display, 3, model);
 }
 
 static void draw_time_ms(pocket_oled_t *display, int row, const char *prefix, uint32_t ms)
 {
     uint32_t total_seconds = ms / 1000U;
-    draw_rowf(display,
+    oled_display_draw_rowf(display,
               row,
               "%s %02lu:%02lu",
               prefix,
@@ -393,7 +344,7 @@ static bool draw_looper_progress(pocket_oled_t *display, const play_ui_model_t *
     if (model->looper.current_track_armed &&
         !model->looper.waiting_for_sync &&
         model->looper.wait_ms > 0) {
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   4,
                   "COUNT %lu.%lus",
                   (unsigned long)(model->looper.wait_ms / 1000U),
@@ -404,7 +355,7 @@ static bool draw_looper_progress(pocket_oled_t *display, const play_ui_model_t *
     if (model->looper.waiting_for_sync && model->looper.progress_total_ms > 0) {
         uint32_t pos_seconds = model->looper.progress_ms / 1000U;
         uint32_t total_seconds = model->looper.progress_total_ms / 1000U;
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   4,
                   "SYNC %02lu:%02lu/%02lu:%02lu",
                   (unsigned long)(pos_seconds / 60U),
@@ -418,7 +369,7 @@ static bool draw_looper_progress(pocket_oled_t *display, const play_ui_model_t *
         const char *prefix = state == SYNTH_LOOPER_TRACK_RECORDING ? "REC" : "POS";
         uint32_t pos_seconds = model->looper.progress_ms / 1000U;
         uint32_t total_seconds = model->looper.progress_total_ms / 1000U;
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   4,
                   "%s %02lu:%02lu/%02lu:%02lu",
                   prefix,
@@ -449,7 +400,7 @@ static void draw_looper_track(pocket_oled_t *display,
     char flag = model->looper.track_soloed[track] ? 'S' :
                 (model->looper.track_muted[track] ? 'M' : ' ');
     uint32_t total_seconds = model->looper.track_ms[track] / 1000U;
-    draw_rowf(display,
+    oled_display_draw_rowf(display,
               row,
               "%sT%u%c %-4s %02lu:%02lu V%3u",
               marker,
@@ -466,7 +417,7 @@ static void draw_looper_meter(pocket_oled_t *display, const play_ui_model_t *mod
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
     const synth_looper_meter_t *meter = &model->looper.meter;
     const char *limit = meter->clipped_samples > 0 ? "!" : "";
-    draw_rowf(display,
+    oled_display_draw_rowf(display,
               row,
               "M IN%3u LP%3u O%3u%s",
               (unsigned)meter->live_peak_percent,
@@ -474,7 +425,7 @@ static void draw_looper_meter(pocket_oled_t *display, const play_ui_model_t *mod
               (unsigned)meter->output_peak_percent,
               limit);
 #else
-    draw_rowf(display, row, "%.21s", model->looper.message);
+    oled_display_draw_rowf(display, row, "%.21s", model->looper.message);
 #endif
 }
 
@@ -491,25 +442,25 @@ static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
     if (!current_waiting) {
         draw_looper_meter(display, model, 5);
     } else if (model->looper.bar_count == 0) {
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   5,
                   "BARS FREE MET %s",
                   model->looper.record_metronome_enabled ? "ON" : "OFF");
     } else {
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   5,
                   "BARS %u MET %s",
                   (unsigned)model->looper.bar_count,
                   model->looper.record_metronome_enabled ? "ON" : "OFF");
     }
     if (mixer) {
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   6,
                   "%s MET %s",
                   model->looper.paused ? "PAUSED" : (model->looper.solo_active ? "SOLO" : "PLAY"),
                   model->looper.metronome_enabled ? "ON" : "OFF");
     } else if (current_waiting) {
-        draw_rowf(display,
+        oled_display_draw_rowf(display,
                   6,
                   "REC MET %s",
                   model->looper.record_metronome_enabled ? "ON" : "OFF");
@@ -518,14 +469,14 @@ static void draw_looper(pocket_oled_t *display, const play_ui_model_t *model)
     } else if (model->looper.master_ms > 0) {
         draw_time_ms(display, 6, "LEN", model->looper.master_ms);
     } else if (!drew_progress) {
-        draw_rowf(display, 6, "%.21s", model->looper.message);
+        oled_display_draw_rowf(display, 6, "%.21s", model->looper.message);
     }
 }
 
 static void draw_status(pocket_oled_t *display, const play_ui_model_t *model)
 {
     draw_header(display, "STATUS");
-    draw_rowf(display, 3, "%.21s", model->status);
+    oled_display_draw_rowf(display, 3, "%.21s", model->status);
 }
 
 static void draw_display(pocket_oled_t *display, const play_ui_model_t *model)

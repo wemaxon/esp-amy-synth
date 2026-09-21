@@ -1,5 +1,21 @@
 #include "hmi/control_logic.h"
 
+control_debounce_result_t control_debounce_sample(control_debounce_t *state,
+                                                   bool pressed,
+                                                   TickType_t now,
+                                                   TickType_t delay)
+{
+    if (pressed != state->sampled_pressed) {
+        state->sampled_pressed = pressed;
+        state->changed_at = now;
+        return CONTROL_DEBOUNCE_SAMPLED;
+    }
+    if (pressed != state->stable_pressed && (TickType_t)(now - state->changed_at) >= delay) {
+        return CONTROL_DEBOUNCE_READY;
+    }
+    return CONTROL_DEBOUNCE_UNCHANGED;
+}
+
 static const float DIRECTION_AXIS_DEADZONE = 0.75f;
 static const float DIRECTION_DIAGONAL_AXIS_MIN = 0.55f;
 

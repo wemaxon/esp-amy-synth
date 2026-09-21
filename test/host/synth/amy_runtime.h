@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define AMY_PATCH_MAIN_SYNTH 0
+#define AMY_PATCH_PAIR_SYNTH 1
+
 typedef enum {
     AMY_SOUND_BACKEND_RAW = 0,
     AMY_SOUND_BACKEND_PATCH,

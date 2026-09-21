@@ -2,6 +2,33 @@
 
 #include <stddef.h>
 
+void amy_event_send_raw_control(const amy_event *control, uint16_t main_osc,
+                                 uint16_t pair_osc, bool pair_active)
+{
+    amy_event event = *control;
+    event.osc = main_osc;
+    amy_add_event(&event);
+    if (pair_active) {
+        /* AMY mutates queued events, including their time. Start afresh. */
+        event = *control;
+        event.osc = pair_osc;
+        amy_add_event(&event);
+    }
+}
+
+void amy_event_send_patch_control(const amy_event *control, uint8_t oscs_per_voice,
+                                   bool pair_loaded)
+{
+    for (uint8_t pair = 0; pair < (pair_loaded ? 2U : 1U); ++pair) {
+        for (uint8_t osc = 0; osc < oscs_per_voice; ++osc) {
+            amy_event event = *control;
+            event.synth = pair ? AMY_PATCH_PAIR_SYNTH : AMY_PATCH_MAIN_SYNTH;
+            event.osc = osc;
+            amy_add_event(&event);
+        }
+    }
+}
+
 static float clamp_float(float value, float minimum, float maximum)
 {
     if (value < minimum) {

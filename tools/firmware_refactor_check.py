@@ -13,6 +13,8 @@ import re
 import sys
 from pathlib import Path
 
+from c_source import function_body
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,12 +43,6 @@ def require_public_symbols(relative: str, symbols: tuple[str, ...]) -> None:
         require(re.search(rf"\b{re.escape(symbol)}\s*\(", header) is not None,
                 f"{relative} lost public symbol {symbol}")
 
-
-def function_slice(text: str, symbol: str, next_symbol: str) -> str:
-    start = text.find(symbol)
-    end = text.find(next_symbol, start + len(symbol))
-    require(start >= 0 and end > start, f"could not isolate {symbol}")
-    return text[start:end]
 
 
 def check_public_facades() -> None:
@@ -145,12 +141,8 @@ def check_amy_upgrade_contracts() -> None:
             "osc_to_voice[s_drum_osc_base + i] = AMY_DRUM_OSC_RESERVATION_OWNER" in engine,
             "AMY patch allocation can reclaim reserved drum oscillators")
 
-    set_sound = function_slice(engine,
-                               "esp_err_t synth_amy_set_sound",
-                               "float synth_amy_sound_velocity")
-    set_voice_limit = function_slice(engine,
-                                     "esp_err_t synth_amy_set_voice_limit",
-                                     "esp_err_t synth_amy_set_envelope")
+    set_sound = function_body(engine, "synth_amy_set_sound")
+    set_voice_limit = function_body(engine, "synth_amy_set_voice_limit")
     for name, body in (("sound selection", set_sound),
                        ("voice-limit selection", set_voice_limit)):
         require("synth_amy_musical_all_off" in body,

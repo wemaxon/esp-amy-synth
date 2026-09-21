@@ -31,12 +31,6 @@ typedef struct {
     gpio_num_t gpio;
 } switch_mapping_t;
 
-typedef struct {
-    bool stable_pressed;
-    bool sampled_pressed;
-    TickType_t changed_at;
-} switch_debounce_t;
-
 static const char *TAG = "CONTROLS";
 static const TickType_t SERVICE_PERIOD_TICKS = pdMS_TO_TICKS(20);
 static const TickType_t HELD_LOG_TICKS = pdMS_TO_TICKS(500);
@@ -92,7 +86,7 @@ static bool s_ads1115_present;
 static switch_expander_t s_expanders[SWITCH_EXPANDER_STORAGE_COUNT];
 static uint16_t s_expander_port_state[SWITCH_EXPANDER_STORAGE_COUNT];
 static bool s_expander_present[SWITCH_EXPANDER_STORAGE_COUNT];
-static switch_debounce_t s_switches[CONTROL_SWITCH_COUNT];
+static control_debounce_t s_switches[CONTROL_SWITCH_COUNT];
 static control_event_queue_t s_event_queue;
 static control_joystick_state_t s_joystick;
 static control_wheel_state_t s_wheel;
@@ -457,11 +451,10 @@ static esp_err_t init_i2c_peripherals(void *ctx)
 
 static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ticks)
 {
-    switch_debounce_t *debounce = &s_switches[sw];
+    control_debounce_t *debounce = &s_switches[sw];
     TickType_t debounce_ticks = pdMS_TO_TICKS(ESP_POCKET_AUDIO_SWITCH_DEBOUNCE_MS);
-    if (pressed != debounce->sampled_pressed) {
-        debounce->sampled_pressed = pressed;
-        debounce->changed_at = now_ticks;
+    control_debounce_result_t result = control_debounce_sample(debounce, pressed, now_ticks, debounce_ticks);
+    if (result == CONTROL_DEBOUNCE_SAMPLED) {
         if (SWITCH_MAP[sw].is_gpio) {
             s_gpio_debounce_pending_mask |= 1UL << sw;
         } else if (!s_expander_debounce_pending) {
@@ -471,7 +464,7 @@ static void debounce_switch(control_switch_t sw, bool pressed, TickType_t now_ti
         return;
     }
 
-    if (pressed != debounce->stable_pressed && (now_ticks - debounce->changed_at) >= debounce_ticks) {
+    if (result == CONTROL_DEBOUNCE_READY) {
         portENTER_CRITICAL(&s_state_mux);
         debounce->stable_pressed = pressed;
         portEXIT_CRITICAL(&s_state_mux);

@@ -39,6 +39,37 @@ COMPILE_ONLY_SUITES = ("audio_meter", "pitch_detector")
 
 
 SUITES = {
+    "looper_view": {
+        "host_vector_looper_view_recording": 1,
+        "host_vector_looper_view_sync_wait": 1,
+        "host_vector_looper_view_count_in": 1,
+        "host_vector_looper_view_zero_rate": 1,
+    },
+    "settings": {
+        "host_vector_settings_adsr_preset": 1,
+        "host_vector_settings_glide_level": 1,
+        "host_vector_settings_delay_level": 1,
+        "host_vector_settings_tremolo_level": 1,
+        "host_vector_settings_voice_level": 1,
+    },
+    "playback": {
+        "host_vector_playback_strum_release": 1,
+        "host_vector_playback_strum_error": 1,
+        "host_vector_playback_repeat_wrap": 1,
+        "host_vector_playback_arp_delayed_poll": 1,
+    },
+    "mic_finalize": {
+        "host_vector_mic_finalize_pitched": 1,
+        "host_vector_mic_finalize_raw": 1,
+        "host_vector_mic_finalize_analysis_error": 1,
+        "host_vector_mic_finalize_install_error": 1,
+    },
+    "menu": {
+        "host_vector_menu_direction_edges": 1,
+        "host_vector_menu_sound_and_bpm": 1,
+        "host_vector_menu_priority": 1,
+        "host_vector_sound_browse_wrap": 1,
+    },
     "amy_prng": {
         "host_vector_amy_prng_repeatable": 1,
         "host_vector_amy_prng_streams_are_distinct": 1,
@@ -53,6 +84,9 @@ SUITES = {
         "host_vector_store_erase_missing": 1,
     },
     "amy_event_builder": {
+        "host_vector_amy_raw_dispatch": 1,
+        "host_vector_amy_patch_dispatch": 1,
+        "host_vector_amy_mono_dispatch": 1,
         "host_vector_amy_raw_velocity": 1000,
         "host_vector_amy_raw_note": 6025,
         "host_vector_amy_raw_modulation": 11,
@@ -128,6 +162,8 @@ SUITES = {
         "host_vector_rhythm_long_run": 600000,
     },
     "control_logic": {
+        "host_vector_debounce_bounce_and_hold": 1,
+        "host_vector_debounce_release_wrap": 1,
         "host_vector_direction_center": 0,
         "host_vector_direction_up": 1,
         "host_vector_direction_down_left": 6,
@@ -178,15 +214,18 @@ def parse_constant_return(ir: str, function: str) -> int:
 
 
 def main() -> None:
+    clang = find_clang()
     with tempfile.TemporaryDirectory(prefix="esp-amy-host-") as temporary:
         for suite in (*COMPILE_ONLY_SUITES, *SUITES):
             vectors = SUITES.get(suite, {})
             llvm_ir = Path(temporary) / f"{suite}.ll"
             subprocess.run(
                 [
-                    str(find_clang()),
+                    str(clang),
                     "--target=riscv32-esp-unknown-elf",
                     "-O3",
+                    # State-machine traces need deeper inlining to fold.
+                    *(["-mllvm", "-inline-threshold=10000"] if suite in ("playback", "looper_view") else []),
                     "-ffreestanding",
                     "-S",
                     "-emit-llvm",

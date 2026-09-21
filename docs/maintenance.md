@@ -24,6 +24,26 @@ before and after behavior-sensitive changes.
 
 ## Ownership and compatibility
 
+AMY is pinned to upstream tag `1.2.172` (`5e7c4c64`). Firmware uses the supported
+`BLOCK_SIZE_BITS=8` setting and AMY's fill-task priority, retaining 256-frame
+blocks and the existing task priority. Multicore completion uses upstream's
+dedicated semaphore. Keep `platform.multithread=0`: this firmware owns I2S
+pacing and calls `amy_update()` from its own audio task.
+
+Local AMY patches still required at this revision are ESP-IDF task signatures,
+the reserved-oscillator null check in all-notes-off, oscillator-local random
+streams, and EQ allocation cleanup on bus reset. The Windows Python build
+adjustments are also retained. Do not remove these based only on similar
+upstream fixes in other code paths. A prebuilt local Python extension must be
+rebuilt before using it with this revision; firmware does not use that binary.
+
+The chorus requests 512 samples explicitly to preserve the old implementation's
+effective sweep; older AMY ignored the configured 320-sample span. Upstream's
+filter-state reset and voice-reference bounds fixes are retained. Distortion
+and time-stretch APIs are available but are not enabled by existing controls.
+Recheck chorus, filter transitions, PCM playback, allocation headroom, and
+multicore audio timing on hardware after dependency upgrades.
+
 - `main/` owns startup, board configuration, controls, application policy,
   the AMY adapter, and looper. Local components own hardware protocols.
 - `components/amy/amy` is an upstream dependency. Preserve local platform

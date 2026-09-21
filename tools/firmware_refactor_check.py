@@ -108,7 +108,7 @@ def check_dependency_boundary() -> None:
     cmake = source("components/amy/CMakeLists.txt")
     require("amy/src" in cmake, "AMY component no longer points at the pinned source tree")
     require('"${AMY_SRC_DIR}/cv_trigger.c"' in cmake,
-            "AMY 1.2.152 cv_trigger source is missing from the component")
+            "AMY cv_trigger source is missing from the component")
     require((ROOT / "components" / "amy" / "amy" / ".git").exists(),
             "AMY dependency is no longer a submodule checkout")
 
@@ -121,8 +121,17 @@ def check_amy_upgrade_contracts() -> None:
     amy_i2s = source("components/amy/amy/src/i2s.c")
     amy_patches = source("components/amy/amy/src/patches.c")
 
-    require(re.search(r"^version=1\.2\.152$", properties, re.MULTILINE) is not None,
-            "AMY dependency is no longer version 1.2.152")
+    require(re.search(r"^version=1\.2\.172$", properties, re.MULTILINE) is not None,
+            "AMY dependency is no longer version 1.2.172")
+    require("PUBLIC BLOCK_SIZE_BITS=8" in source("components/amy/CMakeLists.txt"),
+            "AMY and firmware must share the 256-frame block configuration")
+    require("AMY_FILL_BUFFER_TASK_PRIORITY" in source("main/synth/amy_audio.c"),
+            "host audio task must use AMY's supported priority convention")
+    require("SYNTH_CHORUS_MAX_DELAY_SAMPLES = 512.0f" in engine,
+            "chorus must preserve the pre-upgrade effective 512-sample sweep")
+    require("xSemaphoreTake(esp_render_done_sem, portMAX_DELAY)" in amy_i2s and
+            "xSemaphoreGive(esp_render_done_sem)" in amy_i2s,
+            "multicore rendering must use upstream's dedicated completion semaphore")
     require("event.voices" not in engine,
             "AMY adapter reintroduced the removed direct event voice API")
     require("amy_global.echo" not in engine,

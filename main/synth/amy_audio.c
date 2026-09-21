@@ -8,6 +8,7 @@
 #include "esp_pocket_audio_board_config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_task.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "synth/amy_flanger.h"
@@ -31,7 +32,6 @@
 static const char *TAG = "SYNTH_AMY";
 
 static const uint32_t AUDIO_TASK_STACK_SIZE = 8192;
-static const UBaseType_t AUDIO_TASK_PRIORITY = configMAX_PRIORITIES - 1;
 static const BaseType_t AUDIO_TASK_CORE = 1;
 
 static synth_amy_audio_config_t s_config;
@@ -158,7 +158,7 @@ esp_err_t synth_amy_audio_start(const synth_amy_audio_config_t *config)
         "amy_audio",
         AUDIO_TASK_STACK_SIZE,
         NULL,
-        AUDIO_TASK_PRIORITY,
+        AMY_FILL_BUFFER_TASK_PRIORITY,
         &s_audio_task,
         AUDIO_TASK_CORE
     );

@@ -35,6 +35,9 @@ idf_component_register(
 )
 
 option(ESP_POCKET_AUDIO_AMY_PROFILE "Build AMY with internal profiling counters" OFF)
+# Use AMY's supported block-size setting for both the library and its consumers.
+# Keep the existing 256-frame audio/looper timing contract.
+target_compile_definitions(${COMPONENT_LIB} PUBLIC BLOCK_SIZE_BITS=8)
 if(ESP_POCKET_AUDIO_AMY_PROFILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE AMY_DEBUG)
 endif()

@@ -56,7 +56,9 @@ static const float SYNTH_REVERB_XOVER_HZ = 3000.0f;
 static const float SYNTH_CHORUS_LEVEL = 0.30f;
 static const float SYNTH_CHORUS_LFO_HZ = 0.55f;
 static const float SYNTH_CHORUS_DEPTH = 0.55f;
-static const float SYNTH_CHORUS_MAX_DELAY_SAMPLES = 320.0f;
+// Before AMY 1.2.171 the modulation used the full 512-sample line even when
+// max_delay was 320. Request that span explicitly to preserve the chorus sound.
+static const float SYNTH_CHORUS_MAX_DELAY_SAMPLES = 512.0f;
 static const float SYNTH_DELAY_LEVEL = 0.28f;
 static const float SYNTH_DELAY_FEEDBACK = 0.32f;
 static const float SYNTH_DELAY_FILTER_COEF = 0.28f;

@@ -1,5 +1,9 @@
 # HiChord Synth Feature Specification
 
+Historical Rev 2.8 feature inventory, not the current chord-engine contract.
+See [maintenance guidance](../maintenance.md#chords) for the 2.9 reference,
+implemented behavior, source conflicts, and remaining parity gaps.
+
 Source: HiChord Manual & User Guide, Rev 2.8, https://hichord.shop/pages/manual
 Purpose: implementation-focused feature inventory for Codex or another coding agent.
 

@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "hmi/control_direction.h"
 
 #include "driver/i2c_master.h"
 #include "esp_err.h"
@@ -32,18 +33,6 @@ typedef enum {
     CONTROL_AXIS_Y,
     CONTROL_AXIS_COUNT,
 } control_axis_t;
-
-typedef enum {
-    CONTROL_JOYSTICK_CENTER = 0,
-    CONTROL_JOYSTICK_UP,
-    CONTROL_JOYSTICK_UP_RIGHT,
-    CONTROL_JOYSTICK_RIGHT,
-    CONTROL_JOYSTICK_DOWN_RIGHT,
-    CONTROL_JOYSTICK_DOWN,
-    CONTROL_JOYSTICK_DOWN_LEFT,
-    CONTROL_JOYSTICK_LEFT,
-    CONTROL_JOYSTICK_UP_LEFT,
-} control_joystick_direction_t;
 
 typedef struct {
     int16_t raw;

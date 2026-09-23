@@ -11,11 +11,7 @@ static const char *const VOICE_ROLE_NAMES[AMY_MUSICAL_VOICE_COUNT] = {
     "root", "third", "fifth", "bass", "extension", "fill",
 };
 
-static const uint8_t RAW_ROLE_PRIORITY[AMY_MUSICAL_VOICE_COUNT] = {
-    0, 1, 2, 3, 4, 5,
-};
-
-static const uint8_t PATCH_ROLE_PRIORITY[AMY_MUSICAL_VOICE_COUNT] = {
+static const uint8_t ROLE_PRIORITY[AMY_MUSICAL_VOICE_COUNT] = {
     0, 1, 2, 3, 4, 5,
 };
 
@@ -87,10 +83,8 @@ const char *amy_voice_map_role_name(uint8_t role)
 
 const uint8_t *amy_voice_map_role_priority(amy_sound_backend_t backend)
 {
-    if (backend == AMY_SOUND_BACKEND_PATCH) {
-        return PATCH_ROLE_PRIORITY;
-    }
-    return RAW_ROLE_PRIORITY;
+    (void)backend;
+    return ROLE_PRIORITY;
 }
 
 void amy_voice_map_build_assignment(const synth_chord_t *chord,
@@ -117,6 +111,15 @@ void amy_voice_map_build_assignment(const synth_chord_t *chord,
 
     if (chord->bass_enabled) {
         assign_voice_note(assignments, 3, chord->bass_note);
+        if (chord->note_count == 6) {
+            /* Six chord tones plus bass cannot fit six voices. Preserve the
+             * extensions (especially the 13th); omit the fifth-position tone.
+             * Role order survives inversion, so this is not a pitch-sort rule. */
+            assign_voice_note(assignments, 2, chord->notes[3]);
+            assign_voice_note(assignments, 4, chord->notes[4]);
+            assign_voice_note(assignments, 5, chord->notes[5]);
+            return;
+        }
         assign_voice_note(assignments, 4, chord_fill_note(chord, 3));
         assign_voice_note(assignments, 5, chord_fill_note(chord, 4));
         return;

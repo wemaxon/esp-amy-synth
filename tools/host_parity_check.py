@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from chord_engine_check import main as check_chords
 from pathlib import Path
 
 
@@ -214,6 +215,7 @@ def parse_constant_return(ir: str, function: str) -> int:
 
 
 def main() -> None:
+    check_chords()
     clang = find_clang()
     with tempfile.TemporaryDirectory(prefix="esp-amy-host-") as temporary:
         for suite in (*COMPILE_ONLY_SUITES, *SUITES):

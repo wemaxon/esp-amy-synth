@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "hmi/controls.h"
+#include "hmi/control_direction.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,6 +42,8 @@ typedef enum {
     SYNTH_JOYSTICK_MODE_DEFAULT = 0,
     SYNTH_JOYSTICK_MODE_EXTENDED,
     SYNTH_JOYSTICK_MODE_CHROMATIC,
+    SYNTH_JOYSTICK_MODE_BORROW,
+    SYNTH_JOYSTICK_MODE_OG,
     SYNTH_JOYSTICK_MODE_COUNT,
 } synth_joystick_mode_t;
 
@@ -68,6 +70,13 @@ typedef enum {
     SYNTH_CHORD_MOD_DOM13,
     SYNTH_CHORD_MOD_DOM7_FLAT9,
     SYNTH_CHORD_MOD_DOM7_ALT,
+    SYNTH_CHORD_MOD_NINTH,
+    SYNTH_CHORD_MOD_OG_NINTH,
+    SYNTH_CHORD_MOD_FLAT_MAJOR,
+    SYNTH_CHORD_MOD_PASSING_DIM7,
+    SYNTH_CHORD_MOD_TRITONE_DOM7,
+    SYNTH_CHORD_MOD_BACKDOOR_DOM7,
+    SYNTH_CHORD_MOD_BORROWED_SEVENTH,
     SYNTH_CHORD_MOD_COUNT,
 } synth_chord_modifier_t;
 
@@ -111,6 +120,12 @@ synth_bass_mode_t synth_bass_mode_step(synth_bass_mode_t mode, int8_t steps);
 synth_joystick_mode_t synth_joystick_mode_step(synth_joystick_mode_t mode, int8_t steps);
 synth_chord_modifier_t synth_chord_modifier_from_joystick(synth_joystick_mode_t mode,
                                                           control_joystick_direction_t direction);
+/* Chromatic horizontal gestures are key actions, not lockable chord modifiers. */
+int8_t synth_chord_key_shift(synth_joystick_mode_t mode,
+                            control_joystick_direction_t direction);
+/* Pure, allocation-free operation. Invalid requests return -1 without changing output.
+ * Note order retains root/third/fifth/extension identity after inversions.
+ * An empty voice-leading history uses the requested manual inversion. */
 int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord);
 
 #ifdef __cplusplus

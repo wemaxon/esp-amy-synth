@@ -766,7 +766,7 @@ static void handle_chord_event(const control_event_t *event)
     }
 }
 
-static void step_key(int8_t semitones)
+static bool step_key(int8_t semitones)
 {
     synth_key_t next_key = s_app.key;
     int8_t next_octave = s_app.global_octave_shift;
@@ -775,7 +775,7 @@ static void step_key(int8_t semitones)
                             semitones,
                             &next_key,
                             &next_octave)) {
-        return;
+        return false;
     }
 
     s_app.key = next_key;
@@ -785,6 +785,7 @@ static void step_key(int8_t semitones)
     set_status("KEY CHANGED");
     refresh_held_chords();
     update_ui();
+    return true;
 }
 
 static void step_global_octave(int8_t octaves)
@@ -1645,18 +1646,18 @@ static void update_joystick(void)
         return;
     }
 
-    if (s_app.joystick_mode == SYNTH_JOYSTICK_MODE_CHROMATIC &&
-        s_app.chords.held_mask == 0 &&
-        (joystick.direction == CONTROL_JOYSTICK_LEFT ||
-         joystick.direction == CONTROL_JOYSTICK_RIGHT)) {
+    int8_t key_shift = synth_chord_key_shift(s_app.joystick_mode, joystick.direction);
+    if (key_shift != 0) {
+        /* Clear an earlier quality gesture before rebuilding held chords. */
+        bool had_modifier = s_app.modifier != SYNTH_CHORD_MOD_NONE;
+        s_app.modifier = SYNTH_CHORD_MOD_NONE;
         if (joystick.direction != s_app.last_play_direction) {
-            step_key(joystick.direction == CONTROL_JOYSTICK_RIGHT ? 1 : -1);
+            if (!step_key(key_shift) && had_modifier) {
+                refresh_held_chords();
+                update_ui();
+            }
         }
         s_app.last_play_direction = joystick.direction;
-        if (s_app.modifier != SYNTH_CHORD_MOD_NONE) {
-            s_app.modifier = SYNTH_CHORD_MOD_NONE;
-            update_ui();
-        }
         return;
     }
 

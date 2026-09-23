@@ -15,8 +15,12 @@ python tools/host_parity_check.py
 python tools/level_calibration_check.py
 ```
 
-Host parity uses Espressif clang to compile production C into optimized LLVM
-vectors. Set `ESP_CLANG` to the compiler path if automatic discovery fails.
+Chord checks compile and execute production C with a native compiler: Visual
+Studio C++ Build Tools on Windows, or `CC` (default `cc`) on Unix. Run them alone
+with `python tools/chord_engine_check.py`. Both the specification and host-parity
+commands include them. No device, AMY binary, or downloaded reference is needed.
+Other host parity suites use Espressif clang to compile production C into optimized
+LLVM vectors. Set `ESP_CLANG` to the compiler path if automatic discovery fails.
 Audio-meter and pitch-detector suites are compile checks, not runtime tests.
 Device boot checks live in `pytest_firmware.py` and require connected hardware.
 Compare build warnings, binary size, RAM use, and relevant device measurements
@@ -58,6 +62,48 @@ multicore audio timing on hardware after dependency upgrades.
 - Calibration blobs use `joy_cal/data` and `wheel_cal/data`, version 1.
   Preserve magic, binary layout, validation, board fallback, and reset semantics.
 - Keep allocations, logging, NVS, I2C, and blocking locks out of audio callbacks.
+
+### Chords
+
+`chord_engine.c` owns pure chord construction, formula/name metadata, inversions,
+and bounded voice-leading search. It has no ESP-IDF, AMY, allocation, or I/O
+dependency. `app/chord_tools.c` supplies held-button, lock, and bass context;
+the coordinator owns edge-triggered key changes. `amy_voice_map.c` alone reduces
+the result to six musical voices. Keep note order by musical role, not pitch:
+inversions change pitches without rearranging root/third/fifth slots.
+
+The behavioral reference is the [official 2.9 beta manual](https://hichord.github.io/hichord-beta-updater/manual/)
+and [companion source](https://app.hichord.shop/app.js?v=20260701a), inspected
+2026-09-21. Default, Extended, Chromatic, Borrow, and OG are exposed. Chromatic
+horizontal gestures transpose once per direction edge, including held chords.
+Borrow shifts the chord root, not the selected key; locks retain those modifiers.
+Existing enum values are retained, with new modes/modifiers appended.
+
+Public-source limits and deliberate local policies (not verified device parity):
+
+- The manual's older Default example says add9, while its 2.9 change notes and
+  companion OG comments describe major/minor ninths. Default uses a seventh plus
+  ninth; Extended add9 remains distinct. OG replaces that ninth with the doubled
+  third. Diminished-family ninths use half-diminished harmony plus a ninth.
+- Only the existing major-scale seven-button layout is implemented. HiChord's
+  other nine scales remain a gap: exact button voicings, particularly pentatonic
+  and blues, are not established by the public material. No guessed scale table.
+- Voice leading searches three inversions at the nominal and adjacent octaves,
+  minimizing sorted pitch movement with a mean-register penalty. Equal scores
+  prefer the requested inversion/register. With no history, manual inversion
+  applies. This is a local algorithm; official tie-breaking is unpublished.
+- At MIDI boundaries the entire voicing shifts by octaves, not individual notes.
+  Invalid requests leave output unchanged. An unrepresentable bass below the
+  chord is rejected. Bass normally uses root minus two octaves or the slash degree.
+- Six chord tones plus bass omit the fifth-position tone, preserving all three
+  extensions. Exact HiChord reduction policy is unknown. Layered multi-button
+  chords retain the existing button-order priority and capacity limits.
+
+Tests execute production construction, application chord helpers, and voice
+assignment. Independent pitch-class expectations cover all keys, degrees,
+modifiers, inversions, and bass modes; explicit vectors cover names, pitches,
+Borrow/OG, register limits, locks, slash bass, and voice leading. Passing these
+tests proves the specified local behavior, not comparison with HiChord hardware.
 
 ### Looper
 

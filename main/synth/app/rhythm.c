@@ -1,6 +1,7 @@
 #include "synth/app/rhythm.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "esp_random.h"

@@ -1,742 +1,332 @@
 #include "synth/chord_engine.h"
 
 #include <limits.h>
-#include <stdbool.h>
-#include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 
-typedef enum {
-    BASE_MAJOR = 0,
-    BASE_MINOR,
-    BASE_DIMINISHED,
-    BASE_AUGMENTED,
-    BASE_SUS2,
-    BASE_SUS4,
-    BASE_SCALE,
-} base_chord_t;
-
+/* HiChord 2.9 public manual/app, checked 2026-09-21. See maintenance.md for
+ * source conflicts and the explicitly chosen local voicing policies. */
 typedef struct {
-    uint8_t note_count;
-    uint8_t intervals[7];
-} scale_definition_t;
-
-typedef struct {
-    int16_t intervals[SYNTH_MAX_CHORD_NOTES];
-    uint8_t count;
     const char *suffix;
-    base_chord_t base;
+    uint8_t count;
+    uint8_t intervals[6];
 } chord_formula_t;
 
-static const scale_definition_t DIATONIC_MAJOR_SCALE = {7, {0, 2, 4, 5, 7, 9, 11}};
+typedef enum {
+    MAJOR, MINOR, DIM, AUG, SUS2, SUS4, MAJOR6,
+    DOM7, MAJ7, MIN7, HALF_DIM7, ADD9, MIN_ADD9, DIM_ADD9,
+    DOM7_SHARP9, SUS4_FLAT7, ADD11, MIN_ADD11, DIM_ADD11, DOM9,
+    MIN11, MIN_MAJ7, MAJ13, SIX_NINE, MAJ7_SHARP11, DOM13,
+    DOM7_FLAT9, DOM7_ALT, MAJ9, MIN9, DIM9, OG_MAJ9, OG_MIN9,
+    OG_DIM9, DIM7,
+} formula_id_t;
 
-static const char *KEY_NAMES[SYNTH_KEY_COUNT] = {
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+/* Names and pitches have one owner. No generic scale/fallback chord builder. */
+static const chord_formula_t FORMULAS[] = {
+    [MAJOR] = {"", 3, {0, 4, 7}},
+    [MINOR] = {"m", 3, {0, 3, 7}},
+    [DIM] = {"dim", 3, {0, 3, 6}},
+    [AUG] = {"aug", 3, {0, 4, 8}},
+    [SUS2] = {"sus2", 3, {0, 2, 7}},
+    [SUS4] = {"sus4", 3, {0, 5, 7}},
+    [MAJOR6] = {"6", 4, {0, 4, 7, 9}},
+    [DOM7] = {"7", 4, {0, 4, 7, 10}},
+    [MAJ7] = {"maj7", 4, {0, 4, 7, 11}},
+    [MIN7] = {"m7", 4, {0, 3, 7, 10}},
+    [HALF_DIM7] = {"m7b5", 4, {0, 3, 6, 10}},
+    [ADD9] = {"add9", 4, {0, 4, 7, 14}},
+    [MIN_ADD9] = {"madd9", 4, {0, 3, 7, 14}},
+    [DIM_ADD9] = {"dimadd9", 4, {0, 3, 6, 14}},
+    [DOM7_SHARP9] = {"7#9", 5, {0, 4, 7, 10, 15}},
+    [SUS4_FLAT7] = {"7sus4", 4, {0, 5, 7, 10}},
+    [ADD11] = {"add11", 4, {0, 4, 7, 17}},
+    [MIN_ADD11] = {"madd11", 4, {0, 3, 7, 17}},
+    [DIM_ADD11] = {"dimadd11", 4, {0, 3, 6, 17}},
+    [DOM9] = {"9", 5, {0, 4, 7, 10, 14}},
+    [MIN11] = {"m11", 5, {0, 3, 7, 10, 17}},
+    [MIN_MAJ7] = {"mMaj7", 4, {0, 3, 7, 11}},
+    [MAJ13] = {"maj13", 6, {0, 4, 7, 11, 14, 21}},
+    [SIX_NINE] = {"6/9", 5, {0, 4, 7, 9, 14}},
+    [MAJ7_SHARP11] = {"maj7#11", 5, {0, 4, 7, 11, 18}},
+    [DOM13] = {"13", 6, {0, 4, 7, 10, 14, 21}},
+    [DOM7_FLAT9] = {"7b9", 5, {0, 4, 7, 10, 13}},
+    [DOM7_ALT] = {"7alt", 6, {0, 4, 6, 10, 13, 15}},
+    [MAJ9] = {"maj9", 5, {0, 4, 7, 11, 14}},
+    [MIN9] = {"m9", 5, {0, 3, 7, 10, 14}},
+    [DIM9] = {"m9b5", 5, {0, 3, 6, 10, 14}},
+    /* OG deliberately replaces the ninth with an octave-doubled third. */
+    [OG_MAJ9] = {"maj9", 5, {0, 4, 7, 11, 16}},
+    [OG_MIN9] = {"m9", 5, {0, 3, 7, 10, 15}},
+    [OG_DIM9] = {"m9b5", 5, {0, 3, 6, 10, 15}},
+    [DIM7] = {"dim7", 4, {0, 3, 6, 9}},
 };
 
-static const char *BASS_MODE_NAMES[SYNTH_BASS_MODE_COUNT] = {
-    [SYNTH_BASS_MODE_OFF] = "OFF",
-    [SYNTH_BASS_MODE_ROOT] = "ROOT",
-    [SYNTH_BASS_MODE_SLASH] = "SLASH",
+typedef struct {
+    const char *name;
+    formula_id_t family[3]; /* major, minor, diminished */
+    int8_t root_shift;
+} modifier_definition_t;
+
+static const modifier_definition_t MODIFIERS[SYNTH_CHORD_MOD_COUNT] = {
+    [SYNTH_CHORD_MOD_NONE] = {"none", {MAJOR, MINOR, DIM}, 0},
+    [SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR] = {"maj/min", {MINOR, MAJOR, MINOR}, 0},
+    [SYNTH_CHORD_MOD_DOM7] = {"dom7", {DOM7, DOM7, DOM7}, 0},
+    [SYNTH_CHORD_MOD_MAJ7_MIN7] = {"7", {MAJ7, MIN7, HALF_DIM7}, 0},
+    [SYNTH_CHORD_MOD_ADD9] = {"add9", {ADD9, MIN_ADD9, DIM_ADD9}, 0},
+    [SYNTH_CHORD_MOD_SUS4] = {"sus4", {SUS4, SUS4, SUS4}, 0},
+    [SYNTH_CHORD_MOD_SIXTH_OR_SUS2] = {"6/sus2", {MAJOR6, SUS2, SUS2}, 0},
+    [SYNTH_CHORD_MOD_DIM_OR_MINOR] = {"dim/min", {MINOR, DIM, DIM}, 0},
+    [SYNTH_CHORD_MOD_AUGMENTED] = {"aug", {AUG, AUG, AUG}, 0},
+    [SYNTH_CHORD_MOD_DOM7_SHARP9] = {"7#9", {DOM7_SHARP9, DOM7_SHARP9, DOM7_SHARP9}, 0},
+    [SYNTH_CHORD_MOD_SUS4_FLAT7] = {"7sus4", {SUS4_FLAT7, SUS4_FLAT7, SUS4_FLAT7}, 0},
+    [SYNTH_CHORD_MOD_ADD11] = {"add11", {ADD11, MIN_ADD11, DIM_ADD11}, 0},
+    [SYNTH_CHORD_MOD_HALF_DIM7] = {"m7b5", {HALF_DIM7, HALF_DIM7, HALF_DIM7}, 0},
+    [SYNTH_CHORD_MOD_DOM9] = {"9", {DOM9, DOM9, DOM9}, 0},
+    [SYNTH_CHORD_MOD_MIN11] = {"m11", {MIN11, MIN11, MIN11}, 0},
+    [SYNTH_CHORD_MOD_MIN_MAJ7] = {"mMaj7", {MIN_MAJ7, MIN_MAJ7, MIN_MAJ7}, 0},
+    [SYNTH_CHORD_MOD_MAJ13] = {"maj13", {MAJ13, MAJ13, MAJ13}, 0},
+    [SYNTH_CHORD_MOD_SIX_NINE] = {"6/9", {SIX_NINE, SIX_NINE, SIX_NINE}, 0},
+    [SYNTH_CHORD_MOD_MAJ7_SHARP11] = {"maj7#11", {MAJ7_SHARP11, MAJ7_SHARP11, MAJ7_SHARP11}, 0},
+    [SYNTH_CHORD_MOD_DOM13] = {"13", {DOM13, DOM13, DOM13}, 0},
+    [SYNTH_CHORD_MOD_DOM7_FLAT9] = {"7b9", {DOM7_FLAT9, DOM7_FLAT9, DOM7_FLAT9}, 0},
+    [SYNTH_CHORD_MOD_DOM7_ALT] = {"7alt", {DOM7_ALT, DOM7_ALT, DOM7_ALT}, 0},
+    [SYNTH_CHORD_MOD_NINTH] = {"9th", {MAJ9, MIN9, DIM9}, 0},
+    [SYNTH_CHORD_MOD_OG_NINTH] = {"OG 9th", {OG_MAJ9, OG_MIN9, OG_DIM9}, 0},
+    [SYNTH_CHORD_MOD_FLAT_MAJOR] = {"bMajor", {MAJOR, MAJOR, MAJOR}, -1},
+    [SYNTH_CHORD_MOD_PASSING_DIM7] = {"pass dim7", {DIM7, DIM7, DIM7}, 1},
+    [SYNTH_CHORD_MOD_TRITONE_DOM7] = {"tritone7", {DOM7, DOM7, DOM7}, -6},
+    [SYNTH_CHORD_MOD_BACKDOOR_DOM7] = {"backdoor7", {DOM7, DOM7, DOM7}, -2},
+    [SYNTH_CHORD_MOD_BORROWED_SEVENTH] = {"borrow7", {MIN7, MAJ7, MAJ7}, 0},
 };
 
-static const char *JOYSTICK_MODE_NAMES[SYNTH_JOYSTICK_MODE_COUNT] = {
-    [SYNTH_JOYSTICK_MODE_DEFAULT] = "DEFAULT",
-    [SYNTH_JOYSTICK_MODE_EXTENDED] = "EXTENDED",
-    [SYNTH_JOYSTICK_MODE_CHROMATIC] = "CHROMATIC",
-};
+static const uint8_t DEGREE_ROOTS[7] = {0, 2, 4, 5, 7, 9, 11};
+static const uint8_t DEGREE_FAMILIES[7] = {0, 1, 1, 0, 0, 1, 2};
+static const char *const KEY_NAMES[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+static const char *const BASS_NAMES[] = {"OFF", "ROOT", "SLASH"};
+static const char *const MODE_NAMES[] = {"DEFAULT", "EXTENDED", "CHROMATIC", "BORROW", "OG"};
 
-static int abs_int(int value)
-{
-    return value < 0 ? -value : value;
-}
+/* Center, N, NE, E, SE, S, SW, W, NW: same order as control_direction.h. */
+static const synth_chord_modifier_t JOYSTICK_MAP[SYNTH_JOYSTICK_MODE_COUNT][9] = {
+    {SYNTH_CHORD_MOD_NONE, SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR, SYNTH_CHORD_MOD_DOM7,
+     SYNTH_CHORD_MOD_MAJ7_MIN7, SYNTH_CHORD_MOD_NINTH, SYNTH_CHORD_MOD_SUS4,
+     SYNTH_CHORD_MOD_SIXTH_OR_SUS2, SYNTH_CHORD_MOD_DIM_OR_MINOR, SYNTH_CHORD_MOD_AUGMENTED},
+    {SYNTH_CHORD_MOD_NONE, SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR, SYNTH_CHORD_MOD_DOM9,
+     SYNTH_CHORD_MOD_ADD11, SYNTH_CHORD_MOD_MIN11, SYNTH_CHORD_MOD_DOM7_SHARP9,
+     SYNTH_CHORD_MOD_ADD9, SYNTH_CHORD_MOD_SUS4_FLAT7, SYNTH_CHORD_MOD_HALF_DIM7},
+    {SYNTH_CHORD_MOD_NONE, SYNTH_CHORD_MOD_MIN_MAJ7, SYNTH_CHORD_MOD_DOM7_ALT,
+     SYNTH_CHORD_MOD_NONE, SYNTH_CHORD_MOD_HALF_DIM7, SYNTH_CHORD_MOD_MAJ13,
+     SYNTH_CHORD_MOD_SIX_NINE, SYNTH_CHORD_MOD_NONE, SYNTH_CHORD_MOD_DOM7_FLAT9},
+    {SYNTH_CHORD_MOD_NONE, SYNTH_CHORD_MOD_DOM7, SYNTH_CHORD_MOD_BACKDOOR_DOM7,
+     SYNTH_CHORD_MOD_PASSING_DIM7, SYNTH_CHORD_MOD_HALF_DIM7, SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR,
+     SYNTH_CHORD_MOD_BORROWED_SEVENTH, SYNTH_CHORD_MOD_FLAT_MAJOR, SYNTH_CHORD_MOD_TRITONE_DOM7},
+    {SYNTH_CHORD_MOD_NONE, SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR, SYNTH_CHORD_MOD_DOM7,
+     SYNTH_CHORD_MOD_MAJ7_MIN7, SYNTH_CHORD_MOD_OG_NINTH, SYNTH_CHORD_MOD_SUS4,
+     SYNTH_CHORD_MOD_SIXTH_OR_SUS2, SYNTH_CHORD_MOD_DIM_OR_MINOR, SYNTH_CHORD_MOD_AUGMENTED},
+};
 
 const char *synth_key_name(synth_key_t key)
 {
-    return key < SYNTH_KEY_COUNT ? KEY_NAMES[key] : "?";
+    return (unsigned)key < SYNTH_KEY_COUNT ? KEY_NAMES[key] : "?";
 }
-
 const char *synth_bass_mode_name(synth_bass_mode_t mode)
 {
-    return mode < SYNTH_BASS_MODE_COUNT ? BASS_MODE_NAMES[mode] : "?";
+    return (unsigned)mode < SYNTH_BASS_MODE_COUNT ? BASS_NAMES[mode] : "?";
 }
-
 const char *synth_joystick_mode_name(synth_joystick_mode_t mode)
 {
-    return mode < SYNTH_JOYSTICK_MODE_COUNT ? JOYSTICK_MODE_NAMES[mode] : "?";
+    return (unsigned)mode < SYNTH_JOYSTICK_MODE_COUNT ? MODE_NAMES[mode] : "?";
 }
-
 const char *synth_chord_modifier_name(synth_chord_modifier_t modifier)
 {
-    switch (modifier) {
-    case SYNTH_CHORD_MOD_NONE:
-        return "none";
-    case SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR:
-        return "maj/min";
-    case SYNTH_CHORD_MOD_DOM7:
-        return "dom7";
-    case SYNTH_CHORD_MOD_MAJ7_MIN7:
-        return "7";
-    case SYNTH_CHORD_MOD_ADD9:
-        return "add9";
-    case SYNTH_CHORD_MOD_SUS4:
-        return "sus4";
-    case SYNTH_CHORD_MOD_SIXTH_OR_SUS2:
-        return "6/sus2";
-    case SYNTH_CHORD_MOD_DIM_OR_MINOR:
-        return "dim";
-    case SYNTH_CHORD_MOD_AUGMENTED:
-        return "aug";
-    case SYNTH_CHORD_MOD_DOM7_SHARP9:
-        return "7#9";
-    case SYNTH_CHORD_MOD_SUS4_FLAT7:
-        return "7sus4";
-    case SYNTH_CHORD_MOD_ADD11:
-        return "add11";
-    case SYNTH_CHORD_MOD_HALF_DIM7:
-        return "m7b5";
-    case SYNTH_CHORD_MOD_DOM9:
-        return "9";
-    case SYNTH_CHORD_MOD_MIN11:
-        return "m11";
-    case SYNTH_CHORD_MOD_MIN_MAJ7:
-        return "mMaj7";
-    case SYNTH_CHORD_MOD_MAJ13:
-        return "maj13";
-    case SYNTH_CHORD_MOD_SIX_NINE:
-        return "6/9";
-    case SYNTH_CHORD_MOD_MAJ7_SHARP11:
-        return "maj7#11";
-    case SYNTH_CHORD_MOD_DOM13:
-        return "13";
-    case SYNTH_CHORD_MOD_DOM7_FLAT9:
-        return "7b9";
-    case SYNTH_CHORD_MOD_DOM7_ALT:
-        return "7alt";
-    default:
-        return "?";
-    }
+    return (unsigned)modifier < SYNTH_CHORD_MOD_COUNT ? MODIFIERS[modifier].name : "?";
 }
 
+static int wrap_step(int value, int steps, int count)
+{
+    int result = (value % count + steps) % count;
+    return result < 0 ? result + count : result;
+}
 synth_key_t synth_key_step(synth_key_t key, int8_t semitones)
 {
-    int value = (int)key + semitones;
-    while (value < 0) {
-        value += SYNTH_KEY_COUNT;
-    }
-    return (synth_key_t)(value % SYNTH_KEY_COUNT);
+    return (synth_key_t)wrap_step((int)key, semitones, SYNTH_KEY_COUNT);
 }
-
 synth_bass_mode_t synth_bass_mode_step(synth_bass_mode_t mode, int8_t steps)
 {
-    int value = (int)mode + steps;
-    while (value < 0) {
-        value += SYNTH_BASS_MODE_COUNT;
-    }
-    return (synth_bass_mode_t)(value % SYNTH_BASS_MODE_COUNT);
+    return (synth_bass_mode_t)wrap_step((int)mode, steps, SYNTH_BASS_MODE_COUNT);
 }
-
 synth_joystick_mode_t synth_joystick_mode_step(synth_joystick_mode_t mode, int8_t steps)
 {
-    int value = (int)mode + steps;
-    while (value < 0) {
-        value += SYNTH_JOYSTICK_MODE_COUNT;
-    }
-    return (synth_joystick_mode_t)(value % SYNTH_JOYSTICK_MODE_COUNT);
+    return (synth_joystick_mode_t)wrap_step((int)mode, steps, SYNTH_JOYSTICK_MODE_COUNT);
 }
-
-static synth_chord_modifier_t default_modifier_from_joystick(control_joystick_direction_t direction)
-{
-    switch (direction) {
-    case CONTROL_JOYSTICK_UP:
-        return SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR;
-    case CONTROL_JOYSTICK_UP_RIGHT:
-        return SYNTH_CHORD_MOD_DOM7;
-    case CONTROL_JOYSTICK_RIGHT:
-        return SYNTH_CHORD_MOD_MAJ7_MIN7;
-    case CONTROL_JOYSTICK_DOWN_RIGHT:
-        return SYNTH_CHORD_MOD_ADD9;
-    case CONTROL_JOYSTICK_DOWN:
-        return SYNTH_CHORD_MOD_SUS4;
-    case CONTROL_JOYSTICK_DOWN_LEFT:
-        return SYNTH_CHORD_MOD_SIXTH_OR_SUS2;
-    case CONTROL_JOYSTICK_LEFT:
-        return SYNTH_CHORD_MOD_DIM_OR_MINOR;
-    case CONTROL_JOYSTICK_UP_LEFT:
-        return SYNTH_CHORD_MOD_AUGMENTED;
-    case CONTROL_JOYSTICK_CENTER:
-    default:
-        return SYNTH_CHORD_MOD_NONE;
-    }
-}
-
-static synth_chord_modifier_t extended_modifier_from_joystick(control_joystick_direction_t direction)
-{
-    switch (direction) {
-    case CONTROL_JOYSTICK_UP:
-        return SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR;
-    case CONTROL_JOYSTICK_UP_RIGHT:
-        return SYNTH_CHORD_MOD_DOM9;
-    case CONTROL_JOYSTICK_RIGHT:
-        return SYNTH_CHORD_MOD_ADD11;
-    case CONTROL_JOYSTICK_DOWN_RIGHT:
-        return SYNTH_CHORD_MOD_MIN11;
-    case CONTROL_JOYSTICK_DOWN:
-        return SYNTH_CHORD_MOD_DOM7_SHARP9;
-    case CONTROL_JOYSTICK_DOWN_LEFT:
-        return SYNTH_CHORD_MOD_ADD9;
-    case CONTROL_JOYSTICK_LEFT:
-        return SYNTH_CHORD_MOD_SUS4_FLAT7;
-    case CONTROL_JOYSTICK_UP_LEFT:
-        return SYNTH_CHORD_MOD_HALF_DIM7;
-    case CONTROL_JOYSTICK_CENTER:
-    default:
-        return SYNTH_CHORD_MOD_NONE;
-    }
-}
-
-static synth_chord_modifier_t chromatic_modifier_from_joystick(control_joystick_direction_t direction)
-{
-    switch (direction) {
-    case CONTROL_JOYSTICK_UP:
-        return SYNTH_CHORD_MOD_MIN_MAJ7;
-    case CONTROL_JOYSTICK_UP_RIGHT:
-        return SYNTH_CHORD_MOD_DOM13;
-    case CONTROL_JOYSTICK_RIGHT:
-        return SYNTH_CHORD_MOD_SIX_NINE;
-    case CONTROL_JOYSTICK_DOWN_RIGHT:
-        return SYNTH_CHORD_MOD_DOM7_ALT;
-    case CONTROL_JOYSTICK_DOWN:
-        return SYNTH_CHORD_MOD_MAJ13;
-    case CONTROL_JOYSTICK_DOWN_LEFT:
-        return SYNTH_CHORD_MOD_DOM7_FLAT9;
-    case CONTROL_JOYSTICK_LEFT:
-        return SYNTH_CHORD_MOD_HALF_DIM7;
-    case CONTROL_JOYSTICK_UP_LEFT:
-        return SYNTH_CHORD_MOD_MAJ7_SHARP11;
-    case CONTROL_JOYSTICK_CENTER:
-    default:
-        return SYNTH_CHORD_MOD_NONE;
-    }
-}
-
 synth_chord_modifier_t synth_chord_modifier_from_joystick(synth_joystick_mode_t mode,
-                                                          control_joystick_direction_t direction)
+                                                         control_joystick_direction_t direction)
 {
-    switch (mode) {
-    case SYNTH_JOYSTICK_MODE_EXTENDED:
-        return extended_modifier_from_joystick(direction);
-    case SYNTH_JOYSTICK_MODE_CHROMATIC:
-        return chromatic_modifier_from_joystick(direction);
-    case SYNTH_JOYSTICK_MODE_DEFAULT:
-    default:
-        return default_modifier_from_joystick(direction);
+    if ((unsigned)mode >= SYNTH_JOYSTICK_MODE_COUNT || (unsigned)direction > CONTROL_JOYSTICK_UP_LEFT) {
+        return SYNTH_CHORD_MOD_NONE;
     }
+    return JOYSTICK_MAP[mode][direction];
+}
+int8_t synth_chord_key_shift(synth_joystick_mode_t mode, control_joystick_direction_t direction)
+{
+    if (mode != SYNTH_JOYSTICK_MODE_CHROMATIC) {
+        return 0;
+    }
+    return direction == CONTROL_JOYSTICK_RIGHT ? 1 : direction == CONTROL_JOYSTICK_LEFT ? -1 : 0;
 }
 
-static int16_t scale_degree_offset(const scale_definition_t *scale, int degree_index)
+static int abs_int(int value) { return value < 0 ? -value : value; }
+
+static void invert(int16_t *notes, uint8_t count, uint8_t inversion)
 {
-    int octave = 0;
-    while (degree_index < 0) {
-        degree_index += scale->note_count;
-        --octave;
-    }
-    octave += degree_index / scale->note_count;
-    int index = degree_index % scale->note_count;
-    return (int16_t)scale->intervals[index] + (int16_t)(octave * 12);
-}
-
-static base_chord_t classify_triad(int16_t third, int16_t fifth)
-{
-    third %= 12;
-    fifth %= 12;
-    if (third < 0) {
-        third += 12;
-    }
-    if (fifth < 0) {
-        fifth += 12;
-    }
-
-    if (third == 4 && fifth == 7) {
-        return BASE_MAJOR;
-    }
-    if (third == 3 && fifth == 7) {
-        return BASE_MINOR;
-    }
-    if (third == 3 && fifth == 6) {
-        return BASE_DIMINISHED;
-    }
-    if (third == 4 && fifth == 8) {
-        return BASE_AUGMENTED;
-    }
-    if (third == 2 && fifth == 7) {
-        return BASE_SUS2;
-    }
-    if (third == 5 && fifth == 7) {
-        return BASE_SUS4;
-    }
-    return BASE_SCALE;
-}
-
-static const char *base_suffix(base_chord_t base)
-{
-    switch (base) {
-    case BASE_MAJOR:
-        return "";
-    case BASE_MINOR:
-        return "m";
-    case BASE_DIMINISHED:
-        return "dim";
-    case BASE_AUGMENTED:
-        return "aug";
-    case BASE_SUS2:
-        return "sus2";
-    case BASE_SUS4:
-        return "sus4";
-    case BASE_SCALE:
-    default:
-        return "sc";
-    }
-}
-
-static void formula_set(chord_formula_t *formula,
-                        const int16_t *intervals,
-                        uint8_t count,
-                        const char *suffix,
-                        base_chord_t base)
-{
-    memset(formula, 0, sizeof(*formula));
-    formula->count = count > SYNTH_MAX_CHORD_NOTES ? SYNTH_MAX_CHORD_NOTES : count;
-    for (uint8_t i = 0; i < formula->count; ++i) {
-        formula->intervals[i] = intervals[i];
-    }
-    formula->suffix = suffix;
-    formula->base = base;
-}
-
-static void formula_append(chord_formula_t *formula, int16_t interval)
-{
-    if (formula->count >= SYNTH_MAX_CHORD_NOTES) {
-        return;
-    }
-    formula->intervals[formula->count++] = interval;
-}
-
-static chord_formula_t scale_formula_for_degree(const scale_definition_t *scale, uint8_t degree)
-{
-    chord_formula_t formula = {0};
-    int root_degree = (int)degree - 1;
-    int16_t root = scale_degree_offset(scale, root_degree);
-    int16_t intervals[3] = {
-        0,
-        (int16_t)(scale_degree_offset(scale, root_degree + 2) - root),
-        (int16_t)(scale_degree_offset(scale, root_degree + 4) - root),
-    };
-    base_chord_t base = classify_triad(intervals[1], intervals[2]);
-    formula_set(&formula, intervals, 3, base_suffix(base), base);
-    return formula;
-}
-
-static bool base_is_majorish(base_chord_t base)
-{
-    return base == BASE_MAJOR || base == BASE_AUGMENTED || base == BASE_SCALE;
-}
-
-static bool base_is_minorish(base_chord_t base)
-{
-    return base == BASE_MINOR || base == BASE_DIMINISHED;
-}
-
-static chord_formula_t formula_for_modifier(synth_chord_modifier_t modifier, const chord_formula_t *base_formula)
-{
-    static const int16_t MAJOR_TRIAD[] = {0, 4, 7};
-    static const int16_t MINOR_TRIAD[] = {0, 3, 7};
-    static const int16_t DIM_TRIAD[] = {0, 3, 6};
-    static const int16_t AUG_TRIAD[] = {0, 4, 8};
-    static const int16_t DOM7[] = {0, 4, 7, 10};
-    static const int16_t MAJ7[] = {0, 4, 7, 11};
-    static const int16_t MIN7[] = {0, 3, 7, 10};
-    static const int16_t HALF_DIM7[] = {0, 3, 6, 10};
-    static const int16_t ADD9_MAJOR[] = {0, 4, 7, 14};
-    static const int16_t ADD9_MINOR[] = {0, 3, 7, 14};
-    static const int16_t ADD9_DIM[] = {0, 3, 6, 14};
-    static const int16_t SUS4[] = {0, 5, 7};
-    static const int16_t MAJOR6[] = {0, 4, 7, 9};
-    static const int16_t SUS2[] = {0, 2, 7};
-    static const int16_t DOM7_SHARP9[] = {0, 4, 7, 10, 15};
-    static const int16_t SUS4_FLAT7[] = {0, 5, 7, 10};
-    static const int16_t ADD11_MAJOR[] = {0, 4, 7, 17};
-    static const int16_t ADD11_MINOR[] = {0, 3, 7, 17};
-    static const int16_t ADD11_DIM[] = {0, 3, 6, 17};
-    static const int16_t DOM9[] = {0, 4, 7, 10, 14};
-    static const int16_t MIN11[] = {0, 3, 7, 10, 17};
-    static const int16_t MIN_MAJ7[] = {0, 3, 7, 11};
-    static const int16_t MAJ13[] = {0, 4, 7, 11, 14, 21};
-    static const int16_t SIX_NINE[] = {0, 4, 7, 9, 14};
-    static const int16_t MAJ7_SHARP11[] = {0, 4, 7, 11, 18};
-    static const int16_t DOM13[] = {0, 4, 7, 10, 14, 21};
-    static const int16_t DOM7_FLAT9[] = {0, 4, 7, 10, 13};
-    static const int16_t DOM7_ALT[] = {0, 4, 6, 10, 13, 15};
-
-    chord_formula_t formula = *base_formula;
-    switch (modifier) {
-    case SYNTH_CHORD_MOD_NONE:
-        return formula;
-    case SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR:
-        if (base_is_majorish(base_formula->base)) {
-            formula_set(&formula, MINOR_TRIAD, 3, "m", BASE_MINOR);
-        } else if (base_formula->base == BASE_DIMINISHED) {
-            formula_set(&formula, MINOR_TRIAD, 3, "m", BASE_MINOR);
-        } else {
-            formula_set(&formula, MAJOR_TRIAD, 3, "", BASE_MAJOR);
+    for (uint8_t step = 0; step < inversion; ++step) {
+        uint8_t lowest = 0;
+        for (uint8_t i = 1; i < count; ++i) {
+            if (notes[i] < notes[lowest]) lowest = i;
         }
-        return formula;
-    case SYNTH_CHORD_MOD_DOM7:
-        formula_set(&formula, DOM7, 4, "7", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_MAJ7_MIN7:
-        if (base_formula->base == BASE_DIMINISHED) {
-            formula_set(&formula, HALF_DIM7, 4, "m7b5", BASE_DIMINISHED);
-        } else if (base_is_minorish(base_formula->base)) {
-            formula_set(&formula, MIN7, 4, "m7", BASE_MINOR);
-        } else {
-            formula_set(&formula, MAJ7, 4, "maj7", BASE_MAJOR);
-        }
-        return formula;
-    case SYNTH_CHORD_MOD_ADD9:
-        if (base_formula->base == BASE_DIMINISHED) {
-            formula_set(&formula, ADD9_DIM, 4, "dimadd9", BASE_DIMINISHED);
-        } else if (base_is_minorish(base_formula->base)) {
-            formula_set(&formula, ADD9_MINOR, 4, "madd9", BASE_MINOR);
-        } else if (base_formula->base == BASE_MAJOR) {
-            formula_set(&formula, ADD9_MAJOR, 4, "add9", BASE_MAJOR);
-        } else {
-            formula = *base_formula;
-            formula_append(&formula, 14);
-            formula.suffix = "add9";
-        }
-        return formula;
-    case SYNTH_CHORD_MOD_SUS4:
-        formula_set(&formula, SUS4, 3, "sus4", BASE_SUS4);
-        return formula;
-    case SYNTH_CHORD_MOD_SIXTH_OR_SUS2:
-        if (base_is_majorish(base_formula->base)) {
-            formula_set(&formula, MAJOR6, 4, "6", BASE_MAJOR);
-        } else {
-            formula_set(&formula, SUS2, 3, "sus2", BASE_SUS2);
-        }
-        return formula;
-    case SYNTH_CHORD_MOD_DIM_OR_MINOR:
-        if (base_is_majorish(base_formula->base)) {
-            formula_set(&formula, MINOR_TRIAD, 3, "m", BASE_MINOR);
-        } else {
-            formula_set(&formula, DIM_TRIAD, 3, "dim", BASE_DIMINISHED);
-        }
-        return formula;
-    case SYNTH_CHORD_MOD_AUGMENTED:
-        formula_set(&formula, AUG_TRIAD, 3, "aug", BASE_AUGMENTED);
-        return formula;
-    case SYNTH_CHORD_MOD_DOM7_SHARP9:
-        formula_set(&formula, DOM7_SHARP9, 5, "7#9", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_SUS4_FLAT7:
-        formula_set(&formula, SUS4_FLAT7, 4, "7sus4", BASE_SUS4);
-        return formula;
-    case SYNTH_CHORD_MOD_ADD11:
-        if (base_formula->base == BASE_DIMINISHED) {
-            formula_set(&formula, ADD11_DIM, 4, "add11", BASE_DIMINISHED);
-        } else if (base_is_minorish(base_formula->base)) {
-            formula_set(&formula, ADD11_MINOR, 4, "add11", BASE_MINOR);
-        } else if (base_formula->base == BASE_MAJOR) {
-            formula_set(&formula, ADD11_MAJOR, 4, "add11", BASE_MAJOR);
-        } else {
-            formula = *base_formula;
-            formula_append(&formula, 17);
-            formula.suffix = "add11";
-        }
-        return formula;
-    case SYNTH_CHORD_MOD_HALF_DIM7:
-        formula_set(&formula, HALF_DIM7, 4, "m7b5", BASE_DIMINISHED);
-        return formula;
-    case SYNTH_CHORD_MOD_DOM9:
-        formula_set(&formula, DOM9, 5, "9", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_MIN11:
-        formula_set(&formula, MIN11, 5, "m11", BASE_MINOR);
-        return formula;
-    case SYNTH_CHORD_MOD_MIN_MAJ7:
-        formula_set(&formula, MIN_MAJ7, 4, "mMaj7", BASE_MINOR);
-        return formula;
-    case SYNTH_CHORD_MOD_MAJ13:
-        formula_set(&formula, MAJ13, 6, "maj13", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_SIX_NINE:
-        formula_set(&formula, SIX_NINE, 5, "6/9", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_MAJ7_SHARP11:
-        formula_set(&formula, MAJ7_SHARP11, 5, "maj7#11", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_DOM13:
-        formula_set(&formula, DOM13, 6, "13", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_DOM7_FLAT9:
-        formula_set(&formula, DOM7_FLAT9, 5, "7b9", BASE_MAJOR);
-        return formula;
-    case SYNTH_CHORD_MOD_DOM7_ALT:
-        formula_set(&formula, DOM7_ALT, 6, "7alt", BASE_MAJOR);
-        return formula;
-    default:
-        return formula;
+        notes[lowest] += 12;
     }
 }
 
-static uint8_t midi_in_range(int16_t note)
-{
-    while (note < 0) {
-        note += 12;
-    }
-    while (note > 127) {
-        note -= 12;
-    }
-    return (uint8_t)note;
-}
-
-static void sort_int16(int16_t *notes, uint8_t count)
+static void sort_notes(int16_t *notes, uint8_t count)
 {
     for (uint8_t i = 1; i < count; ++i) {
-        int16_t note = notes[i];
+        int16_t value = notes[i];
         uint8_t j = i;
-        while (j > 0 && notes[j - 1] > note) {
+        while (j > 0 && notes[j - 1] > value) {
             notes[j] = notes[j - 1];
             --j;
         }
-        notes[j] = note;
+        notes[j] = value;
     }
 }
 
-static uint8_t min_note_index(const int16_t *notes, uint8_t count)
+static bool notes_in_range(const int16_t *notes, uint8_t count)
 {
-    uint8_t index = 0;
-    for (uint8_t i = 1; i < count; ++i) {
-        if (notes[i] < notes[index]) {
-            index = i;
-        }
-    }
-    return index;
-}
-
-static uint8_t max_note_index(const int16_t *notes, uint8_t count)
-{
-    uint8_t index = 0;
-    for (uint8_t i = 1; i < count; ++i) {
-        if (notes[i] > notes[index]) {
-            index = i;
-        }
-    }
-    return index;
-}
-
-static void apply_inversion(int16_t *notes, uint8_t count, int8_t inversion)
-{
-    if (notes == NULL || count == 0) {
-        return;
-    }
-
-    while (inversion > 0) {
-        notes[min_note_index(notes, count)] += 12;
-        --inversion;
-    }
-    while (inversion < 0) {
-        notes[max_note_index(notes, count)] -= 12;
-        ++inversion;
-    }
-}
-
-static int16_t average_note(const int16_t *notes, uint8_t count)
-{
-    if (notes == NULL || count == 0) {
-        return 0;
-    }
-
-    int32_t total = 0;
     for (uint8_t i = 0; i < count; ++i) {
-        total += notes[i];
+        if (notes[i] < 0 || notes[i] > 127) return false;
     }
-    return (int16_t)(total / count);
+    return true;
 }
 
-static int32_t voicing_score(const int16_t *candidate,
-                             uint8_t candidate_count,
-                             const uint8_t *previous,
-                             uint8_t previous_count)
+/* A deterministic bounded search, not a claim about closed-source HiChord
+ * tie-breaking. Preserve role order in output; compare sorted pitch positions. */
+static void voice_lead(int16_t *notes, uint8_t count, const synth_chord_request_t *request)
 {
-    int16_t cand_sorted[SYNTH_MAX_CHORD_NOTES] = {0};
-    int16_t prev_sorted[SYNTH_MAX_CHORD_NOTES] = {0};
-    uint8_t cand_count = candidate_count > SYNTH_MAX_CHORD_NOTES ? SYNTH_MAX_CHORD_NOTES : candidate_count;
-    uint8_t prev_count = previous_count > SYNTH_MAX_CHORD_NOTES ? SYNTH_MAX_CHORD_NOTES : previous_count;
-
-    for (uint8_t i = 0; i < cand_count; ++i) {
-        cand_sorted[i] = candidate[i];
-    }
-    for (uint8_t i = 0; i < prev_count; ++i) {
-        prev_sorted[i] = previous[i];
-    }
-    sort_int16(cand_sorted, cand_count);
-    sort_int16(prev_sorted, prev_count);
-
-    uint8_t pairs = cand_count < prev_count ? cand_count : prev_count;
-    int32_t score = (int32_t)abs_int((int)average_note(cand_sorted, cand_count) -
-                                     (int)average_note(prev_sorted, prev_count)) * 2;
-    score += (int32_t)abs_int((int)cand_count - (int)prev_count) * 24;
-    for (uint8_t i = 0; i < pairs; ++i) {
-        score += (int32_t)abs_int((int)cand_sorted[i] - (int)prev_sorted[i]) * 5;
-    }
-    return score;
-}
-
-static void apply_voice_leading(int16_t *notes,
-                                uint8_t count,
-                                const uint8_t *previous,
-                                uint8_t previous_count)
-{
-    if (notes == NULL || count == 0 || previous == NULL || previous_count == 0) {
-        return;
-    }
-
-    int32_t best_score = INT_MAX;
-    int16_t best_notes[SYNTH_MAX_CHORD_NOTES] = {0};
-    for (int8_t inversion = 0; inversion < SYNTH_CHORD_INVERSION_COUNT; ++inversion) {
-        int16_t candidate[SYNTH_MAX_CHORD_NOTES] = {0};
-        for (uint8_t i = 0; i < count; ++i) {
-            candidate[i] = notes[i];
-        }
-        apply_inversion(candidate, count, inversion);
-
-        int32_t score = voicing_score(candidate, count, previous, previous_count);
-        if (score < best_score) {
-            best_score = score;
-            for (uint8_t i = 0; i < count; ++i) {
-                best_notes[i] = candidate[i];
+    int16_t previous[SYNTH_MAX_CHORD_NOTES];
+    for (uint8_t i = 0; i < request->previous_note_count; ++i) previous[i] = request->previous_notes[i];
+    sort_notes(previous, request->previous_note_count);
+    int best_score = INT_MAX;
+    int16_t best[6];
+    memcpy(best, notes, count * sizeof(*notes));
+    /* Prefer the requested inversion/register when scores tie. */
+    static const int8_t OCTAVES[] = {0, -1, 1};
+    for (uint8_t n = 0; n < SYNTH_CHORD_INVERSION_COUNT; ++n) {
+        uint8_t inversion = (request->inversion + n) % SYNTH_CHORD_INVERSION_COUNT;
+        for (uint8_t o = 0; o < 3; ++o) {
+            int16_t candidate[6], sorted[6];
+            for (uint8_t i = 0; i < count; ++i) candidate[i] = notes[i] + OCTAVES[o] * 12;
+            invert(candidate, count, inversion);
+            if (!notes_in_range(candidate, count)) continue;
+            memcpy(sorted, candidate, count * sizeof(*notes));
+            sort_notes(sorted, count);
+            int sum = 0, previous_sum = 0, score = 0;
+            for (uint8_t i = 0; i < count; ++i) sum += sorted[i];
+            for (uint8_t i = 0; i < request->previous_note_count; ++i) previous_sum += previous[i];
+            score = 2 * abs_int(sum / count - previous_sum / request->previous_note_count);
+            uint8_t common = count < request->previous_note_count ? count : request->previous_note_count;
+            for (uint8_t i = 0; i < common; ++i) score += 5 * abs_int(sorted[i] - previous[i]);
+            if (score < best_score) {
+                best_score = score;
+                memcpy(best, candidate, count * sizeof(*notes));
             }
         }
     }
-
-    for (uint8_t i = 0; i < count; ++i) {
-        notes[i] = best_notes[i];
-    }
+    memcpy(notes, best, count * sizeof(*notes));
 }
 
-static uint8_t lowest_chord_note(const synth_chord_t *chord)
+/* Fit the voicing as a unit, never fold individual extensions below their root. */
+static void fit_register(int16_t *notes, uint8_t count)
 {
-    uint8_t lowest = chord->notes[0];
-    for (uint8_t i = 1; i < chord->note_count; ++i) {
-        if (chord->notes[i] < lowest) {
-            lowest = chord->notes[i];
-        }
+    int16_t low = notes[0], high = notes[0];
+    for (uint8_t i = 1; i < count; ++i) {
+        if (notes[i] < low) low = notes[i];
+        if (notes[i] > high) high = notes[i];
     }
-    return lowest;
+    int shift = 0;
+    while (high + shift > 127) shift -= 12;
+    while (low + shift < 0) shift += 12;
+    for (uint8_t i = 0; i < count; ++i) notes[i] += shift;
 }
 
-static uint8_t bass_below_chord(int16_t bass, const synth_chord_t *chord)
+static void append_name(char name[16], const char *part)
 {
-    uint8_t lowest = chord->note_count > 0 ? lowest_chord_note(chord) : SYNTH_DEFAULT_ROOT_MIDI;
-    while (bass >= (int16_t)lowest) {
-        bass -= 12;
-    }
-    while (bass < 0) {
-        bass += 12;
-    }
-    return midi_in_range(bass);
-}
-
-static void set_chord_name(synth_chord_t *chord, const char *suffix)
-{
-    const char *root = synth_key_name((synth_key_t)(chord->root_midi % 12));
-    if (chord->bass_enabled &&
-        chord->bass_mode == SYNTH_BASS_MODE_SLASH &&
-        chord->bass_note % 12 != chord->root_midi % 12) {
-        const char *slash = synth_key_name((synth_key_t)(chord->bass_note % 12));
-        snprintf(chord->name, sizeof(chord->name), "%s%s/%s", root, suffix, slash);
-        return;
-    }
-    snprintf(chord->name, sizeof(chord->name), "%s%s", root, suffix);
+    size_t used = 0;
+    while (used < 15 && name[used]) ++used;
+    while (used < 15 && *part) name[used++] = *part++;
+    name[used] = 0;
 }
 
 int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord)
 {
     if (request == NULL || chord == NULL ||
-        request->key >= SYNTH_KEY_COUNT ||
-        request->degree == 0 ||
-        request->degree > SYNTH_CHORD_BUTTON_COUNT ||
-        request->modifier >= SYNTH_CHORD_MOD_COUNT ||
-        request->bass_mode >= SYNTH_BASS_MODE_COUNT ||
-        request->inversion < 0 ||
-        request->inversion >= SYNTH_CHORD_INVERSION_COUNT ||
+        (unsigned)request->key >= SYNTH_KEY_COUNT ||
+        request->degree == 0 || request->degree > SYNTH_CHORD_BUTTON_COUNT ||
+        (unsigned)request->modifier >= SYNTH_CHORD_MOD_COUNT ||
+        (unsigned)request->bass_mode >= SYNTH_BASS_MODE_COUNT ||
+        request->inversion < 0 || request->inversion >= SYNTH_CHORD_INVERSION_COUNT ||
+        request->previous_note_count > SYNTH_MAX_CHORD_NOTES ||
         (request->bass_mode == SYNTH_BASS_MODE_SLASH &&
-         (request->bass_degree == 0 ||
-          request->bass_degree > SYNTH_CHORD_BUTTON_COUNT))) {
+         (request->bass_degree == 0 || request->bass_degree > SYNTH_CHORD_BUTTON_COUNT))) {
         return -1;
     }
-
-    memset(chord, 0, sizeof(*chord));
-    chord->degree = request->degree;
-    chord->key = request->key;
-    chord->modifier = request->modifier;
-    chord->bass_mode = request->bass_mode;
-    chord->inversion = request->inversion;
-    chord->bass_degree = request->bass_degree;
-    chord->voice_leading_enabled = request->voice_leading_enabled;
-
-    const scale_definition_t *scale = &DIATONIC_MAJOR_SCALE;
-    int root_degree = (int)request->degree - 1;
-    int16_t root = SYNTH_DEFAULT_ROOT_MIDI +
-                   (int16_t)request->key +
-                   scale_degree_offset(scale, root_degree) +
-                   ((int16_t)request->global_octave_shift * 12) +
-                   ((int16_t)request->button_octave_shift * 12);
-
-    if (root < 0 || root > 127) {
-        return -1;
+    for (uint8_t i = 0; i < request->previous_note_count; ++i) {
+        if (request->previous_notes[i] > 127) return -1;
     }
+    const modifier_definition_t *modifier = &MODIFIERS[request->modifier];
+    const chord_formula_t *formula = &FORMULAS[modifier->family[DEGREE_FAMILIES[request->degree - 1]]];
+    int root = SYNTH_DEFAULT_ROOT_MIDI + (int)request->key + DEGREE_ROOTS[request->degree - 1] +
+               12 * ((int)request->global_octave_shift + request->button_octave_shift) + modifier->root_shift;
+    if (root < 0 || root > 127) return -1;
 
-    chord->root_midi = (uint8_t)root;
-
-    chord_formula_t scale_formula = scale_formula_for_degree(scale, request->degree);
-    chord_formula_t formula = formula_for_modifier(request->modifier, &scale_formula);
-    int16_t voiced[SYNTH_MAX_CHORD_NOTES] = {0};
-    chord->note_count = formula.count;
-    for (uint8_t i = 0; i < chord->note_count; ++i) {
-        voiced[i] = root + formula.intervals[i];
-    }
-
-    if (request->voice_leading_enabled) {
-        apply_voice_leading(voiced,
-                            chord->note_count,
-                            request->previous_notes,
-                            request->previous_note_count);
+    synth_chord_t result = {
+        .degree = request->degree, .key = request->key, .root_midi = (uint8_t)root,
+        .modifier = request->modifier, .inversion = request->inversion,
+        .bass_mode = request->bass_mode, .bass_degree = request->bass_degree,
+        .voice_leading_enabled = request->voice_leading_enabled, .note_count = formula->count,
+    };
+    int16_t notes[6];
+    for (uint8_t i = 0; i < formula->count; ++i) notes[i] = root + formula->intervals[i];
+    fit_register(notes, formula->count);
+    if (request->voice_leading_enabled && request->previous_note_count > 0) {
+        voice_lead(notes, formula->count, request);
     } else {
-        apply_inversion(voiced, chord->note_count, request->inversion);
+        invert(notes, formula->count, request->inversion);
+        fit_register(notes, formula->count);
     }
-
-    for (uint8_t i = 0; i < chord->note_count; ++i) {
-        chord->notes[i] = midi_in_range(voiced[i]);
+    uint8_t lowest = 127;
+    for (uint8_t i = 0; i < formula->count; ++i) {
+        result.notes[i] = (uint8_t)notes[i];
+        if (result.notes[i] < lowest) lowest = result.notes[i];
     }
-
-    if (request->bass_mode == SYNTH_BASS_MODE_ROOT) {
-        chord->bass_enabled = true;
-        chord->bass_note = bass_below_chord(root - 24, chord);
-    } else if (request->bass_mode == SYNTH_BASS_MODE_SLASH) {
-        int16_t bass_root = SYNTH_DEFAULT_ROOT_MIDI +
-                            (int16_t)request->key +
-                            scale_degree_offset(scale, (int)request->bass_degree - 1) +
-                            ((int16_t)request->global_octave_shift * 12) +
-                            ((int16_t)request->bass_octave_shift * 12);
-        if (bass_root < 0 || bass_root > 127) {
-            return -1;
+    if (request->bass_mode != SYNTH_BASS_MODE_OFF) {
+        int bass = root - 24;
+        if (request->bass_mode == SYNTH_BASS_MODE_SLASH) {
+            bass = SYNTH_DEFAULT_ROOT_MIDI + (int)request->key + DEGREE_ROOTS[request->bass_degree - 1] +
+                   12 * ((int)request->global_octave_shift + request->bass_octave_shift);
+            if (bass < 0 || bass > 127) return -1;
         }
-        chord->bass_enabled = true;
-        chord->bass_note = bass_below_chord(bass_root, chord);
+        while (bass >= lowest) bass -= 12;
+        while (bass < 0) bass += 12;
+        if (bass >= lowest) return -1; /* No representable bass below this voicing. */
+        result.bass_enabled = true;
+        result.bass_note = (uint8_t)bass;
     }
-
-    set_chord_name(chord, formula.suffix);
+    append_name(result.name, KEY_NAMES[root % 12]);
+    append_name(result.name, formula->suffix);
+    if (result.bass_mode == SYNTH_BASS_MODE_SLASH && result.bass_note % 12 != root % 12) {
+        append_name(result.name, "/");
+        append_name(result.name, KEY_NAMES[result.bass_note % 12]);
+    }
+    *chord = result;
     return 0;
 }

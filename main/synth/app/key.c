@@ -1,4 +1,5 @@
 #include "synth/app/key.h"
+#include <stddef.h>
 
 static bool octave_step(int8_t current, int8_t octaves, int8_t min_value, int8_t max_value, int8_t *next)
 {

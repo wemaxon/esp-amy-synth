@@ -57,6 +57,30 @@ Device boot checks live in `pytest_firmware.py` and require connected hardware.
 Compare build warnings, binary size, RAM use, and relevant device measurements
 before and after behavior-sensitive changes.
 
+## VS Code devcontainer
+
+Use Docker Desktop and the Dev Containers extension, then choose **Reopen in
+Container**. The checked-in container pins ESP-IDF `v6.0.1`, installs the native
+GCC/CMake/Ninja tools, and keeps `build/` in a named Docker volume so Windows
+and Linux CMake files are never mixed. The container starts as root because the
+ESP-IDF image and mounted workspace otherwise produce ownership failures; it is
+used only for development, not as a production runtime.
+
+After the container opens, apply or verify AMY explicitly:
+
+```sh
+python3 tools/amy_patches.py       # fresh pinned submodule
+python3 tools/amy_patches.py --check  # already patched checkout
+```
+
+Run **Tasks: Run Task** in VS Code. The useful tasks are `Native: Debug tests`,
+`Native: Release tests`, `Tests: all native and repository checks`, `P4: build
+firmware (container)`, and `P4: size report (container)`. P4 flashing is not an
+automatic task; connect the board and run an explicit `idf.py -p PORT flash`.
+The container exposes no serial device by default. Add a deliberate
+`--device=/dev/ttyACM0` run argument only when the P4 board is connected under
+WSL2/Docker Desktop.
+
 ## Ownership and compatibility
 
 AMY is pinned to upstream tag `1.2.172` (`5e7c4c64`). Firmware uses the supported

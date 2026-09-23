@@ -1,19 +1,24 @@
 {
-	"name": "ESP-IDF QEMU",
-	"build": {
-		"dockerfile": "Dockerfile"
-	},
-	"customizations": {
-		"vscode": {
-			"settings": {
-				"terminal.integrated.defaultProfile.linux": "bash",
-				"idf.gitPath": "/usr/bin/git"
-			},
-			"extensions": [
-				"espressif.esp-idf-extension",
-				"espressif.esp-idf-web"
-			]
-		}
-	},
-	"runArgs": ["--privileged"]
+  "name": "Pocket synth: ESP-IDF 6.0.1 + native tests",
+  "build": {"dockerfile": "Dockerfile"},
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/esp-amy-synth,type=bind",
+  "workspaceFolder": "/workspaces/esp-amy-synth",
+  "remoteUser": "root",
+  "mounts": [
+    "source=esp-amy-synth-build-${devcontainerId},target=/workspaces/esp-amy-synth/build,type=volume"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-vscode.cpptools"],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "ESP-IDF bash",
+        "terminal.integrated.profiles.linux": {
+          "ESP-IDF bash": {"path": "/bin/bash", "args": ["-c", ". /opt/esp/idf/export.sh >/dev/null && exec bash"]}
+        },
+        "idf.currentSetup": "/opt/esp/idf",
+        "idf.customExtraVars": {"IDF_TARGET": "esp32p4"},
+        "idf.portLinux": "/dev/ttyACM0"
+      }
+    }
+  }
 }

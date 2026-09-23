@@ -1,0 +1,101 @@
+{
+  "version": "2.0.0",
+  "options": {"cwd": "${workspaceFolder}"},
+  "tasks": [
+    {
+      "label": "AMY: verify firmware patch",
+      "type": "process",
+      "command": "python3",
+      "args": ["tools/amy_patches.py", "--check"],
+      "problemMatcher": []
+    },
+    {
+      "label": "AMY: apply firmware patch (fresh checkout only)",
+      "type": "process",
+      "command": "python3",
+      "args": ["tools/amy_patches.py"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Native: Debug tests",
+      "type": "process",
+      "command": "python3",
+      "args": ["tools/host_parity_check.py"],
+      "dependsOn": "AMY: verify firmware patch",
+      "group": {"kind": "test", "isDefault": true},
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Native: configure Release",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--preset", "native-release"],
+      "options": {"cwd": "${workspaceFolder}/tests/native"},
+      "dependsOn": "AMY: verify firmware patch",
+      "problemMatcher": []
+    },
+    {
+      "label": "Native: build Release",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "native-release"],
+      "options": {"cwd": "${workspaceFolder}/tests/native"},
+      "dependsOn": "Native: configure Release",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Native: Release tests",
+      "type": "process",
+      "command": "ctest",
+      "args": ["--preset", "native-release", "--output-junit", "../../build/native-release/results.xml"],
+      "options": {"cwd": "${workspaceFolder}/tests/native"},
+      "dependsOn": "Native: build Release",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Checks: chord specification",
+      "type": "process",
+      "command": "python3",
+      "args": ["tools/chord_engine_spec_check.py"],
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Checks: firmware contracts",
+      "type": "process",
+      "command": "python3",
+      "args": ["tools/firmware_refactor_check.py"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Checks: level calibration",
+      "type": "process",
+      "command": "python3",
+      "args": ["tools/level_calibration_check.py"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Tests: all native and repository checks",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Native: Debug tests", "Native: Release tests", "Checks: chord specification", "Checks: firmware contracts", "Checks: level calibration"],
+      "problemMatcher": []
+    },
+    {
+      "label": "P4: build firmware (container)",
+      "type": "process",
+      "command": "/opt/esp/entrypoint.sh",
+      "args": ["idf.py", "-B", "build/esp32p4", "-D", "SDKCONFIG=build/esp32p4/sdkconfig", "-D", "SDKCONFIG_DEFAULTS=sdkconfig.defaults.esp32p4", "-D", "IDF_TARGET=esp32p4", "build"],
+      "dependsOn": "AMY: verify firmware patch",
+      "group": {"kind": "build", "isDefault": true},
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "P4: size report (container)",
+      "type": "process",
+      "command": "/opt/esp/entrypoint.sh",
+      "args": ["idf.py", "-B", "build/esp32p4", "size"],
+      "dependsOn": "P4: build firmware (container)",
+      "problemMatcher": []
+    }
+  ]
+}

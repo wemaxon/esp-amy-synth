@@ -294,7 +294,7 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
         .bass_mode = request->bass_mode, .bass_degree = request->bass_degree,
         .voice_leading_enabled = request->voice_leading_enabled, .note_count = formula->count,
     };
-    int16_t notes[6];
+    int16_t notes[6] = {0};
     for (uint8_t i = 0; i < formula->count; ++i) notes[i] = root + formula->intervals[i];
     fit_register(notes, formula->count);
     if (request->voice_leading_enabled && request->previous_note_count > 0) {

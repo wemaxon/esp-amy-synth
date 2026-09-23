@@ -24,31 +24,31 @@ static void format_message(const synth_looper_runtime_view_t *view, char *messag
 {
     switch (view->message_code) {
     case SYNTH_LOOPER_MESSAGE_NO_MEMORY:
-        strlcpy(message, "NO MEMORY", size);
+        snprintf(message, size, "%s", "NO MEMORY");
         break;
     case SYNTH_LOOPER_MESSAGE_CLEARED:
-        strlcpy(message, "CLEARED", size);
+        snprintf(message, size, "%s", "CLEARED");
         break;
     case SYNTH_LOOPER_MESSAGE_WAITING:
-        strlcpy(message, "WAITING", size);
+        snprintf(message, size, "%s", "WAITING");
         break;
     case SYNTH_LOOPER_MESSAGE_SYNC_WAIT:
-        strlcpy(message, "SYNC WAIT", size);
+        snprintf(message, size, "%s", "SYNC WAIT");
         break;
     case SYNTH_LOOPER_MESSAGE_COUNT_IN:
-        strlcpy(message, "COUNT IN", size);
+        snprintf(message, size, "%s", "COUNT IN");
         break;
     case SYNTH_LOOPER_MESSAGE_RECORDING:
-        strlcpy(message, "REC", size);
+        snprintf(message, size, "%s", "REC");
         break;
     case SYNTH_LOOPER_MESSAGE_PLAYING:
-        strlcpy(message, "PLAY", size);
+        snprintf(message, size, "%s", "PLAY");
         break;
     case SYNTH_LOOPER_MESSAGE_TOO_SHORT:
-        strlcpy(message, "TOO SHORT", size);
+        snprintf(message, size, "%s", "TOO SHORT");
         break;
     case SYNTH_LOOPER_MESSAGE_OFF:
-        strlcpy(message, "OFF", size);
+        snprintf(message, size, "%s", "OFF");
         break;
     case SYNTH_LOOPER_MESSAGE_TRACK:
         snprintf(message, size, "TRACK %u", (unsigned)view->message_arg0);
@@ -73,35 +73,35 @@ static void format_message(const synth_looper_runtime_view_t *view, char *messag
         snprintf(message, size, "T%u SOLO OFF", (unsigned)view->message_arg0);
         break;
     case SYNTH_LOOPER_MESSAGE_METRONOME_ON:
-        strlcpy(message, "MET ON", size);
+        snprintf(message, size, "%s", "MET ON");
         break;
     case SYNTH_LOOPER_MESSAGE_METRONOME_OFF:
-        strlcpy(message, "MET OFF", size);
+        snprintf(message, size, "%s", "MET OFF");
         break;
     case SYNTH_LOOPER_MESSAGE_RECORD_METRONOME_ON:
-        strlcpy(message, "REC MET ON", size);
+        snprintf(message, size, "%s", "REC MET ON");
         break;
     case SYNTH_LOOPER_MESSAGE_RECORD_METRONOME_OFF:
-        strlcpy(message, "REC MET OFF", size);
+        snprintf(message, size, "%s", "REC MET OFF");
         break;
     case SYNTH_LOOPER_MESSAGE_FREE_LENGTH:
-        strlcpy(message, "FREE LENGTH", size);
+        snprintf(message, size, "%s", "FREE LENGTH");
         break;
     case SYNTH_LOOPER_MESSAGE_BARS:
         snprintf(message, size, "%u BARS", (unsigned)view->message_arg0);
         break;
     case SYNTH_LOOPER_MESSAGE_PAUSED:
-        strlcpy(message, "PAUSED", size);
+        snprintf(message, size, "%s", "PAUSED");
         break;
     case SYNTH_LOOPER_MESSAGE_RESUMED:
-        strlcpy(message, "PLAYING", size);
+        snprintf(message, size, "%s", "PLAYING");
         break;
     case SYNTH_LOOPER_MESSAGE_NO_LOOP:
-        strlcpy(message, "NO LOOP", size);
+        snprintf(message, size, "%s", "NO LOOP");
         break;
     case SYNTH_LOOPER_MESSAGE_EMPTY:
     default:
-        strlcpy(message, "EMPTY", size);
+        snprintf(message, size, "%s", "EMPTY");
         break;
     }
 }

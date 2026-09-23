@@ -1,4 +1,5 @@
 #include "synth/app/tempo.h"
+#include <stddef.h>
 
 static const TickType_t TAP_RESET_TICKS = pdMS_TO_TICKS(2000);
 

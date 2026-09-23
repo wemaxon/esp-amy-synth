@@ -12,18 +12,12 @@
 extern "C" {
 #endif
 
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-#define SYNTH_LOOPER_COMMAND_CAPACITY 4U
-#else
 #define SYNTH_LOOPER_COMMAND_CAPACITY 32U
-#endif
+
 #define SYNTH_LOOPER_SNAPSHOT_SLOT_COUNT 3U
 
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-typedef uint32_t synth_looper_atomic_u32_t;
-#else
 typedef _Atomic uint32_t synth_looper_atomic_u32_t;
-#endif
+
 
 typedef enum {
     SYNTH_LOOPER_COMMAND_CLICK = 0,

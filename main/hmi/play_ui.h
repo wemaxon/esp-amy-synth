@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "esp_pocket_audio.h"
+typedef struct esp_pocket_audio_hw esp_pocket_audio_hw_t;
 #include "hmi/controls.h"
 #include "synth/chord_engine.h"
 #include "synth/drums.h"

@@ -1,8 +1,10 @@
-| Supported Targets | ESP32, ESP32P4 |
+| Active Target | ESP32P4 (WT0132P4-A1) |
 | ----------------- | ------------- |
 
 # esp-pocket-synth
-IDF-native firmware for the esp-pocket-audio ESP32-A1S hardware.
+IDF-native pocket synthesizer firmware for WT0132P4-A1 hardware.
+Ai-Thinker ESP32-A1S is deprecated; its configuration is retained but no longer
+hardware-tested.
 
 ## Board Selection
 
@@ -124,20 +126,21 @@ The AMY voice architecture is selected at compile time in
 
 ### Joystick Chord Modes
 
-The chord engine supports the three HiChord joystick mode mappings:
+The chord engine supports five HiChord-inspired joystick mode mappings:
 
-- `DEFAULT`: maj/min flip, dom7, maj7/min7, add9, sus4, 6/sus2,
+- `DEFAULT`: maj/min flip, dom7, maj7/min7, ninths, sus4, 6/sus2,
   diminished, and augmented.
 - `EXTENDED`: maj/min flip, dom7#9, 7sus4, add11, half-dim7, dom9,
   add9, and min11.
 - `CHROMATIC`: minMaj7, maj13, half-dim7, 6/9, maj7#11, dom13,
-  dom7b9, and dom7alt. With no chord held, chromatic-mode joystick
-  left/right shifts the key by semitone.
+  dom7b9, and dom7alt. Horizontal gestures shift the key once per direction
+  edge, including while a chord is held.
+- `BORROW` and `OG`: borrowed-root modifiers and the original extended voicings.
 
 In the Sound/FX menu, select `JOYSTICK` and press joystick click to cycle
-`DEFAULT -> EXTENDED -> CHROMATIC`.
+`DEFAULT -> EXTENDED -> CHROMATIC -> BORROW -> OG`.
 
-Fast source-level chord checks:
+Native execution and repository checks (Linux or Ubuntu WSL2):
 
 ```sh
 python tools/chord_engine_spec_check.py
@@ -148,6 +151,8 @@ python tools/level_calibration_check.py
 
 Build commands, ownership boundaries, compatibility rules, and hardware checks
 are in [Firmware maintenance](docs/maintenance.md).
+The native-test, headless-simulator and P4 automation roadmap is in the
+[Firmware testability plan](docs/testing-plan.md).
 The automatic instrument loudness workflow and its real-time constraints are
 documented in `docs/level-calibration.md`.
 
@@ -157,6 +162,8 @@ documented in `docs/level-calibration.md`.
 Use ESP-IDF directly.
 
 Initialize the pinned dependencies with `git submodule update --init --recursive`
-on a fresh checkout. Preserve local submodule changes in an existing checkout.
+on a fresh checkout, then run `python3 tools/amy_patches.py` to apply the
+repository-managed firmware patch. For an existing patched checkout, use
+`python3 tools/amy_patches.py --check` instead; preserve local submodule changes.
 The AMY Python package is optional and only needed for the experiments under
 `experiments/amy`; it is not required to build or flash the firmware.

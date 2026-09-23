@@ -1,4 +1,5 @@
 #include "synth/amy_runtime.h"
+#include "esp_pocket_audio_board_config.h"
 
 #include "amy.h"
 

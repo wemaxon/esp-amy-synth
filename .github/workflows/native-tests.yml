@@ -1,0 +1,49 @@
+name: Native tests
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [native-debug, native-release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build python3
+      - name: Prepare pinned AMY firmware
+        run: |
+          python3 tools/amy_patches.py
+          python3 tools/amy_patches.py --check
+      - name: Configure
+        working-directory: tests/native
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        working-directory: tests/native
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        working-directory: tests/native
+        run: ctest --preset ${{ matrix.preset }} --output-junit ../../build/${{ matrix.preset }}/results.xml
+      - name: Repository contracts
+        if: matrix.preset == 'native-debug'
+        run: |
+          python3 tools/chord_engine_spec_check.py
+          python3 tools/firmware_refactor_check.py
+          python3 tools/level_calibration_check.py
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.preset }}-results
+          path: |
+            build/${{ matrix.preset }}/results.xml
+            build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
+          if-no-files-found: warn

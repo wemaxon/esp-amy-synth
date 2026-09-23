@@ -1,4 +1,5 @@
 #include "hmi/play_ui.h"
+#include "esp_pocket_audio.h"
 
 #include <stdbool.h>
 #include <stdio.h>

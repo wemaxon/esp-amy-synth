@@ -4,7 +4,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "esp_pocket_audio_board_config.h"
 #include "synth/sound.h"
 
 #define AMY_MUSICAL_VOICE_COUNT 6

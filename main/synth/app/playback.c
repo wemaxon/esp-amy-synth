@@ -1,6 +1,7 @@
 #include "synth/app/playback.h"
 
 #include <string.h>
+#include <stdio.h>
 #include "esp_check.h"
 #include "esp_log.h"
 #include "synth/amy_engine.h"
@@ -25,7 +26,7 @@ void synth_app_playback_start_strum(synth_app_state_t *app, uint8_t slot, const 
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(synth_amy_musical_all_off());
     synth_app_play_start_strum(&app->play, slot, chord, xTaskGetTickCount());
-    strlcpy(app->status, "STRUM", sizeof(app->status));
+    snprintf(app->status, sizeof(app->status), "%s", "STRUM");
 }
 
 void synth_app_playback_update_strum(synth_app_state_t *app)

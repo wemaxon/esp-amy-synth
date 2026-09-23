@@ -7,80 +7,50 @@ _Static_assert((SYNTH_LOOPER_COMMAND_CAPACITY & (SYNTH_LOOPER_COMMAND_CAPACITY -
 
 static void atomic_value_init(synth_looper_atomic_u32_t *value, uint32_t initial)
 {
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-    *value = initial;
-#else
     atomic_init(value, initial);
-#endif
+
 }
 
 static uint32_t atomic_value_load_relaxed(const synth_looper_atomic_u32_t *value)
 {
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-    return *value;
-#else
     return atomic_load_explicit(value, memory_order_relaxed);
-#endif
+
 }
 
 static uint32_t atomic_value_load_acquire(const synth_looper_atomic_u32_t *value)
 {
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-    return *value;
-#else
     return atomic_load_explicit(value, memory_order_acquire);
-#endif
+
 }
 
 static void atomic_value_store_release(synth_looper_atomic_u32_t *value, uint32_t next)
 {
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-    *value = next;
-#else
     atomic_store_explicit(value, next, memory_order_release);
-#endif
+
 }
 
 static uint32_t atomic_value_fetch_add(synth_looper_atomic_u32_t *value, uint32_t amount)
 {
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-    uint32_t previous = *value;
-    *value += amount;
-    return previous;
-#else
     return atomic_fetch_add_explicit(value, amount, memory_order_acq_rel);
-#endif
+
 }
 
 static uint32_t atomic_value_fetch_sub(synth_looper_atomic_u32_t *value, uint32_t amount)
 {
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-    uint32_t previous = *value;
-    *value -= amount;
-    return previous;
-#else
     return atomic_fetch_sub_explicit(value, amount, memory_order_acq_rel);
-#endif
+
 }
 
 static bool atomic_value_compare_exchange_weak(synth_looper_atomic_u32_t *value,
                                                uint32_t *expected,
                                                uint32_t desired)
 {
-#if defined(SYNTH_LOOPER_TRANSPORT_SINGLE_THREADED_TEST)
-    if (*value == *expected) {
-        *value = desired;
-        return true;
-    }
-    *expected = *value;
-    return false;
-#else
     return atomic_compare_exchange_weak_explicit(value,
                                                  expected,
                                                  desired,
                                                  memory_order_relaxed,
                                                  memory_order_relaxed);
-#endif
+
 }
 
 static void update_max(synth_looper_atomic_u32_t *maximum, uint32_t value)

@@ -4,9 +4,8 @@
 #include <stddef.h>
 #include <stdatomic.h>
 
-#if !defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
 #include "esp_timer.h"
-#endif
+
 
 #define AUDIO_METER_COMMAND_CAPACITY 4U
 #define AUDIO_METER_SNAPSHOT_SLOT_COUNT 3U
@@ -16,11 +15,8 @@
 _Static_assert((AUDIO_METER_COMMAND_CAPACITY & (AUDIO_METER_COMMAND_CAPACITY - 1U)) == 0,
                "audio meter command capacity must be a power of two");
 
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-typedef uint32_t audio_meter_atomic_u32_t;
-#else
 typedef _Atomic uint32_t audio_meter_atomic_u32_t;
-#endif
+
 
 typedef struct {
     synth_audio_meter_request_t request[AUDIO_METER_COMMAND_CAPACITY];
@@ -91,80 +87,50 @@ static audio_meter_state_t s_meter;
 
 static void atomic_init_u32(audio_meter_atomic_u32_t *value, uint32_t initial)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    *value = initial;
-#else
     atomic_init(value, initial);
-#endif
+
 }
 
 static uint32_t atomic_load_relaxed_u32(const audio_meter_atomic_u32_t *value)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    return *value;
-#else
     return atomic_load_explicit(value, memory_order_relaxed);
-#endif
+
 }
 
 static uint32_t atomic_load_acquire_u32(const audio_meter_atomic_u32_t *value)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    return *value;
-#else
     return atomic_load_explicit(value, memory_order_acquire);
-#endif
+
 }
 
 static void atomic_store_release_u32(audio_meter_atomic_u32_t *value, uint32_t next)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    *value = next;
-#else
     atomic_store_explicit(value, next, memory_order_release);
-#endif
+
 }
 
 static uint32_t atomic_fetch_add_u32(audio_meter_atomic_u32_t *value, uint32_t amount)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    uint32_t previous = *value;
-    *value += amount;
-    return previous;
-#else
     return atomic_fetch_add_explicit(value, amount, memory_order_acq_rel);
-#endif
+
 }
 
 static uint32_t atomic_fetch_sub_u32(audio_meter_atomic_u32_t *value, uint32_t amount)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    uint32_t previous = *value;
-    *value -= amount;
-    return previous;
-#else
     return atomic_fetch_sub_explicit(value, amount, memory_order_acq_rel);
-#endif
+
 }
 
 static bool atomic_compare_exchange_u32(audio_meter_atomic_u32_t *value,
                                         uint32_t *expected,
                                         uint32_t desired)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    if (*value == *expected) {
-        *value = desired;
-        return true;
-    }
-    *expected = *value;
-    return false;
-#else
     return atomic_compare_exchange_strong_explicit(value,
                                                    expected,
                                                    desired,
                                                    memory_order_acq_rel,
                                                    memory_order_acquire);
-#endif
+
 }
 
 static bool command_push(const synth_audio_meter_request_t *request)
@@ -337,11 +303,8 @@ static void push_momentary_energy(float energy, uint32_t frames)
 
 static uint32_t meter_clock_us(void)
 {
-#if defined(SYNTH_AUDIO_METER_SINGLE_THREADED_TEST)
-    return 0;
-#else
     return (uint32_t)esp_timer_get_time();
-#endif
+
 }
 
 esp_err_t synth_audio_meter_init(uint32_t sample_rate_hz,

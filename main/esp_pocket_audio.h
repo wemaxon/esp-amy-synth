@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-typedef struct {
+typedef struct esp_pocket_audio_hw {
     i2c_master_bus_handle_t codec_i2c_bus;
     i2c_master_bus_handle_t control_i2c_bus;
     i2s_chan_handle_t i2s_tx;

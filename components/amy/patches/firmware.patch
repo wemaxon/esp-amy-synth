@@ -1,0 +1,229 @@
+diff --git a/src/amy.c b/src/amy.c
+index 8ee37b8b..5206853e 100644
+--- a/src/amy.c
++++ b/src/amy.c
+@@ -2,6 +2,7 @@
+ // brian@variogr.am / dan.ellis@gmail.com
+ 
+ #include "amy.h"
++#include "amy_prng.h"
+ #include "delay.h"
+ #include <stdarg.h>
+ 
+@@ -487,6 +488,10 @@ void config_eq(uint16_t bus, SAMPLE eq_l, SAMPLE eq_m, SAMPLE eq_h) {
+ 
+ void bus_reset(uint16_t bus) {
+     config_eq(bus, F2S(1.0f), F2S(1.0f), F2S(1.0f));
++    if (amy_global.bus[bus]->eq.eq_coeffs != NULL &&
++        amy_global.bus[bus]->eq.eq_delay != NULL) {
++        filters_deinit(bus);
++    }
+     filters_init(bus);
+     reset_parametric(bus);
+     // Distortion defaults match the per-osc stage; state clears with them.
+@@ -1117,6 +1122,7 @@ void reset_osc_state(struct synthinfo *psynth) {
+     psynth->last_two[0] = 0;
+     psynth->last_two[1] = 0;
+     memset(&psynth->stretch, 0, sizeof(psynth->stretch));
++    psynth->random_state = 0;
+     for(int j = 0; j < 2 * FILT_NUM_DELAYS; ++j) psynth->filter_delay[j] = 0;
+     psynth->last_filt_norm_bits = 0;
+     psynth->dist_state.hold = 0;
+@@ -1137,11 +1143,10 @@ void reset_osc(uint16_t i ) {
+     if (synth[i] == NULL) return;
+     reset_osc_by_pointer(synth[i], msynth[i]);
+     synth[i]->osc = i; // self-reference to make updating oscs easier
++    synth[i]->random_state = amy_prng_initial_state(AMY_PRNG_DEFAULT_SEED, i);
+ }
+ 
+ void amy_reset_oscs() {
+-    // Put the noise generator into a known state.
+-    srand48(517730);
+     // We reset oscs by freeing them.
+     // Include per-bus chorus oscs (osc=AMY_OSCS..AMY_OSCS+amy_global.config.max_buses)
+     for(uint16_t i=0;i<AMY_OSCS + amy_global.config.max_buses;i++) free_osc(i);
+@@ -1149,7 +1154,6 @@ void amy_reset_oscs() {
+     // also reset filters and volume
+     for (int bus = 0; bus < amy_global.config.max_buses; ++bus)
+         amy_global.volume[bus] = 1.0f;
+-    my_srand48(517730);
+     buses_reset();
+     // Reset patches
+     patches_reset();
+diff --git a/src/amy.h b/src/amy.h
+index 4203eadc..715ac899 100644
+--- a/src/amy.h
++++ b/src/amy.h
+@@ -795,6 +795,7 @@ struct synthinfo {
+     SAMPLE mod_value;  // last value returned by this oscillator when acting as a MOD_SOURCE, not in event
+     SAMPLE last_scale[MAX_BREAKPOINT_SETS];  // remembers current envelope level, to use as start point in release.
+     SAMPLE last_two[2];    // For ALGO feedback ops
++    uint64_t random_state;  // Oscillator-local noise/KS stream; safe under dual-core render.
+     // For filters.  Need 2x because LPF24 uses two instances of filter.
+     SAMPLE filter_delay[2 * FILT_NUM_DELAYS];
+     // The block-floating-point shift of the filter delay values.
+@@ -1321,7 +1322,6 @@ extern void pcm_deinit();
+ extern void custom_init();
+ extern void custom_deinit();
+ 
+-void my_srand48(uint32_t seedval);
+ 
+ void audio_in_note_on(uint16_t osc, uint8_t channel);
+ void external_audio_in_note_on(uint16_t osc, uint8_t channel);
+diff --git a/src/amy_midi.c b/src/amy_midi.c
+index 7fd8dac0..d5eb6c30 100644
+--- a/src/amy_midi.c
++++ b/src/amy_midi.c
+@@ -611,7 +611,7 @@ void esp_poll_midi(void) {
+     }
+ }
+ 
+-void run_midi_task() {
++void run_midi_task( void * pvParameters) {
+ 
+     while(1) {
+         esp_poll_midi();
+diff --git a/src/i2s.c b/src/i2s.c
+index 25dc8b7f..6bf68aa9 100644
+--- a/src/i2s.c
++++ b/src/i2s.c
+@@ -327,7 +327,7 @@ static int64_t _rl_last_print = 0;
+ static int32_t _rl_render_us = 0;
+ #endif // ARDUINO_SPEEDTEST
+ 
+-void esp_fill_audio_buffer_task() {
++void esp_fill_audio_buffer_task(void *pvParameters) {
+     while(1) {
+         int64_t t;
+         uint32_t blocked_us = 0;
+diff --git a/src/oscillators.c b/src/oscillators.c
+index 8292a525..3773d68c 100644
+--- a/src/oscillators.c
++++ b/src/oscillators.c
+@@ -1,4 +1,5 @@
+ #include "amy.h"
++#include "amy_prng.h"
+ 
+ 
+ // For checking assumptions about bitwidths.
+@@ -587,37 +588,13 @@ void sine_mod_trigger(uint16_t osc) {
+ }
+ 
+ 
+-// On the RP2040, rand and mrand48 etc. don't work on core1.
+-// I think this is to do with the implicit state - it's not repeatable, nor strictly safe,
+-// to potentially have two cores accessing the same rand_state memory at the same time.
+-// However, we just want random values, and any bit pattern is acceptable.
+-// So we make our own implementation of mrand48, and don't worry about it being called from both cores.
+-
+-static uint64_t rand_state = 0;
+-static const uint64_t a = 0x5deece66dL;
+-static const uint32_t c = 0xb;
+-
+-void my_srand48(uint32_t seedval) {
+-    rand_state = ((uint64_t)seedval) << 32L;
+-}
+-
+-static inline int32_t my_mrand48(void) {
+-    // per https://www.ibm.com/docs/en/zos/2.4.0?topic=functions-mrand48-pseudo-random-number-generator
+-    rand_state = (a * rand_state + c) & 0x0000ffffffffffffL;
+-    return (int32_t)rand_state;
+-}
+-
+-#if (defined PICO_RP2350) || (defined PICO_RP2040)
+-#include "pico/rand.h"
+-#endif
+-
+-// Returns a SAMPLE between -1 and 1.
+-inline static SAMPLE amy_get_random() {
++// Returns a SAMPLE between -1 and 1 from this oscillator's private stream.
++inline static SAMPLE amy_get_random(uint16_t osc) {
++    int32_t random = amy_prng_next_i32(&synth[osc]->random_state);
+ #ifndef AMY_USE_FIXEDPOINT
+-    return ((float)drand48()) - 0.5f;
++    return (float)random / 4294967296.0f;
+ #else
+-    //assert(RAND_MAX == 2147483647); // 2^31 - 1
+-    return SHIFTR((SAMPLE)my_mrand48(), (32 - S_FRAC_BITS));  // - F2S(0.5f);
++    return SHIFTR((SAMPLE)random, (32 - S_FRAC_BITS));
+ #endif
+ }
+ 
+@@ -634,7 +611,7 @@ SAMPLE render_noise(SAMPLE *buf, uint16_t osc) {
+     SAMPLE last_white = synth[osc]->last_two[0];
+     SAMPLE last_last_white = synth[osc]->last_two[1];
+     for(uint16_t i=0;i<AMY_BLOCK_SIZE;i++) {
+-        SAMPLE white = MULA_SS(amy_get_random(), amp);
++        SAMPLE white = MULA_SS(amy_get_random(osc), amp);
+         // Two-zero LPF to make the noise a little more pink, closer to Juno noise.
+         SAMPLE value = white + last_white + last_white + last_last_white;
+         last_last_white = last_white;
+@@ -657,7 +634,7 @@ SAMPLE compute_mod_noise(uint16_t osc) {
+     synth[osc]->phase = P_WRAPPED_SUM(synth[osc]->phase, F2P(fstep));  // cycles per sec / calls per sec = cycles per call
+     if (fstep > 1.0f || synth[osc]->phase < starting_phase) {
+         // phase wrapped, take new sample.
+-        synth[osc]->last_two[0] = MULA_SS(amy_get_random(), amp);
++        synth[osc]->last_two[0] = MULA_SS(amy_get_random(osc), amp);
+     }
+     //printf("mod_noise: time %lld fstep %f samp %f\n", amy_global.total_blocks*AMY_BLOCK_SIZE, fstep, S2F(synth[osc]->last_two[0]));
+     return synth[osc]->last_two[0];
+@@ -760,7 +737,7 @@ void ks_note_on(uint16_t osc, float freq) {
+     // init KS buffer with noise up to max
+     SAMPLE sum = 0;
+     for(uint16_t i = 0; i < buflen; i++) {
+-        SAMPLE val = amy_get_random();
++        SAMPLE val = amy_get_random(osc);
+         ks_buffer[ks_polyphony_index][i] = val;
+         sum += val;
+     }
+diff --git a/src/patches.c b/src/patches.c
+index 63c07b5d..955211f5 100644
+--- a/src/patches.c
++++ b/src/patches.c
+@@ -147,7 +147,9 @@ void update_num_oscs_for_patch_number(int patch_number) {
+ void all_notes_off() {
+     for(uint16_t i=0;i<AMY_OSCS;i++) {
+         if (AMY_IS_SET(osc_to_voice[i])) {
+-            if(synth[i]->status == SYNTH_AUDIBLE) {
++            // Some patches, notably INTERP_PARTIALS piano, reserve osc slots
++            // that are not individually configured/allocated.
++            if(synth[i] != NULL && synth[i]->status == SYNTH_AUDIBLE) {
+                 synth[i]->status = SYNTH_INAUDIBLE;
+             }
+         }
+diff --git a/src/amy_prng.h b/src/amy_prng.h
+new file mode 100644
+--- /dev/null
++++ b/src/amy_prng.h
+@@ -0,0 +1,31 @@
++#ifndef AMY_PRNG_H
++#define AMY_PRNG_H
++
++#include <stdint.h>
++
++#define AMY_PRNG_DEFAULT_SEED UINT32_C(517730)
++
++/*
++ * Each oscillator owns one stream.  This keeps dual-core rendering free of
++ * shared read/modify/write state while making reset output reproducible.
++ */
++static inline uint64_t amy_prng_initial_state(uint32_t seed, uint16_t stream)
++{
++    uint64_t mixed = ((uint64_t)seed << 32U) ^ (uint64_t)stream;
++    mixed += UINT64_C(0x9e3779b97f4a7c15);
++    mixed = (mixed ^ (mixed >> 30U)) * UINT64_C(0xbf58476d1ce4e5b9);
++    mixed = (mixed ^ (mixed >> 27U)) * UINT64_C(0x94d049bb133111eb);
++    mixed ^= mixed >> 31U;
++
++    uint64_t state = mixed & UINT64_C(0x0000ffffffffffff);
++    return state != 0U ? state : UINT64_C(0x330e);
++}
++
++static inline int32_t amy_prng_next_i32(uint64_t *state)
++{
++    *state = (UINT64_C(0x5deece66d) * *state + UINT64_C(0xb)) &
++             UINT64_C(0x0000ffffffffffff);
++    return (int32_t)(uint32_t)*state;
++}
++
++#endif

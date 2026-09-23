@@ -4,24 +4,55 @@
 
 Use the pinned AMY submodule and an ESP-IDF environment (currently validated
 with 6.0.1). Do not switch dependency revisions as part of a firmware build.
+ESP32-P4 / WT0132P4-A1 is the active hardware target. Ai-Thinker A1S is
+deprecated and no longer hardware-tested; its source configuration is retained.
 Keep target configurations separate; from the repository root:
 
 ```sh
-idf.py -B build-esp32 -D SDKCONFIG=build-esp32/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults.esp32 -D IDF_TARGET=esp32 build
-idf.py -B build-esp32p4 -D SDKCONFIG=build-esp32p4/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults.esp32p4 -D IDF_TARGET=esp32p4 build
+idf.py -B build/esp32p4 -D SDKCONFIG=build/esp32p4/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults.esp32p4 -D IDF_TARGET=esp32p4 build
+```
+
+Native tests run on Linux (Ubuntu 24.04 / GCC 13 validated), including WSL2.
+Install `build-essential`, `cmake` (3.24+), `ninja-build` and `python3`. From
+`tests/native`, run both configurations:
+
+```sh
+cmake --preset native-debug
+cmake --build --preset native-debug
+ctest --preset native-debug --output-junit ../../build/native-debug/results.xml
+cmake --preset native-release
+cmake --build --preset native-release
+ctest --preset native-release --output-junit ../../build/native-release/results.xml
+```
+
+The existing check commands remain available from the repository root on Linux:
+
+```sh
 python tools/chord_engine_spec_check.py
 python tools/firmware_refactor_check.py
 python tools/host_parity_check.py
 python tools/level_calibration_check.py
 ```
 
-Chord checks compile and execute production C with a native compiler: Visual
-Studio C++ Build Tools on Windows, or `CC` (default `cc`) on Unix. Run them alone
-with `python tools/chord_engine_check.py`. Both the specification and host-parity
-commands include them. No device, AMY binary, or downloaded reference is needed.
-Other host parity suites use Espressif clang to compile production C into optimized
-LLVM vectors. Set `ESP_CLANG` to the compiler path if automatic discovery fails.
-Audio-meter and pitch-detector suites are compile checks, not runtime tests.
+CTest executes 21 suites, compiling production C as separate translation units
+with the real standard library and production atomics. Assertions remain active
+in Release. Audio-meter and pitch-detector vectors execute, not just compile.
+Run chords alone with `python tools/chord_engine_check.py`; the specification
+and host-parity commands include them. Python wrappers use the Debug preset.
+Build products and JUnit results stay under ignored `build/`.
+
+SDK doubles live only in `tests/native/fakes/esp_idf`; they are unit-test
+boundaries, not an ESP-IDF emulator. Playback tests use the real application state.
+AMY event tests use upstream event declarations and initialization, intercepting
+only enqueue through the linker. Meter tests use a fixed clock for numerical
+vectors. These tests do not establish scheduler, concurrency or hardware parity.
+The firmware patch, including `src/amy_prng.h`, is captured under
+`components/amy/patches`. After initializing a fresh pinned submodule, run
+`python3 tools/amy_patches.py` explicitly before building firmware or native tests.
+On an existing patched checkout, use `python3 tools/amy_patches.py --check`.
+Neither command resets local changes. Native CI applies this same patch and runs
+Debug/Release CTest suites with JUnit artifacts. Missing dependencies fail the build.
+
 Device boot checks live in `pytest_firmware.py` and require connected hardware.
 Compare build warnings, binary size, RAM use, and relevant device measurements
 before and after behavior-sensitive changes.

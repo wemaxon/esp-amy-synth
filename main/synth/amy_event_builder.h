@@ -12,6 +12,13 @@
 extern "C" {
 #endif
 
+/* Bus 0 (AMY's default) carries the musical synth: patch synths, raw voices
+ * and the user effects. AMY routes a patch's global EQ/chorus phrase to its
+ * synth's bus, so drums get their own bus and sound changes never recolor them. */
+#define AMY_SYNTH_BUS 0
+#define AMY_DRUM_BUS 1
+#define AMY_BUS_COUNT 2
+
 typedef struct {
     bool enabled;
     float cutoff_hz;
@@ -50,6 +57,16 @@ void amy_event_send_raw_control(const amy_event *control, uint16_t main_osc,
                                  uint16_t pair_osc, bool pair_active);
 void amy_event_send_patch_control(const amy_event *control, uint8_t oscs_per_voice,
                                    bool pair_loaded);
+void amy_event_build_drum_hit(amy_event *event,
+                              uint16_t osc,
+                              uint8_t pcm_preset,
+                              uint8_t midi_note,
+                              float velocity,
+                              float amplitude);
+/* Final-mix volume is per bus in AMY; master volume must reach every bus. */
+void amy_event_send_volume(float volume);
+/* Flat EQ and no chorus on the synth bus, before a patch applies its own. */
+void amy_event_build_synth_bus_reset(amy_event *event);
 
 #ifdef __cplusplus
 }

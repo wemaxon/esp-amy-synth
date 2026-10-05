@@ -43,7 +43,9 @@
 
 static const char *TAG = "SYNTH_APP";
 
-static const uint32_t APP_TASK_STACK_SIZE = 4096;
+/* Bytes. AMY events are 876 bytes each and sound changes nest several frames
+ * that hold one; 4096 overflowed on Juno<->DX7 changes. */
+static const uint32_t APP_TASK_STACK_SIZE = 8192;
 static const UBaseType_t APP_TASK_PRIORITY = 5;
 static const BaseType_t APP_TASK_CORE = 0;
 static const TickType_t APP_UPDATE_TICKS = pdMS_TO_TICKS(20);

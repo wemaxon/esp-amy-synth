@@ -148,6 +148,38 @@ int32_t host_vector_amy_patch_portamento(void)
     return event.portamento_ms;
 }
 
+int32_t host_vector_amy_drum_hit_bus(void)
+{
+    amy_event event;
+    amy_event_build_drum_hit(&event, 120, 6, 53, 0.5f, 0.25f);
+    return event.bus == AMY_DRUM_BUS && AMY_DRUM_BUS != AMY_SYNTH_BUS &&
+           event.osc == 120 && event.wave == PCM && event.preset == 6 &&
+           event.midi_note == 53.0f && event.velocity == 0.5f &&
+           event.amp_coefs[COEF_CONST] == 0.25f && event.filter_type == FILTER_NONE &&
+           event.pan_coefs[COEF_CONST] == 0.5f;
+}
+
+int32_t host_vector_amy_volume_reaches_every_bus(void)
+{
+    sent_count = 0;
+    amy_event_send_volume(4.0f);
+    if (sent_count != AMY_BUS_COUNT) return 0;
+    for (unsigned bus = 0; bus < AMY_BUS_COUNT; ++bus) {
+        if (sent[bus].bus != bus || sent[bus].volume != 4.0f || AMY_IS_SET(sent[bus].osc)) return 0;
+    }
+    return 1;
+}
+
+int32_t host_vector_amy_synth_bus_reset(void)
+{
+    /* Clears a previous patch's EQ/chorus phrase from the synth bus only. */
+    amy_event event;
+    amy_event_build_synth_bus_reset(&event);
+    return event.bus == AMY_SYNTH_BUS && event.eq_l == 0.0f && event.eq_m == 0.0f &&
+           event.eq_h == 0.0f && event.chorus_level == 0.0f && AMY_IS_UNSET(event.osc) &&
+           AMY_IS_UNSET(event.synth);
+}
+
 int main(void)
 {
     CHECK_VECTOR(host_vector_amy_raw_dispatch, 1);
@@ -162,5 +194,8 @@ int main(void)
     CHECK_VECTOR(host_vector_amy_raw_pan, 1000);
     CHECK_VECTOR(host_vector_amy_patch_default_velocity, 550);
     CHECK_VECTOR(host_vector_amy_patch_portamento, 140);
+    CHECK_VECTOR(host_vector_amy_drum_hit_bus, 1);
+    CHECK_VECTOR(host_vector_amy_volume_reaches_every_bus, 1);
+    CHECK_VECTOR(host_vector_amy_synth_bus_reset, 1);
     return 0;
 }

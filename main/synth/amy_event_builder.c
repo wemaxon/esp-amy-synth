@@ -88,7 +88,7 @@ void amy_event_build_raw_note(amy_event *event,
         return;
     }
 
-    *event = amy_default_event();
+    amy_clear_event(event);
     const amy_raw_profile_t *profile = &runtime->raw;
     event->osc = osc;
     event->wave = profile->wave;
@@ -117,7 +117,7 @@ void amy_event_build_patch_note(amy_event *event,
     if (event == NULL) {
         return;
     }
-    *event = amy_default_event();
+    amy_clear_event(event);
     event->synth = synth_id;
     event->midi_note = midi_note;
     float velocity = runtime != NULL ? runtime->velocity : 0.55f;
@@ -130,7 +130,7 @@ void amy_event_build_raw_note_off(amy_event *event, uint16_t osc)
     if (event == NULL) {
         return;
     }
-    *event = amy_default_event();
+    amy_clear_event(event);
     event->osc = osc;
     event->velocity = 0.0f;
 }
@@ -140,9 +140,56 @@ void amy_event_build_patch_note_off(amy_event *event, uint8_t synth_id, uint8_t 
     if (event == NULL) {
         return;
     }
-    *event = amy_default_event();
+    amy_clear_event(event);
     event->synth = synth_id;
     event->midi_note = midi_note;
     event->velocity = 0.0f;
 }
 
+
+void amy_event_build_drum_hit(amy_event *event,
+                              uint16_t osc,
+                              uint8_t pcm_preset,
+                              uint8_t midi_note,
+                              float velocity,
+                              float amplitude)
+{
+    if (event == NULL) {
+        return;
+    }
+    amy_clear_event(event);
+    event->osc = osc;
+    event->bus = AMY_DRUM_BUS;
+    event->wave = PCM;
+    event->preset = pcm_preset;
+    event->midi_note = midi_note;
+    event->velocity = velocity;
+    event->amp_coefs[COEF_CONST] = amplitude;
+    event->feedback = 0.0f;
+    event->filter_type = FILTER_NONE;
+    event->pan_coefs[COEF_CONST] = 0.5f;
+}
+
+void amy_event_send_volume(float volume)
+{
+    for (uint16_t bus = 0; bus < AMY_BUS_COUNT; ++bus) {
+        amy_event event;
+        amy_clear_event(&event);
+        event.bus = bus;
+        event.volume = volume;
+        amy_add_event(&event);
+    }
+}
+
+void amy_event_build_synth_bus_reset(amy_event *event)
+{
+    if (event == NULL) {
+        return;
+    }
+    amy_clear_event(event);
+    event->bus = AMY_SYNTH_BUS;
+    event->eq_l = 0.0f;
+    event->eq_m = 0.0f;
+    event->eq_h = 0.0f;
+    event->chorus_level = 0.0f;
+}

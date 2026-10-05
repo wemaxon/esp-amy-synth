@@ -14,6 +14,7 @@
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "synth/amy_audio.h"
 #include "synth/amy_event_builder.h"
 #include "synth/amy_flanger.h"
@@ -102,6 +103,7 @@ static float s_filter_cutoff_hz = FILTER_CUTOFF_MAX_HZ;
 static bool s_lfo_enabled;
 static volatile float s_lfo_pitch_octaves;
 static bool s_tremolo_enabled;
+static bool s_chorus_enabled;
 static volatile float s_tremolo_amp_offset;
 static bool s_stereo_enabled = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
 static bool s_mic_sample_ready;
@@ -160,9 +162,47 @@ static float master_volume_to_amy_volume(float normalized_volume)
 
 static void enqueue_master_volume(float normalized_volume)
 {
-    amy_event event = amy_default_event();
-    event.volume = master_volume_to_amy_volume(normalized_volume);
+    amy_event_send_volume(master_volume_to_amy_volume(normalized_volume));
+}
+
+static void set_chorus_fields(amy_event *event, bool enabled)
+{
+    event->chorus_level = enabled ? SYNTH_CHORUS_LEVEL : 0.0f;
+    if (enabled) {
+        event->chorus_max_delay = SYNTH_CHORUS_MAX_DELAY_SAMPLES;
+        event->chorus_lfo_freq = SYNTH_CHORUS_LFO_HZ;
+        event->chorus_depth = SYNTH_CHORUS_DEPTH;
+    }
+}
+
+static void send_chorus(bool enabled)
+{
+    amy_event event;
+    amy_clear_event(&event);
+    event.bus = AMY_SYNTH_BUS;
+    set_chorus_fields(&event, enabled);
     amy_add_event(&event);
+}
+
+/* Juno patches carry EQ and chorus; AMY applies them to the synth bus when the
+ * patch loads. Clear the previous patch's colour first so other sounds start
+ * flat, and let an enabled user Chorus win over the patch's own setting.
+ * One event only: amy_event is 876 bytes and this runs on the app task stack. */
+static void reset_synth_bus_fx(void)
+{
+    amy_event event;
+    amy_event_build_synth_bus_reset(&event);
+    if (s_chorus_enabled) {
+        set_chorus_fields(&event, true);
+    }
+    amy_add_event(&event);
+}
+
+static void amy_bus_postprocess(uint16_t bus, SAMPLE *buf, uint16_t len)
+{
+    if (bus == AMY_SYNTH_BUS) {
+        synth_amy_flanger_process(buf, len);
+    }
 }
 
 static void amy_graph_lock(void)
@@ -747,6 +787,9 @@ static void configure_patch_synth_with_gain(const amy_sound_runtime_t *runtime, 
         s_patch_pair_loaded = true;
     }
 
+    if (s_chorus_enabled) {
+        send_chorus(true);
+    }
     apply_patch_pan();
     apply_patch_runtime_controls(false);
     ESP_LOGI(TAG,
@@ -843,6 +886,7 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
             return err;
         }
         release_patch_synth();
+        reset_synth_bus_fx();
     }
 
     s_sound = sound;
@@ -856,11 +900,12 @@ esp_err_t synth_amy_set_sound(synth_sound_t sound)
     }
 
     ESP_LOGI(TAG,
-             "sound=%s engine=%s backend=%s velocity=%.2f%s%s",
+             "sound=%s engine=%s backend=%s velocity=%.2f stack_min_free=%u%s%s",
              synth_sound_name(sound),
              synth_sound_engine_name(sound),
              amy_runtime_backend_name(runtime->backend),
              runtime->velocity,
+             (unsigned)uxTaskGetStackHighWaterMark(NULL),
              runtime->patch_label != NULL ? " patch=" : "",
              runtime->patch_label != NULL ? runtime->patch_label : "");
     return ESP_OK;
@@ -971,16 +1016,13 @@ esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
     uint16_t osc = (uint16_t)(s_drum_osc_base + s_drum_next_osc);
     s_drum_next_osc = (uint8_t)((s_drum_next_osc + 1U) % SYNTH_AMY_DRUM_OSC_COUNT);
 
-    amy_event event = amy_default_event();
-    event.osc = osc;
-    event.wave = PCM;
-    event.preset = pcm_preset;
-    event.midi_note = midi_note;
-    event.velocity = clamp_float((float)velocity / 127.0f, 0.0f, 1.0f);
-    event.amp_coefs[COEF_CONST] = SYNTH_AMY_DRUM_AMP * level_gain;
-    event.feedback = 0.0f;
-    event.filter_type = FILTER_NONE;
-    event.pan_coefs[COEF_CONST] = 0.5f;
+    amy_event event;
+    amy_event_build_drum_hit(&event,
+                             osc,
+                             pcm_preset,
+                             midi_note,
+                             clamp_float((float)velocity / 127.0f, 0.0f, 1.0f),
+                             SYNTH_AMY_DRUM_AMP * level_gain);
     amy_add_event(&event);
     return ESP_OK;
 }
@@ -1103,6 +1145,7 @@ esp_err_t synth_amy_set_reverb_enabled(bool enabled)
     }
 
     amy_event event = amy_default_event();
+    event.bus = AMY_SYNTH_BUS;
     event.reverb_level = enabled ? SYNTH_REVERB_LEVEL : 0.0f;
     if (enabled) {
         event.reverb_liveness = SYNTH_REVERB_LIVENESS;
@@ -1120,14 +1163,8 @@ esp_err_t synth_amy_set_chorus_enabled(bool enabled)
         return ESP_ERR_INVALID_STATE;
     }
 
-    amy_event event = amy_default_event();
-    event.chorus_level = enabled ? SYNTH_CHORUS_LEVEL : 0.0f;
-    if (enabled) {
-        event.chorus_max_delay = SYNTH_CHORUS_MAX_DELAY_SAMPLES;
-        event.chorus_lfo_freq = SYNTH_CHORUS_LFO_HZ;
-        event.chorus_depth = SYNTH_CHORUS_DEPTH;
-    }
-    amy_add_event(&event);
+    s_chorus_enabled = enabled;
+    send_chorus(enabled);
     ESP_LOGI(TAG, "chorus %s", enabled ? "on" : "off");
     return ESP_OK;
 }
@@ -1140,6 +1177,7 @@ esp_err_t synth_amy_set_delay_enabled(bool enabled, float delay_ms)
 
     delay_ms = clamp_float(delay_ms, 1.0f, SYNTH_DELAY_MAX_MS);
     amy_event event = amy_default_event();
+    event.bus = AMY_SYNTH_BUS;
     event.echo_max_delay_ms = SYNTH_DELAY_MAX_MS;
     event.echo_level = enabled ? SYNTH_DELAY_LEVEL : 0.0f;
     if (enabled) {
@@ -1432,9 +1470,11 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
     config.max_oscs = amy_config_max_oscs();
     config.max_voices = amy_config_max_voices();
     config.max_synths = AMY_PATCH_SYNTH_COUNT;
+    config.max_buses = AMY_BUS_COUNT;
     config.max_memory_patches = 4;
     config.max_sequencer_tags = 8;
     config.amy_external_coef_hook = amy_external_coef;
+    config.amy_external_bus_postprocess_hook = amy_bus_postprocess;
 #if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
     config.ram_caps_sample = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
 #endif
@@ -1528,6 +1568,7 @@ esp_err_t synth_amy_reset_exclusive(void)
     s_lfo_pitch_octaves = 0.0f;
     s_tremolo_enabled = false;
     s_tremolo_amp_offset = 0.0f;
+    s_chorus_enabled = false;
     s_stereo_enabled = ESP_POCKET_AUDIO_AMY_STEREO_PAIRS != 0;
     enqueue_master_volume((float)ESP_POCKET_AUDIO_WHEEL_DEFAULT_PERCENT / 100.0f);
     amy_graph_unlock();

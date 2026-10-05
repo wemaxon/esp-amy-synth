@@ -51,17 +51,17 @@ static void audio_task(void *arg)
 #endif
         int16_t *block = s_config.render();
         int64_t amy_done_us = esp_timer_get_time();
+        /* The flanger runs inside AMY's render on the synth bus. */
+        uint32_t flanger_us = synth_amy_flanger_last_process_us();
 #if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
         synth_audio_meter_process(SYNTH_AUDIO_METER_TAP_DRY,
                                   block,
                                   AMY_BLOCK_SIZE,
                                   AMY_NCHANS);
 #endif
-        synth_amy_flanger_process(block);
-        int64_t flanger_done_us = esp_timer_get_time();
         synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
         int64_t looper_done_us = esp_timer_get_time();
-        synth_looper_record_process_time((uint32_t)(looper_done_us - flanger_done_us),
+        synth_looper_record_process_time((uint32_t)(looper_done_us - amy_done_us),
                                          SYNTH_AUDIO_BLOCK_US);
 #if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
         synth_audio_meter_process(SYNTH_AUDIO_METER_TAP_OUTPUT,
@@ -102,9 +102,9 @@ static void audio_task(void *arg)
 #endif
         int64_t write_done_us = esp_timer_get_time();
         synth_amy_perf_record_block((uint32_t)(render_done_us - render_start_us),
-                                    (uint32_t)(amy_done_us - render_start_us),
-                                    (uint32_t)(flanger_done_us - amy_done_us),
-                                    (uint32_t)(looper_done_us - flanger_done_us),
+                                    (uint32_t)(amy_done_us - render_start_us) - flanger_us,
+                                    flanger_us,
+                                    (uint32_t)(looper_done_us - amy_done_us),
                                     (uint32_t)(write_done_us - render_done_us),
                                     input_us,
                                     input_error,

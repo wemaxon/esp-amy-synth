@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "amy.h"
+#include "esp_timer.h"
 
 #define FLANGER_BUFFER_LEN 512U
 #define FLANGER_BUFFER_MASK (FLANGER_BUFFER_LEN - 1U)
@@ -20,6 +21,7 @@ static bool s_enabled;
 static float s_buffer[AMY_NCHANS][FLANGER_BUFFER_LEN];
 static uint16_t s_write_index;
 static float s_phase;
+static volatile uint32_t s_last_process_us;
 
 static float clamp_float(float value, float min_value, float max_value)
 {
@@ -30,17 +32,6 @@ static float clamp_float(float value, float min_value, float max_value)
         return max_value;
     }
     return value;
-}
-
-static int16_t clamp_int16(float value)
-{
-    if (value > 32767.0f) {
-        return 32767;
-    }
-    if (value < -32768.0f) {
-        return -32768;
-    }
-    return (int16_t)value;
 }
 
 static float delay_sample(uint8_t channel, float delay_samples)
@@ -66,18 +57,20 @@ void synth_amy_flanger_set_enabled(bool enabled)
     s_enabled = enabled;
 }
 
-void synth_amy_flanger_process(int16_t *block)
+void synth_amy_flanger_process(SAMPLE *buf, uint16_t len)
 {
-    if (!s_enabled || block == NULL) {
+    if (!s_enabled || buf == NULL) {
+        s_last_process_us = 0;
         return;
     }
+    int64_t start_us = esp_timer_get_time();
 
     float min_delay = (FLANGER_MIN_DELAY_MS * (float)AMY_SAMPLE_RATE) / 1000.0f;
     float max_delay = (FLANGER_MAX_DELAY_MS * (float)AMY_SAMPLE_RATE) / 1000.0f;
     float delay_range = max_delay - min_delay;
     float phase_increment = FLANGER_RATE_HZ / (float)AMY_SAMPLE_RATE;
 
-    for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
+    for (uint16_t i = 0; i < len; ++i) {
         for (uint8_t channel = 0; channel < AMY_NCHANS; ++channel) {
             float channel_phase = s_phase;
             if (AMY_NCHANS > 1 && channel == 1) {
@@ -89,13 +82,14 @@ void synth_amy_flanger_process(int16_t *block)
 
             float lfo = 0.5f + 0.5f * sinf(TWO_PI * channel_phase);
             float delayed = delay_sample(channel, min_delay + delay_range * lfo);
-            uint16_t sample_index = (uint16_t)(i * AMY_NCHANS + channel);
-            float input = (float)block[sample_index] / 32768.0f;
+            /* Bus samples are pre-volume; 1.0 is full scale at unity volume. */
+            uint32_t sample_index = (uint32_t)channel * len + i;
+            float input = S2F(buf[sample_index]);
             float feedback_sample = clamp_float(input + delayed * FLANGER_FEEDBACK, -1.0f, 1.0f);
             float output = input * FLANGER_DRY + delayed * FLANGER_WET;
 
             s_buffer[channel][s_write_index] = feedback_sample;
-            block[sample_index] = clamp_int16(output * 32767.0f);
+            buf[sample_index] = F2S(output);
         }
 
         s_phase += phase_increment;
@@ -104,4 +98,10 @@ void synth_amy_flanger_process(int16_t *block)
         }
         s_write_index = (uint16_t)((s_write_index + 1U) & FLANGER_BUFFER_MASK);
     }
+    s_last_process_us = (uint32_t)(esp_timer_get_time() - start_us);
+}
+
+uint32_t synth_amy_flanger_last_process_us(void)
+{
+    return s_last_process_us;
 }

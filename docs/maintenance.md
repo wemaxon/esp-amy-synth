@@ -118,6 +118,23 @@ multicore audio timing on hardware after dependency upgrades.
   Preserve magic, binary layout, validation, board fallback, and reset semantics.
 - Keep allocations, logging, NVS, I2C, and blocking locks out of audio callbacks.
 
+### Audio buses
+
+AMY runs two buses (`max_buses = AMY_BUS_COUNT`, see `amy_event_builder.h`).
+Bus 0 carries the musical synth: patch synths, raw and PCM voices, and the
+user's reverb, delay, chorus and flanger. Bus 1 carries the drums only and has
+no effects. Master volume is a per-bus AMY setting and is sent to both buses.
+
+Juno ROM patches end with a global EQ/chorus phrase (`x...k...`); AMY 1.2.172
+applies it to the bus of the synth being loaded, so it only colours bus 0. Each
+sound change first resets bus 0 to flat EQ and no chorus, so DX7 and raw sounds
+do not inherit the previous Juno patch's EQ. When the user's Chorus is on it is
+re-sent after every patch load and wins over the patch; when it is off, a Juno
+patch's own chorus remains. The flanger runs in AMY's bus post-process hook on
+bus 0, after reverb and before the final mix; its time is still reported as
+`flanger_us` in the perf log. Drum level calibration predates this split and
+was measured through bus 0's effects state; re-run it on hardware.
+
 ### Chords
 
 `chord_engine.c` owns pure chord construction, formula/name metadata, inversions,
@@ -212,6 +229,7 @@ Profile WT0132P4 for at least five minutes per scenario:
 4. Play six synchronized tracks while changing selection, volume, mute, solo,
    pause, bars, BPM, and metronomes.
 5. Browse raw and patch sounds over a running beat while exercising OLED/input.
+   The beat's tone must not change with the selected sound or effects.
 
 Require no underruns, watchdog resets, stuck notes/tracks, drift, doubled beats,
 altered transients, or interaction-induced gaps. Performance logs must show

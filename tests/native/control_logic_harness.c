@@ -1,4 +1,6 @@
 #include "test_check.h"
+#include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "hmi/control_logic.h"
@@ -67,6 +69,63 @@ int32_t host_vector_direction_right_boundary(void)
     return controls_joystick_direction_from_axes(0.75f, 0.2f);
 }
 
+/* Center is a circle: equal travel activates every direction. */
+int32_t host_vector_direction_diagonal_same_travel(void)
+{
+    /* r = 0.73 both ways; the old square zone left the diagonal at CENTER. */
+    return controls_joystick_direction_from_axes(0.73f, 0.0f) == CONTROL_JOYSTICK_RIGHT &&
+           controls_joystick_direction_from_axes(0.52f, 0.52f) == CONTROL_JOYSTICK_UP_RIGHT &&
+           controls_joystick_direction_from_axes(-0.52f, -0.52f) == CONTROL_JOYSTICK_DOWN_LEFT &&
+           controls_joystick_direction_from_axes(0.0f, -0.73f) == CONTROL_JOYSTICK_DOWN &&
+           controls_joystick_direction_from_axes(0.6f, 0.0f) == CONTROL_JOYSTICK_CENTER &&
+           controls_joystick_direction_from_axes(0.43f, 0.43f) == CONTROL_JOYSTICK_CENTER;
+}
+
+/* Eight equal 45-degree sectors centred on the directions. */
+int32_t host_vector_direction_sectors(void)
+{
+    static const struct { float degrees; control_joystick_direction_t expected; } cases[] = {
+        {0.0f, CONTROL_JOYSTICK_RIGHT}, {22.0f, CONTROL_JOYSTICK_RIGHT},
+        {23.0f, CONTROL_JOYSTICK_UP_RIGHT}, {67.0f, CONTROL_JOYSTICK_UP_RIGHT},
+        {68.0f, CONTROL_JOYSTICK_UP}, {112.0f, CONTROL_JOYSTICK_UP},
+        {113.0f, CONTROL_JOYSTICK_UP_LEFT}, {180.0f, CONTROL_JOYSTICK_LEFT},
+        {225.0f, CONTROL_JOYSTICK_DOWN_LEFT}, {270.0f, CONTROL_JOYSTICK_DOWN},
+        {315.0f, CONTROL_JOYSTICK_DOWN_RIGHT}, {338.0f, CONTROL_JOYSTICK_RIGHT},
+        {-23.0f, CONTROL_JOYSTICK_DOWN_RIGHT},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        float radians = cases[i].degrees * 3.14159265f / 180.0f;
+        if (controls_joystick_direction_from_axes(0.9f * cosf(radians), 0.9f * sinf(radians)) !=
+            cases[i].expected) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Hysteresis: a held direction survives small wobble at ring and sector edges. */
+int32_t host_vector_direction_hysteresis(void)
+{
+    float r = 0.9f;
+    float a70 = 70.0f * 3.14159265f / 180.0f;
+    float a80 = 80.0f * 3.14159265f / 180.0f;
+    return /* 70 degrees: UP from rest, but a held UP_RIGHT is kept */
+           controls_joystick_direction_update(CONTROL_JOYSTICK_CENTER, r * cosf(a70), r * sinf(a70)) ==
+               CONTROL_JOYSTICK_UP &&
+           controls_joystick_direction_update(CONTROL_JOYSTICK_UP_RIGHT, r * cosf(a70), r * sinf(a70)) ==
+               CONTROL_JOYSTICK_UP_RIGHT &&
+           /* beyond the hysteresis band the new sector wins */
+           controls_joystick_direction_update(CONTROL_JOYSTICK_UP_RIGHT, r * cosf(a80), r * sinf(a80)) ==
+               CONTROL_JOYSTICK_UP &&
+           /* ring: 0.6 does not engage from rest but holds an active direction */
+           controls_joystick_direction_update(CONTROL_JOYSTICK_CENTER, 0.6f, 0.0f) == CONTROL_JOYSTICK_CENTER &&
+           controls_joystick_direction_update(CONTROL_JOYSTICK_RIGHT, 0.6f, 0.0f) == CONTROL_JOYSTICK_RIGHT &&
+           controls_joystick_direction_update(CONTROL_JOYSTICK_RIGHT, 0.5f, 0.0f) == CONTROL_JOYSTICK_CENTER &&
+           /* an inner-ring sector change from an active direction is allowed */
+           controls_joystick_direction_update(CONTROL_JOYSTICK_RIGHT, 0.0f, 0.6f) == CONTROL_JOYSTICK_UP &&
+           controls_joystick_direction_update(CONTROL_JOYSTICK_RIGHT, NAN, 0.9f) == CONTROL_JOYSTICK_CENTER;
+}
+
 int32_t host_vector_queue_overwritten(void)
 {
     control_event_queue_t queue;
@@ -101,6 +160,9 @@ int main(void)
     CHECK_VECTOR(host_vector_direction_up, 1);
     CHECK_VECTOR(host_vector_direction_down_left, 6);
     CHECK_VECTOR(host_vector_direction_right_boundary, 3);
+    CHECK_VECTOR(host_vector_direction_diagonal_same_travel, 1);
+    CHECK_VECTOR(host_vector_direction_sectors, 1);
+    CHECK_VECTOR(host_vector_direction_hysteresis, 1);
     CHECK_VECTOR(host_vector_queue_overwritten, 2);
     CHECK_VECTOR(host_vector_queue_first_retained, 2);
     CHECK_VECTOR(host_vector_queue_empty_result, 261);

@@ -1,5 +1,7 @@
 #include "hmi/control_logic.h"
 
+#include <math.h>
+
 control_debounce_result_t control_debounce_sample(control_debounce_t *state,
                                                    bool pressed,
                                                    TickType_t now,
@@ -16,33 +18,59 @@ control_debounce_result_t control_debounce_sample(control_debounce_t *state,
     return CONTROL_DEBOUNCE_UNCHANGED;
 }
 
-static const float DIRECTION_AXIS_DEADZONE = 0.75f;
-static const float DIRECTION_DIAGONAL_AXIS_MIN = 0.55f;
+/* The eight modifiers sit on a circle around the center, so the center is a
+ * circle too and each direction owns an equal 45-degree sector. A direction
+ * engages at ENTER radius and holds down to EXIT radius; a held direction also
+ * extends its sector by the hysteresis angle so edge wobble cannot flap it. */
+static const float DIRECTION_ENTER_RADIUS = 0.70f;
+static const float DIRECTION_EXIT_RADIUS = 0.55f;
+static const float DIRECTION_SECTOR_HALF_DEG = 22.5f;
+static const float DIRECTION_HYSTERESIS_DEG = 8.0f;
+static const float RAD_TO_DEG = 57.2957795f;
 
-static float abs_axis(float value)
+/* Counter-clockwise from +x (right); up is +y. */
+static const control_joystick_direction_t SECTOR_DIRECTIONS[8] = {
+    CONTROL_JOYSTICK_RIGHT, CONTROL_JOYSTICK_UP_RIGHT, CONTROL_JOYSTICK_UP, CONTROL_JOYSTICK_UP_LEFT,
+    CONTROL_JOYSTICK_LEFT, CONTROL_JOYSTICK_DOWN_LEFT, CONTROL_JOYSTICK_DOWN, CONTROL_JOYSTICK_DOWN_RIGHT,
+};
+
+static float direction_angle_deg(control_joystick_direction_t direction)
 {
-    return value < 0.0f ? -value : value;
+    for (unsigned sector = 0; sector < 8; ++sector) {
+        if (SECTOR_DIRECTIONS[sector] == direction) {
+            return (float)sector * 45.0f;
+        }
+    }
+    return NAN;
+}
+
+control_joystick_direction_t controls_joystick_direction_update(control_joystick_direction_t previous,
+                                                                float x,
+                                                                float y)
+{
+    float radius = sqrtf(x * x + y * y);
+    bool held = previous != CONTROL_JOYSTICK_CENTER;
+    if (!(radius >= (held ? DIRECTION_EXIT_RADIUS : DIRECTION_ENTER_RADIUS))) {
+        return CONTROL_JOYSTICK_CENTER;
+    }
+
+    float angle = atan2f(y, x) * RAD_TO_DEG;
+    if (angle < 0.0f) {
+        angle += 360.0f;
+    }
+    if (held) {
+        float distance = fabsf(remainderf(angle - direction_angle_deg(previous), 360.0f));
+        if (distance <= DIRECTION_SECTOR_HALF_DEG + DIRECTION_HYSTERESIS_DEG) {
+            return previous;
+        }
+    }
+    unsigned sector = (unsigned)floorf((angle + DIRECTION_SECTOR_HALF_DEG) / 45.0f) % 8U;
+    return SECTOR_DIRECTIONS[sector];
 }
 
 control_joystick_direction_t controls_joystick_direction_from_axes(float x, float y)
 {
-    float abs_x = abs_axis(x);
-    float abs_y = abs_axis(y);
-    if (abs_x < DIRECTION_AXIS_DEADZONE && abs_y < DIRECTION_AXIS_DEADZONE) {
-        return CONTROL_JOYSTICK_CENTER;
-    }
-
-    if (abs_x >= DIRECTION_DIAGONAL_AXIS_MIN && abs_y >= DIRECTION_DIAGONAL_AXIS_MIN) {
-        if (x > 0.0f) {
-            return y > 0.0f ? CONTROL_JOYSTICK_UP_RIGHT : CONTROL_JOYSTICK_DOWN_RIGHT;
-        }
-        return y > 0.0f ? CONTROL_JOYSTICK_UP_LEFT : CONTROL_JOYSTICK_DOWN_LEFT;
-    }
-
-    if (abs_x >= abs_y) {
-        return x > 0.0f ? CONTROL_JOYSTICK_RIGHT : CONTROL_JOYSTICK_LEFT;
-    }
-    return y > 0.0f ? CONTROL_JOYSTICK_UP : CONTROL_JOYSTICK_DOWN;
+    return controls_joystick_direction_update(CONTROL_JOYSTICK_CENTER, x, y);
 }
 
 void control_event_queue_reset(control_event_queue_t *queue)

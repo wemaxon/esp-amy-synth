@@ -96,7 +96,12 @@ esp_err_t controls_wheel_context_read(control_wheel_context_t *context);
 bool controls_expander_interrupt_asserted(void);
 gpio_num_t controls_expander_interrupt_gpio(void);
 
+/* Stateless classification from rest; see controls_joystick_direction_update. */
 control_joystick_direction_t controls_joystick_direction_from_axes(float x, float y);
+/* Circular center and eight equal sectors, with hysteresis against previous. */
+control_joystick_direction_t controls_joystick_direction_update(control_joystick_direction_t previous,
+                                                                float x,
+                                                                float y);
 const char *controls_joystick_direction_name(control_joystick_direction_t direction);
 const char *controls_switch_name(control_switch_t sw);
 const char *controls_switch_short_name(control_switch_t sw);

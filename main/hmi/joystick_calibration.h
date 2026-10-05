@@ -38,6 +38,10 @@ void joystick_calibration_capture_center(int16_t raw_x, int16_t raw_y);
 void joystick_calibration_begin_range_capture(int16_t raw_x, int16_t raw_y);
 void joystick_calibration_observe_range(int16_t raw_x, int16_t raw_y);
 float joystick_calibration_normalize(joystick_cal_axis_t axis, int16_t raw);
+/* The stick as one vector: each axis mapped to -1..1 without a per-axis dead
+ * band, then a circular dead band of deadzone_raw so directions keep their
+ * angle near the center. */
+void joystick_calibration_normalize_xy(int16_t raw_x, int16_t raw_y, float *x, float *y);
 
 #ifdef __cplusplus
 }

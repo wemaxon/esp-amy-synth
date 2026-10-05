@@ -75,13 +75,21 @@ valid saved calibration exists, it uses defaults from
 - `ESP_POCKET_AUDIO_ADS1115_JOYSTICK_X_INVERT`
 - `ESP_POCKET_AUDIO_ADS1115_JOYSTICK_Y_INVERT`
 
-Normalization is center-relative:
+Normalization treats the stick as one round vector:
 
-- Values within `center_raw +/- deadzone_raw` become `0.0`.
-- Positive travel is scaled from `center_raw + deadzone_raw` to `max_raw`.
-- Negative travel is scaled from `center_raw - deadzone_raw` to `min_raw`.
-- Results are clamped to `-1.0..+1.0`.
-- Axis inversion flips the sign after scaling.
+- Each axis is scaled from `center_raw` to `max_raw` / `min_raw`, clamped to
+  `-1.0..+1.0`, and inverted if configured. There is no per-axis dead band.
+- A circular dead band of `deadzone_raw` (relative to the average half span)
+  zeroes small movements and rescales the rest without changing its angle.
+
+Direction classification matches the modifiers' circular layout:
+
+- `CENTER` is a circle: a direction engages at radius 0.70 and releases
+  below 0.55, the same travel in every direction.
+- The eight directions are equal 45-degree sectors centred on up, up-right,
+  right, and so on. A held direction keeps 8 degrees of extra sector width so
+  wobble at a boundary does not flip the modifier.
+- The thresholds live in `main/hmi/control_logic.c`.
 
 Saved calibration is accepted only when `min_raw < center_raw < max_raw` for
 both axes. Invalid saved data is ignored and board defaults are used.

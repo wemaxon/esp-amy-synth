@@ -1,5 +1,8 @@
 #include "hmi/calibration_math.h"
 
+#include <math.h>
+#include <stddef.h>
+
 static float clamp_unit(float value)
 {
     if (value < 0.0f) {
@@ -67,3 +70,22 @@ float calibration_normalize_range(int16_t raw,
     return invert ? 1.0f - value : value;
 }
 
+
+void calibration_apply_radial_deadzone(float *x, float *y, float deadzone)
+{
+    if (x == NULL || y == NULL) {
+        return;
+    }
+    float radius = sqrtf(*x * *x + *y * *y);
+    if (!(radius > deadzone) || !(deadzone < 1.0f)) {
+        *x = 0.0f;
+        *y = 0.0f;
+        return;
+    }
+    if (deadzone <= 0.0f) {
+        return;
+    }
+    float scale = ((radius - deadzone) / (1.0f - deadzone)) / radius;
+    *x *= scale;
+    *y *= scale;
+}

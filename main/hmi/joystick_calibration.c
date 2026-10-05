@@ -197,6 +197,32 @@ void joystick_calibration_observe_range(int16_t raw_x, int16_t raw_y)
     portEXIT_CRITICAL(&s_lock);
 }
 
+static float average_half_span(const joystick_calibration_t *cal)
+{
+    float total = 0.0f;
+    for (unsigned axis = 0; axis < JOYSTICK_CAL_AXIS_COUNT; ++axis) {
+        const joystick_cal_axis_config_t *cfg = &cal->axis[axis];
+        total += (float)(cfg->max_raw - cfg->center_raw) + (float)(cfg->center_raw - cfg->min_raw);
+    }
+    return total / (2.0f * JOYSTICK_CAL_AXIS_COUNT);
+}
+
+void joystick_calibration_normalize_xy(int16_t raw_x, int16_t raw_y, float *x, float *y)
+{
+    if (x == NULL || y == NULL) {
+        return;
+    }
+    joystick_calibration_t cal = {0};
+    joystick_calibration_get(&cal);
+    const joystick_cal_axis_config_t *cx = &cal.axis[JOYSTICK_CAL_AXIS_X];
+    const joystick_cal_axis_config_t *cy = &cal.axis[JOYSTICK_CAL_AXIS_Y];
+    *x = calibration_normalize_centered(raw_x, cx->min_raw, cx->center_raw, cx->max_raw, 0, cx->invert);
+    *y = calibration_normalize_centered(raw_y, cy->min_raw, cy->center_raw, cy->max_raw, 0, cy->invert);
+    float half_span = average_half_span(&cal);
+    float deadzone = half_span > 0.0f ? (float)cal.deadzone_raw / half_span : 0.0f;
+    calibration_apply_radial_deadzone(x, y, deadzone);
+}
+
 float joystick_calibration_normalize(joystick_cal_axis_t axis, int16_t raw)
 {
     if (axis >= JOYSTICK_CAL_AXIS_COUNT) {

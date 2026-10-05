@@ -571,11 +571,14 @@ static esp_err_t update_joystick(void)
         return err;
     }
 
+    portENTER_CRITICAL(&s_state_mux);
+    control_joystick_direction_t previous = s_joystick.direction;
+    portEXIT_CRITICAL(&s_state_mux);
+
     next.x.raw = raw_x;
-    next.x.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_X, raw_x);
     next.y.raw = raw_y;
-    next.y.value = joystick_calibration_normalize(JOYSTICK_CAL_AXIS_Y, raw_y);
-    next.direction = controls_joystick_direction_from_axes(next.x.value, next.y.value);
+    joystick_calibration_normalize_xy(raw_x, raw_y, &next.x.value, &next.y.value);
+    next.direction = controls_joystick_direction_update(previous, next.x.value, next.y.value);
 #else
     next.direction = CONTROL_JOYSTICK_CENTER;
 #endif

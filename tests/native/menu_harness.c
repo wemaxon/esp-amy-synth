@@ -15,6 +15,32 @@ int32_t host_vector_menu_direction_edges(void)
     return r.action == SYNTH_APP_MENU_GLOBAL_OCTAVE && r.steps == -1;
 }
 
+/* One push is one step: diagonal wobble while holding Up must not re-fire. */
+int32_t host_vector_menu_no_wobble_repeat(void)
+{
+    control_joystick_direction_t previous = CONTROL_JOYSTICK_CENTER;
+    bool bpm = false;
+    unsigned steps = 0;
+    static const control_joystick_direction_t wobble[] = {
+        CONTROL_JOYSTICK_UP, CONTROL_JOYSTICK_UP_RIGHT, CONTROL_JOYSTICK_UP,
+        CONTROL_JOYSTICK_UP_LEFT, CONTROL_JOYSTICK_UP,
+    };
+    for (unsigned i = 0; i < sizeof(wobble) / sizeof(wobble[0]); ++i) {
+        synth_app_menu_result_t r = synth_app_menu_update(
+            SYNTH_APP_CONTROL_ROUTE_KEY_MENU, wobble[i], &previous, false, &bpm);
+        if (r.action == SYNTH_APP_MENU_GLOBAL_OCTAVE) ++steps;
+    }
+    if (steps != 1) return 0;
+    /* Returning to center re-arms the same direction. */
+    synth_app_menu_update(SYNTH_APP_CONTROL_ROUTE_KEY_MENU, CONTROL_JOYSTICK_CENTER, &previous, false, &bpm);
+    synth_app_menu_result_t r = synth_app_menu_update(
+        SYNTH_APP_CONTROL_ROUTE_KEY_MENU, CONTROL_JOYSTICK_UP, &previous, false, &bpm);
+    if (r.action != SYNTH_APP_MENU_GLOBAL_OCTAVE) return 0;
+    /* A fast flick to the opposite side acts even if no center sample was seen. */
+    r = synth_app_menu_update(SYNTH_APP_CONTROL_ROUTE_KEY_MENU, CONTROL_JOYSTICK_DOWN, &previous, false, &bpm);
+    return r.action == SYNTH_APP_MENU_GLOBAL_OCTAVE && r.steps == -1;
+}
+
 int32_t host_vector_menu_sound_and_bpm(void)
 {
     control_joystick_direction_t previous = CONTROL_JOYSTICK_CENTER;
@@ -55,6 +81,7 @@ int32_t host_vector_sound_browse_wrap(void)
 int main(void)
 {
     CHECK_VECTOR(host_vector_menu_direction_edges, 1);
+    CHECK_VECTOR(host_vector_menu_no_wobble_repeat, 1);
     CHECK_VECTOR(host_vector_menu_sound_and_bpm, 1);
     CHECK_VECTOR(host_vector_menu_priority, 1);
     CHECK_VECTOR(host_vector_sound_browse_wrap, 1);

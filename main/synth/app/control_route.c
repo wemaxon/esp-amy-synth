@@ -6,17 +6,21 @@ synth_app_menu_result_t synth_app_menu_update(synth_app_control_route_t route,
                                               bool chord_held,
                                               bool *bpm_submenu)
 {
+    /* *previous is the last direction that acted, or CENTER once the stick has
+     * returned. Diagonals are ignored without disarming, so wobbling between
+     * Up and Up-Right while holding Up cannot step twice. */
     synth_app_menu_result_t result = {0};
-    if (direction == *previous) {
+    if (direction == CONTROL_JOYSTICK_CENTER) {
+        *previous = CONTROL_JOYSTICK_CENTER;
         return result;
     }
-    *previous = direction;
 
     bool horizontal = direction == CONTROL_JOYSTICK_LEFT || direction == CONTROL_JOYSTICK_RIGHT;
     bool vertical = direction == CONTROL_JOYSTICK_UP || direction == CONTROL_JOYSTICK_DOWN;
-    if (!horizontal && !vertical) {
+    if ((!horizontal && !vertical) || direction == *previous) {
         return result;
     }
+    *previous = direction;
     result.steps = (direction == CONTROL_JOYSTICK_RIGHT || direction == CONTROL_JOYSTICK_UP) ? 1 : -1;
     switch (route) {
     case SYNTH_APP_CONTROL_ROUTE_KEY_MENU:

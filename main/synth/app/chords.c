@@ -104,3 +104,21 @@ void synth_app_chord_state_pin_locks(synth_app_chord_state_t *state, int8_t key_
         }
     }
 }
+
+void synth_app_chord_state_note_press(synth_app_chord_state_t *state, uint8_t slot, uint32_t now)
+{
+    if (state != NULL && slot < SYNTH_CHORD_BUTTON_COUNT) {
+        state->pressed_tick[slot] = now;
+    }
+}
+
+bool synth_app_chord_state_held_since(const synth_app_chord_state_t *state,
+                                      uint8_t slot,
+                                      uint32_t now,
+                                      uint32_t min_ticks)
+{
+    return state != NULL &&
+           slot < SYNTH_CHORD_BUTTON_COUNT &&
+           (state->held_mask & (1U << slot)) != 0 &&
+           (uint32_t)(now - state->pressed_tick[slot]) >= min_ticks;
+}

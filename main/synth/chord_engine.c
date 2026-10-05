@@ -255,8 +255,11 @@ static bool notes_in_range(const int16_t *notes, uint8_t count)
     return true;
 }
 
-/* A deterministic bounded search, not a claim about closed-source HiChord
- * tie-breaking. Preserve role order in output; compare sorted pitch positions. */
+/* Manual 2.9: V.Lead "picks the smoothest inversion, so notes stay close".
+ * Only the three inversions in the button's own register are candidates, so
+ * the register cannot walk across a progression and per-button octaves hold.
+ * Tie-breaking is local: HiChord's is unpublished. Preserve role order in
+ * output; compare sorted pitch positions. */
 static void voice_lead(int16_t *notes, uint8_t count, const synth_chord_request_t *request)
 {
     int16_t previous[SYNTH_MAX_CHORD_NOTES];
@@ -265,27 +268,24 @@ static void voice_lead(int16_t *notes, uint8_t count, const synth_chord_request_
     int best_score = INT_MAX;
     int16_t best[6];
     memcpy(best, notes, count * sizeof(*notes));
-    /* Prefer the requested inversion/register when scores tie. */
-    static const int8_t OCTAVES[] = {0, -1, 1};
+    /* Prefer the requested inversion when scores tie. */
     for (uint8_t n = 0; n < SYNTH_CHORD_INVERSION_COUNT; ++n) {
         uint8_t inversion = (request->inversion + n) % SYNTH_CHORD_INVERSION_COUNT;
-        for (uint8_t o = 0; o < 3; ++o) {
-            int16_t candidate[6], sorted[6];
-            for (uint8_t i = 0; i < count; ++i) candidate[i] = notes[i] + OCTAVES[o] * 12;
-            invert(candidate, count, inversion);
-            if (!notes_in_range(candidate, count)) continue;
-            memcpy(sorted, candidate, count * sizeof(*notes));
-            sort_notes(sorted, count);
-            int sum = 0, previous_sum = 0, score = 0;
-            for (uint8_t i = 0; i < count; ++i) sum += sorted[i];
-            for (uint8_t i = 0; i < request->previous_note_count; ++i) previous_sum += previous[i];
-            score = 2 * abs_int(sum / count - previous_sum / request->previous_note_count);
-            uint8_t common = count < request->previous_note_count ? count : request->previous_note_count;
-            for (uint8_t i = 0; i < common; ++i) score += 5 * abs_int(sorted[i] - previous[i]);
-            if (score < best_score) {
-                best_score = score;
-                memcpy(best, candidate, count * sizeof(*notes));
-            }
+        int16_t candidate[6], sorted[6];
+        memcpy(candidate, notes, count * sizeof(*notes));
+        invert(candidate, count, inversion);
+        if (!notes_in_range(candidate, count)) continue;
+        memcpy(sorted, candidate, count * sizeof(*notes));
+        sort_notes(sorted, count);
+        int sum = 0, previous_sum = 0, score = 0;
+        for (uint8_t i = 0; i < count; ++i) sum += sorted[i];
+        for (uint8_t i = 0; i < request->previous_note_count; ++i) previous_sum += previous[i];
+        score = 2 * abs_int(sum / count - previous_sum / request->previous_note_count);
+        uint8_t common = count < request->previous_note_count ? count : request->previous_note_count;
+        for (uint8_t i = 0; i < common; ++i) score += 5 * abs_int(sorted[i] - previous[i]);
+        if (score < best_score) {
+            best_score = score;
+            memcpy(best, candidate, count * sizeof(*notes));
         }
     }
     memcpy(notes, best, count * sizeof(*notes));

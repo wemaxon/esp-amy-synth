@@ -49,6 +49,9 @@ static const uint32_t APP_TASK_STACK_SIZE = 8192;
 static const UBaseType_t APP_TASK_PRIORITY = 5;
 static const BaseType_t APP_TASK_CORE = 0;
 static const TickType_t APP_UPDATE_TICKS = pdMS_TO_TICKS(20);
+/* A chord must be held this long before Gray/Red/Yellow act on that button
+ * (octave down/up, inversion/lock); sooner is read as a function+chord combo. */
+static const TickType_t CHORD_SHORTCUT_MIN_HOLD_TICKS = pdMS_TO_TICKS(150);
 static const int8_t CHORD_INVERSION_MIN = 0;
 static const int8_t CHORD_INVERSION_MAX = SYNTH_CHORD_INVERSION_COUNT - 1;
 static const TickType_t SOUND_BROWSE_APPLY_TICKS = pdMS_TO_TICKS(180);
@@ -650,6 +653,39 @@ static void sync_play_modifier_from_joystick(void)
     ESP_LOGI(TAG, "joystick modifier=%s", synth_chord_modifier_name(modifier));
 }
 
+static void apply_sound_button_combo(uint8_t degree)
+{
+    apply_sound_immediately(synth_sound_quick_select(degree));
+    set_status("SOUND SELECTED");
+    refresh_held_chords();
+    update_ui();
+}
+
+static void apply_mode_button_combo(uint8_t degree)
+{
+    if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree <= 6) {
+        s_app.play.arp_pattern = (synth_arp_pattern_t)(degree - 1);
+        s_app.play.arp_step_index = 0;
+        ESP_LOGI(TAG, "arp pattern=%s", synth_arp_pattern_name(s_app.play.arp_pattern));
+        set_status(synth_arp_pattern_name(s_app.play.arp_pattern));
+    } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree == 7) {
+        s_app.play.arp_chord_mode = (synth_arp_chord_mode_t)((s_app.play.arp_chord_mode + 1U) %
+                                                        SYNTH_ARP_CHORD_MODE_COUNT);
+        ESP_LOGI(TAG, "arp chord mode=%s", synth_arp_chord_mode_name(s_app.play.arp_chord_mode));
+        set_status(synth_arp_chord_mode_name(s_app.play.arp_chord_mode));
+    } else if (s_app.mode == SYNTH_PLAY_MODE_DRUM_MODE) {
+        synth_app_drum_result_t result = synth_app_drums_set_kit_for_button(&s_app.drums, degree);
+        apply_drum_result(&result);
+    } else {
+        synth_play_mode_t next = synth_play_mode_quick_select(degree);
+        step_mode((int8_t)((int)next - (int)s_app.mode));
+        if (synth_play_mode_is_implemented(s_app.mode)) {
+            set_status(synth_play_mode_short_name(s_app.mode));
+        }
+    }
+    update_ui();
+}
+
 static void handle_chord_event(const control_event_t *event)
 {
     uint8_t degree = 0;
@@ -671,35 +707,13 @@ static void handle_chord_event(const control_event_t *event)
     }
 
     if (event->type == CONTROL_EVENT_SWITCH_PRESSED) {
+        synth_app_chord_state_note_press(&s_app.chords, slot, xTaskGetTickCount());
         if (controls_switch_is_pressed(CONTROL_SOUND_MENU)) {
-            apply_sound_immediately(synth_sound_quick_select(degree));
-            set_status("SOUND SELECTED");
-            refresh_held_chords();
-            update_ui();
+            apply_sound_button_combo(degree);
             return;
         }
         if (controls_switch_is_pressed(CONTROL_MODE_MENU)) {
-            if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree <= 6) {
-                s_app.play.arp_pattern = (synth_arp_pattern_t)(degree - 1);
-                s_app.play.arp_step_index = 0;
-                ESP_LOGI(TAG, "arp pattern=%s", synth_arp_pattern_name(s_app.play.arp_pattern));
-                set_status(synth_arp_pattern_name(s_app.play.arp_pattern));
-            } else if (s_app.mode == SYNTH_PLAY_MODE_ARPEGGIO && degree == 7) {
-                s_app.play.arp_chord_mode = (synth_arp_chord_mode_t)((s_app.play.arp_chord_mode + 1U) %
-                                                                SYNTH_ARP_CHORD_MODE_COUNT);
-                ESP_LOGI(TAG, "arp chord mode=%s", synth_arp_chord_mode_name(s_app.play.arp_chord_mode));
-                set_status(synth_arp_chord_mode_name(s_app.play.arp_chord_mode));
-            } else if (s_app.mode == SYNTH_PLAY_MODE_DRUM_MODE) {
-                synth_app_drum_result_t result = synth_app_drums_set_kit_for_button(&s_app.drums, degree);
-                apply_drum_result(&result);
-            } else {
-                synth_play_mode_t next = synth_play_mode_quick_select(degree);
-                step_mode((int8_t)((int)next - (int)s_app.mode));
-                if (synth_play_mode_is_implemented(s_app.mode)) {
-                    set_status(synth_play_mode_short_name(s_app.mode));
-                }
-            }
-            update_ui();
+            apply_mode_button_combo(degree);
             return;
         }
 
@@ -1759,6 +1773,24 @@ static void handle_menu_event(const control_event_t *event)
                event->sw == CONTROL_SOUND_MENU ||
                event->sw == CONTROL_MODE_MENU) {
         if (s_app.chords.held_mask != 0) {
+            uint8_t slot = s_app.chords.focus_slot;
+            if (!synth_app_chord_state_held_since(&s_app.chords,
+                                                  slot,
+                                                  xTaskGetTickCount(),
+                                                  CHORD_SHORTCUT_MIN_HOLD_TICKS)) {
+                /* Pressed together with the chord: the player meant the
+                 * function+chord combo (Red: mode/arp, Yellow: sound), not a
+                 * per-button octave/inversion/lock. Gray has no combo. */
+                uint8_t degree = (uint8_t)(slot + 1U);
+                if (event->sw == CONTROL_MODE_MENU) {
+                    release_degree(degree);
+                    apply_mode_button_combo(degree);
+                } else if (event->sw == CONTROL_SOUND_MENU) {
+                    release_degree(degree);
+                    apply_sound_button_combo(degree);
+                }
+                return;
+            }
             if (event->sw == CONTROL_KEY_MENU) {
                 step_focused_button_octave(-1);
             } else if (event->sw == CONTROL_SOUND_MENU) {

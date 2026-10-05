@@ -143,6 +143,28 @@ static void draw_volume(pocket_oled_t *display, const play_ui_model_t *model)
     pocket_oled_draw_text(display, POCKET_OLED_WIDTH - 24, 0, line);
 }
 
+/* Octave shifts change pitch silently; show any that are not 0 while playing.
+ * Row 6: shifted buttons as number and direction ("BTN 2+5-"). Row 7: global. */
+static void draw_octave_marker(pocket_oled_t *display, const play_ui_model_t *model)
+{
+    char buttons[24] = "BTN ";
+    size_t used = strlen(buttons);
+    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
+        int8_t shift = model->button_octave_shift[slot];
+        if (shift != 0 && used + 2 < sizeof(buttons)) {
+            buttons[used++] = (char)('1' + slot);
+            buttons[used++] = shift > 0 ? '+' : '-';
+            buttons[used] = '\0';
+        }
+    }
+    if (used > strlen("BTN ")) {
+        pocket_oled_draw_text_row(display, 6, buttons);
+    }
+    if (model->global_octave_shift != SYNTH_APP_GLOBAL_OCTAVE_DEFAULT) {
+        oled_display_draw_rowf(display, 7, "OCT %+d", model->global_octave_shift);
+    }
+}
+
 static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
 {
     if (model->mode == SYNTH_PLAY_MODE_MIC_SAMPLE &&
@@ -185,6 +207,7 @@ static void draw_home(pocket_oled_t *display, const play_ui_model_t *model)
         x = 0;
     }
     pocket_oled_draw_text_scaled(display, x, scale == 2 ? 24 : 28, model->chord_name, scale);
+    draw_octave_marker(display, model);
 }
 
 static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model_t *model)

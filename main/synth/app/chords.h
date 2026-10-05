@@ -21,6 +21,7 @@ typedef struct {
      * global-octave carry of later B/C key steps so its pitch stays put. */
     synth_key_t locked_key[SYNTH_CHORD_BUTTON_COUNT];
     int8_t locked_octave[SYNTH_CHORD_BUTTON_COUNT];
+    uint32_t pressed_tick[SYNTH_CHORD_BUTTON_COUNT];
     int8_t chord_inversion[SYNTH_CHORD_BUTTON_COUNT];
     uint8_t held_mask;
     uint8_t focus_slot;
@@ -45,6 +46,15 @@ bool synth_app_chord_state_toggle_lock(synth_app_chord_state_t *state,
                                        uint8_t slot,
                                        synth_chord_modifier_t modifier,
                                        synth_key_t key);
+/* Records when a chord button went down, in FreeRTOS ticks. */
+void synth_app_chord_state_note_press(synth_app_chord_state_t *state, uint8_t slot, uint32_t now);
+/* True when slot is held and was pressed at least min_ticks before now.
+ * Per-button shortcuts require this so a near-simultaneous function press
+ * is read as the function+chord combo instead. */
+bool synth_app_chord_state_held_since(const synth_app_chord_state_t *state,
+                                      uint8_t slot,
+                                      uint32_t now,
+                                      uint32_t min_ticks);
 /* Call after a key step with the global octave it carried (-1, 0 or +1). */
 void synth_app_chord_state_pin_locks(synth_app_chord_state_t *state, int8_t key_octave_carry);
 

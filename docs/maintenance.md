@@ -109,6 +109,10 @@ multicore audio timing on hardware after dependency upgrades.
   patches; upgrades belong in separate changes.
 - The application task owns application state and updates every 20 ms.
   Sound browsing applies after 180 ms unless playback requires an immediate change.
+- Gray/Red/Yellow act on a held chord button (octave down/up, inversion/lock)
+  only after it has been held 150 ms. A near-simultaneous press is the
+  function+chord combo (Red: mode/arp, Yellow: sound). Menu joystick steps fire
+  once per push: diagonals between cardinals do not re-arm, center does.
 - Control acquisition takes priority over cooperative OLED writes. Expander
   interrupts retain a slow-poll fallback. The control queue holds 15 events
   and overwrites the oldest when full.
@@ -177,10 +181,13 @@ Public-source limits and deliberate local policies (not verified device parity):
   exceed MIDI, the root folds down whole octaves before voicing.
 - The companion app can set one inversion for all seven buttons (CC 56); the
   device itself only cycles per-button inversions, which is what is implemented.
-- Voice leading searches three inversions at the nominal and adjacent octaves,
-  minimizing sorted pitch movement with a mean-register penalty. Equal scores
-  prefer the requested inversion/register. With no history, manual inversion
-  applies. This is a local algorithm; official tie-breaking is unpublished.
+- Voice leading picks among the three inversions in the button's own register
+  (manual: "picks the smoothest inversion"), minimizing sorted pitch movement
+  with a mean-register penalty. It never shifts octaves, so the register cannot
+  walk over a progression and per-button octaves hold; an earlier search over
+  adjacent octaves climbed ~1.3 octaves on circle-of-fifths loops. Equal scores
+  prefer the requested inversion. With no history, manual inversion applies.
+  Official tie-breaking is unpublished.
 - At MIDI boundaries the entire voicing shifts by octaves, not individual notes.
   Invalid requests leave output unchanged. An unrepresentable bass below the
   chord is rejected. Bass normally uses root minus two octaves or the slash degree.

@@ -127,12 +127,55 @@ int host_vector_chord_inversion(void)
     request.inversion = 2;
     return synth_build_chord(&request, &chord) == 0 && matches(&chord, "C", (uint8_t[]){72,76,67}, 3);
 }
+/* Manual 2.9: V.Lead "picks the smoothest inversion, so notes stay close".
+ * Only the three inversions in the button's own register are candidates. */
 int host_vector_chord_voice_leading(void)
 {
-    synth_chord_request_t request = {.degree = 7, .voice_leading_enabled = true,
+    synth_chord_request_t request = {.degree = 4, .voice_leading_enabled = true,
         .previous_notes = {60,64,67}, .previous_note_count = 3};
     synth_chord_t chord;
+    /* C -> F keeps C on the bottom: 2nd inversion C4 F4 A4 (role order F A C). */
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "F", (uint8_t[]){65,69,72}, 3)) return 0;
+    /* The button register is respected: Bdim is not moved below B4. */
+    request.degree = 7;
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "Bdim", (uint8_t[]){71,74,77}, 3)) return 0;
+    /* Per-button octave still applies with voice leading on. */
+    request.button_octave_shift = -1;
     return synth_build_chord(&request, &chord) == 0 && matches(&chord, "Bdim", (uint8_t[]){59,62,65}, 3);
+}
+
+/* Repeated progressions must not walk the register (the old octave search
+ * climbed ~1.3 octaves on I-IV-V loops and the circle of fifths). */
+int host_vector_chord_voice_leading_no_drift(void)
+{
+    static const uint8_t progressions[][8] = {
+        {1, 4, 5, 6, 2, 5, 1, 3}, {1, 4, 7, 3, 6, 2, 5, 1},
+        {1, 7, 6, 5, 4, 3, 2, 1}, {1, 5, 6, 4, 1, 5, 6, 4},
+    };
+    for (size_t p = 0; p < sizeof(progressions) / sizeof(progressions[0]); ++p) {
+        synth_chord_t previous = {0};
+        for (unsigned pass = 0; pass < 8; ++pass) {
+            for (unsigned step = 0; step < 8; ++step) {
+                synth_chord_request_t request = {.degree = progressions[p][step],
+                    .voice_leading_enabled = true, .previous_note_count = previous.note_count};
+                memcpy(request.previous_notes, previous.notes, previous.note_count);
+                synth_chord_request_t plain = {.degree = progressions[p][step]};
+                synth_chord_t chord, root_position;
+                if (synth_build_chord(&request, &chord) || synth_build_chord(&plain, &root_position)) return 0;
+                /* Every note stays within the button's register: root position up
+                 * to its 2nd inversion, never below the root, never an octave above it. */
+                for (uint8_t i = 0; i < chord.note_count; ++i) {
+                    if (chord.notes[i] < root_position.notes[0] ||
+                        chord.notes[i] >= root_position.notes[0] + 24) return 0;
+                }
+                for (uint8_t i = 0; i < chord.note_count; ++i) {
+                    if (chord.notes[i] % 12 != root_position.notes[i] % 12) return 0;
+                }
+                previous = chord;
+            }
+        }
+    }
+    return 1;
 }
 int host_vector_chord_bass(void)
 {
@@ -256,6 +299,22 @@ static int application_chords(void)
            !synth_app_button_octave_step(2, 1, &octaves[0]);
 }
 
+/* Per-button shortcuts (octave, inversion, lock) need the chord held first;
+ * a near-simultaneous function press is the function+chord combo instead. */
+static int shortcut_hold(void)
+{
+    synth_app_chord_state_t state = SYNTH_APP_CHORD_STATE_INITIALIZER;
+    synth_app_chord_state_note_press(&state, 2, UINT32_MAX - 50U);
+    state.held_mask = 1U << 2;
+    if (synth_app_chord_state_held_since(&state, 2, UINT32_MAX - 50U + 149U, 150)) return 0;
+    /* Tick wrap-around is handled. */
+    if (!synth_app_chord_state_held_since(&state, 2, 100U, 150)) return 0;
+    /* A released or never-pressed button is not a shortcut source. */
+    state.held_mask = 0;
+    if (synth_app_chord_state_held_since(&state, 2, 100U, 150)) return 0;
+    return !synth_app_chord_state_held_since(&state, 9, 100U, 150);
+}
+
 static int register_boundaries(void)
 {
     for (unsigned key = 0; key < 12; ++key)
@@ -345,6 +404,8 @@ int main(void)
         {"register", host_vector_chord_register}, {"invalid", host_vector_chord_invalid},
         {"gestures", host_vector_chord_gestures}, {"matrix", matrix},
         {"default left", host_vector_chord_dim_left}, {"scales", host_vector_chord_scales},
+        {"voice leading drift", host_vector_chord_voice_leading_no_drift},
+        {"shortcut hold", shortcut_hold},
         {"application chords", application_chords}, {"register boundaries", register_boundaries},
     };
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {

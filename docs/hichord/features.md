@@ -1,8 +1,9 @@
 # HiChord Synth Feature Specification
 
-Historical Rev 2.8 feature inventory, not the current chord-engine contract.
-See [maintenance guidance](../maintenance.md#chords) for the 2.9 reference,
-implemented behavior, source conflicts, and remaining parity gaps.
+Rev 2.8 feature inventory. The chord-engine sections (2, 3.3-3.8 and 4) follow
+the [Rev 2.9 beta manual](https://hichord.github.io/hichord-beta-updater/manual/)
+and companion app, checked 2026-10-05. See [maintenance guidance](../maintenance.md#chords)
+for implemented behavior and remaining parity gaps.
 
 Source: HiChord Manual & User Guide, Rev 2.8, https://hichord.shop/pages/manual
 Purpose: implementation-focused feature inventory for Codex or another coding agent.
@@ -97,13 +98,13 @@ type HiChordState = {
   key: 'C' | 'C#' | 'D' | 'D#' | 'E' | 'F' | 'F#' | 'G' | 'G#' | 'A' | 'A#' | 'B';
   scale: ScaleName;
   globalOctaveShift: -1 | 0 | 1 | 2;
-  perButtonOctaveShift: Record<1|2|3|4|5|6|7, -2|-1|0|1>;
+  perButtonOctaveShift: Record<1|2|3|4|5|6|7, -2|-1|0|1|2>;
   bpm: number; // 40..300
   selectedSound: SoundName;
   selectedMode: PlayMode;
-  joystickMode: 'DEFAULT' | 'EXTENDED' | 'CHROMATIC';
+  joystickMode: 'DEFAULT' | 'EXTENDED' | 'CHROMATIC' | 'BORROW' | 'OG';
   effects: EffectsState;
-  chordLocks: Record<1|2|3|4|5|6|7, ChordModification | null>;
+  chordLocks: Record<1|2|3|4|5|6|7, { modification: ChordModification; key: Key } | null>;
   inversions: Record<1|2|3|4|5|6|7, 0 | 1 | 2>;
   bassMode: 'OFF' | 'ROOT' | 'SLASH';
   looper: LooperState;
@@ -172,20 +173,31 @@ Implement 10 selectable scales. Each scale changes which notes/chords the 7 chor
 
 Controls:
 
-- Scale is in Sounds/Effects menu after the effect list.
+- Scale is a setting in the Sounds/Effects menu, after the effects:
+  Voice, ADSR, Bass, Glide, **Scale**, V.Lead, Stereo, Joystick, ...
 - Joystick up cycles through the 10 scales.
+- Scale resets to Major at power-off, like key, octave and tempo.
+
+Chord construction (manual: "Picking a scale relights the 7 buttons with a
+different set of notes"): button N is degree N of the scale in the current key.
+For seven-note scales the chord stacks the scale's own third and fifth, e.g.
+Harmonic Minor in C gives `Cm Ddim D#aug Fm G G# Bdim`. Joystick modifiers then
+apply by chord family (major/minor/diminished), exactly as in Major.
+
+The public material does not define the button chords of Major Pentatonic,
+Minor Pentatonic or Blues (five/six notes on seven buttons). Its only hint is
+"Min6: Minor Pentatonic scale (button 6)".
 
 ### 3.4 Octave shifting
 
 Global octave shift:
 
-- Range: `-1` to `+2` octaves.
+- Range: `-2` to `+2` octaves ("from 2 octaves below to 2 above").
 - Control: open key menu, joystick up/down.
 
 Per-button octave shift:
 
-- Down range: button-specific down to `-2`.
-- Up range: button-specific up to `+1`.
+- Range: `-2` to `+2` octaves ("down to 2 octaves below ... up to 2 octaves above").
 - Control: hold a chord button and use the relevant octave shortcut.
 
 Acceptance criteria:
@@ -241,7 +253,7 @@ Effect/setting: `Voice Leading` toggle.
 Behavior:
 
 - When off, use explicit button inversion state.
-- When on, automatically choose the inversion for the next chord that minimizes pitch movement from currently sounding chord tones.
+- When on, automatically choose the inversion for the next chord that minimizes pitch movement from currently sounding chord tones ("Each note moves the shortest distance to the next chord").
 - This applies to chord button playback and should preserve smooth transitions.
 
 ### 3.8 Chord Lock
@@ -251,7 +263,8 @@ Behavior:
 - Normally joystick chord modifications are temporary while the chord button and joystick direction are held.
 - Chord Lock stores the current joystick modification on a chord button.
 - Locked modification persists when the chord button is pressed later.
-- Locked chords transfer when changing keys.
+- A locked chord stays pinned to the key it was locked in. It does not follow
+  later key changes (Rev 2.9; Rev 2.8 transferred locks to the new key).
 
 Controls:
 
@@ -284,21 +297,26 @@ Acceptance criteria:
 
 - Holding a chord button and pushing the joystick in any of 8 directions modifies the chord character.
 - Releasing the joystick snaps back unless Chord Lock is active.
-- There are three joystick modes: `DEFAULT`, `EXTENDED`, `CHROMATIC`.
-- Joystick mode is selected in the effects/settings menu under `JOYSTICK`, cycling `DEFAULT -> EXTENDED -> CHROMATIC`.
+- Major and minor chords react differently to the same direction (for example
+  Right adds Maj7 to major chords but min7 to minor chords).
+- There are five joystick modes: `DEFAULT`, `EXTENDED`, `CHROMATIC`, `BORROW`, `OG`.
+- Joystick mode is selected in the effects/settings menu under `JOYSTICK`, cycling
+  `DEFAULT -> EXTENDED -> CHROMATIC -> BORROW -> OG` (companion-app CC 23 values 0-4).
 
 ### 4.2 Default joystick mode
 
 | Direction | Name / result | Theory behavior | Example in C |
 |---|---|---|---|
 | Up | Major ↔ Minor flip | Flip the 3rd; major becomes minor, minor becomes major | C -> Cm |
-| Up-right | Dom7 | Add flat 7th to major chord | C -> C7 |
+| Up-right | Dom7 | Add flat 7th | C -> C7 |
 | Right | Maj7 / min7 | Add natural 7th for major chords; minor 7th for minor chords | C -> CMaj7; Am -> Am7 |
-| Down-right | 9th | Add 9th / add9 color | C -> Cadd9 |
+| Down-right | 9th | A full 9th chord: the 7th plus the 9th. On the diminished chord it plays m7b5 | C -> Cmaj9; Dm -> Dm9; Bdim -> Bm7b5 |
 | Down | Sus4 | Replace 3rd with 4th | C -> Csus4 |
 | Down-left | 6th / Sus2 | Major chords add 6th; minor chords become sus2 | C -> C6; Dm -> Dsus2 |
-| Left | Diminished | Build a diminished triad from the chord root | C -> Cdim; Dm -> Ddim |
+| Left | Dim / Min | Major and minor chords become diminished; the diminished chord (button 7) becomes minor | C -> Cdim; Bdim -> Bm |
 | Up-left | Aug | Raise 5th | C -> Caug |
+
+Rev 2.8 played Down-right as add9-style color; Rev 2.9 plays true 9ths (see OG).
 
 ### 4.3 Extended joystick mode
 
@@ -317,21 +335,43 @@ Extended mode provides richer jazz/R&B voicings.
 
 ### 4.4 Chromatic joystick mode
 
-Chromatic mode has two behaviors:
-
-1. With a chord held: advanced voicings and altered dominants.
-2. Without a chord held: joystick left/right modulates the key by semitone.
+With a chord held: advanced voicings and altered dominants. Left/right shift the
+whole key down/up one semitone (C -> C# -> D).
 
 | Direction | Result | Chord change | Vibe |
 |---|---|---|---|
 | Up | Min(Maj7) | Minor chord with natural 7th | Film noir |
-| Down | Maj13 | Add 7th, 9th, and 13th | Full, warm |
-| Right | 6/9 | Add 6th and 9th | Smooth landing |
-| Up-left | Maj7#11 | Add natural 7th and raised 11th | Lydian, ethereal |
-| Up-right | Dom13 | Flat 7th + 9th + 13th | Rich tension |
-| Down-left | Dom7b9 | Flat 7th + flat 9th | Spanish, dark |
-| Down-right | Dom7alt | Flat 7th + altered 5th and 9th | Maximum spice |
-| Left | Half-dim7 | Lower 3rd, lower 5th, add flat 7th | Dark jazz |
+| Down | Maj13 | Add 7th, 9th, and 13th | Orchestral warmth |
+| Left | Key -1 semitone | Transpose | |
+| Right | Key +1 semitone | Transpose | |
+| Up-left | Dom7b9 | Flat 7th + flat 9th | Spanish, dark |
+| Up-right | Dom7alt | Flat 7th + altered 5th and 9th | Maximum spice |
+| Down-left | 6/9 | Add 6th and 9th | Jazz standard ending |
+| Down-right | Half-dim7 (ø7) | Lower 3rd, lower 5th, add flat 7th | Dark jazz |
+
+Maj7#11 and Dom13 are preset/app-only chord types, not on the joystick.
+
+### 4.4a Borrow joystick mode (Rev 2.9)
+
+Out-of-key chords, one gesture each. Unlike the other modes, Borrow can shift the
+chord's root as well as its quality.
+
+| Direction | Result | Rule | Example in C |
+|---|---|---|---|
+| Up | Secondary dominant | Same root turns dom7 | Button 2 -> D7 (V7 of G) |
+| Down | Parallel maj ↔ min | Same root, flipped quality | Button 4 -> Fm |
+| Left | Flat-side major | Root drops a semitone and turns major | Button 7 -> Bb; button 2 -> Db (Neapolitan) |
+| Right | Passing dim7 | Root rises a semitone and turns dim7 | Button 4 -> F#°7 |
+| Up-left | Tritone sub | Root moves a tritone, quality dom7 | Button 5 -> Db7 |
+| Up-right | Backdoor dom7 | Root drops a whole step, quality dom7 | Button 1 -> Bb7 |
+| Down-left | Borrowed 7ths | Major-family buttons take min7, minor-family buttons maj7 | Button 4 -> Fm7 |
+| Down-right | Half-dim7 (ø7) | Same root turns half-diminished | Button 2 -> Dø7 |
+
+### 4.4b OG joystick mode (Rev 2.9)
+
+Chord selection is identical to Default and the on-screen names stay the
+corrected ones. Only the notes revert to Rev 2.8: 9th chords stack a doubled 3rd
+on top instead of a true 9th.
 
 ### 4.5 Chord type inventory
 
@@ -361,8 +401,8 @@ Support these chord types/modifications at minimum:
 22. Min(Maj7)
 23. Maj13
 24. 6/9
-25. Maj7#11
-26. Dom13
+25. Maj7#11 (preset/app only)
+26. Dom13 (preset/app only)
 27. Dom7b9
 28. Dom7alt
 

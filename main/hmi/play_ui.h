@@ -42,12 +42,14 @@ typedef enum {
     PLAY_UI_EFFECT_VOICE_COUNT,
     PLAY_UI_EFFECT_ADSR,
     PLAY_UI_EFFECT_GLIDE,
+    PLAY_UI_EFFECT_SCALE,
     PLAY_UI_EFFECT_COUNT,
 } play_ui_effect_t;
 
 typedef struct {
     play_ui_screen_t screen;
     synth_key_t key;
+    synth_scale_t scale;
     int8_t global_octave_shift;
     int8_t button_octave_shift[SYNTH_CHORD_BUTTON_COUNT];
     synth_chord_modifier_t modifier;

@@ -24,6 +24,7 @@ void synth_app_ui_render(const synth_app_state_t *state, play_ui_screen_t screen
     play_ui_model_init(&model);
     model.screen = screen;
     model.key = state->key;
+    model.scale = state->scale;
     model.global_octave_shift = state->global_octave_shift;
     memcpy(model.button_octave_shift,
            state->button_octave_shift,

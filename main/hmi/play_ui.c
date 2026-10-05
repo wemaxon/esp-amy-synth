@@ -39,6 +39,7 @@ static const char *EFFECT_NAMES[PLAY_UI_EFFECT_COUNT] = {
     [PLAY_UI_EFFECT_VOICE_COUNT] = "VOICES",
     [PLAY_UI_EFFECT_ADSR] = "ADSR",
     [PLAY_UI_EFFECT_GLIDE] = "GLIDE",
+    [PLAY_UI_EFFECT_SCALE] = "SCALE",
 };
 
 static const char *LFO_LEVEL_NAMES[] = {
@@ -263,7 +264,7 @@ static void draw_mode_param(pocket_oled_t *display, int row, const play_ui_model
 static void draw_key_menu(pocket_oled_t *display, const play_ui_model_t *model)
 {
     draw_header(display, "KEY SETTINGS");
-    oled_display_draw_rowf(display, 2, "KEY   %s", synth_key_name(model->key));
+    oled_display_draw_rowf(display, 2, "KEY   %s %s", synth_key_name(model->key), synth_scale_name(model->scale));
     oled_display_draw_rowf(display, 3, "GLOBAL OCT %+d", model->global_octave_shift);
     oled_display_draw_rowf(display, 4, "BTN%u OCT %+d", model->focus_slot + 1, model->button_octave_shift[model->focus_slot]);
     oled_display_draw_rowf(display, 5, "LOCK %s", model->chord_lock_enabled ? "ON" : "OFF");
@@ -290,6 +291,8 @@ static void draw_sound_menu(pocket_oled_t *display, const play_ui_model_t *model
                   (unsigned long)model->release_ms);
     } else if (effect == PLAY_UI_EFFECT_GLIDE) {
         oled_display_draw_rowf(display, 4, "GLIDE %s", synth_app_glide_level_name(model->glide_level));
+    } else if (effect == PLAY_UI_EFFECT_SCALE) {
+        oled_display_draw_rowf(display, 4, "SCALE %s", synth_scale_name(model->scale));
     } else if (effect == PLAY_UI_EFFECT_DELAY) {
         oled_display_draw_rowf(display, 4, "FX DELAY %s", synth_app_delay_level_name(model->delay_level));
     } else if (effect == PLAY_UI_EFFECT_TREMOLO) {

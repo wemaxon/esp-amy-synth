@@ -17,8 +17,8 @@ typedef enum {
     DOM7, MAJ7, MIN7, HALF_DIM7, ADD9, MIN_ADD9, DIM_ADD9,
     DOM7_SHARP9, SUS4_FLAT7, ADD11, MIN_ADD11, DIM_ADD11, DOM9,
     MIN11, MIN_MAJ7, MAJ13, SIX_NINE, MAJ7_SHARP11, DOM13,
-    DOM7_FLAT9, DOM7_ALT, MAJ9, MIN9, DIM9, OG_MAJ9, OG_MIN9,
-    OG_DIM9, DIM7,
+    DOM7_FLAT9, DOM7_ALT, MAJ9, MIN9, OG_MAJ9, OG_MIN9,
+    OG_HALF_DIM7, DIM7,
 } formula_id_t;
 
 /* Names and pitches have one owner. No generic scale/fallback chord builder. */
@@ -53,54 +53,82 @@ static const chord_formula_t FORMULAS[] = {
     [DOM7_ALT] = {"7alt", 6, {0, 4, 6, 10, 13, 15}},
     [MAJ9] = {"maj9", 5, {0, 4, 7, 11, 14}},
     [MIN9] = {"m9", 5, {0, 3, 7, 10, 14}},
-    [DIM9] = {"m9b5", 5, {0, 3, 6, 10, 14}},
     /* OG deliberately replaces the ninth with an octave-doubled third. */
     [OG_MAJ9] = {"maj9", 5, {0, 4, 7, 11, 16}},
     [OG_MIN9] = {"m9", 5, {0, 3, 7, 10, 15}},
-    [OG_DIM9] = {"m9b5", 5, {0, 3, 6, 10, 15}},
+    /* Manual 2.9: OG keeps the corrected names, so button 7 shows m7b5. */
+    [OG_HALF_DIM7] = {"m7b5", 5, {0, 3, 6, 10, 15}},
     [DIM7] = {"dim7", 4, {0, 3, 6, 9}},
 };
 
+typedef enum { FAMILY_MAJOR, FAMILY_MINOR, FAMILY_DIM, FAMILY_AUG, FAMILY_COUNT } family_t;
+
 typedef struct {
     const char *name;
-    formula_id_t family[3]; /* major, minor, diminished */
+    formula_id_t family[FAMILY_COUNT];
     int8_t root_shift;
 } modifier_definition_t;
 
+/* Augmented degrees (harmonic/melodic minor III+) are unpublished; they take
+ * the major column, except that no modifier keeps the augmented triad. */
+#define MOD(name, major, minor, dim, shift) {name, {major, minor, dim, major}, shift}
+
 static const modifier_definition_t MODIFIERS[SYNTH_CHORD_MOD_COUNT] = {
-    [SYNTH_CHORD_MOD_NONE] = {"none", {MAJOR, MINOR, DIM}, 0},
-    [SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR] = {"maj/min", {MINOR, MAJOR, MINOR}, 0},
-    [SYNTH_CHORD_MOD_DOM7] = {"dom7", {DOM7, DOM7, DOM7}, 0},
-    [SYNTH_CHORD_MOD_MAJ7_MIN7] = {"7", {MAJ7, MIN7, HALF_DIM7}, 0},
-    [SYNTH_CHORD_MOD_ADD9] = {"add9", {ADD9, MIN_ADD9, DIM_ADD9}, 0},
-    [SYNTH_CHORD_MOD_SUS4] = {"sus4", {SUS4, SUS4, SUS4}, 0},
-    [SYNTH_CHORD_MOD_SIXTH_OR_SUS2] = {"6/sus2", {MAJOR6, SUS2, SUS2}, 0},
-    [SYNTH_CHORD_MOD_DIM_OR_MINOR] = {"dim/min", {MINOR, DIM, DIM}, 0},
-    [SYNTH_CHORD_MOD_AUGMENTED] = {"aug", {AUG, AUG, AUG}, 0},
-    [SYNTH_CHORD_MOD_DOM7_SHARP9] = {"7#9", {DOM7_SHARP9, DOM7_SHARP9, DOM7_SHARP9}, 0},
-    [SYNTH_CHORD_MOD_SUS4_FLAT7] = {"7sus4", {SUS4_FLAT7, SUS4_FLAT7, SUS4_FLAT7}, 0},
-    [SYNTH_CHORD_MOD_ADD11] = {"add11", {ADD11, MIN_ADD11, DIM_ADD11}, 0},
-    [SYNTH_CHORD_MOD_HALF_DIM7] = {"m7b5", {HALF_DIM7, HALF_DIM7, HALF_DIM7}, 0},
-    [SYNTH_CHORD_MOD_DOM9] = {"9", {DOM9, DOM9, DOM9}, 0},
-    [SYNTH_CHORD_MOD_MIN11] = {"m11", {MIN11, MIN11, MIN11}, 0},
-    [SYNTH_CHORD_MOD_MIN_MAJ7] = {"mMaj7", {MIN_MAJ7, MIN_MAJ7, MIN_MAJ7}, 0},
-    [SYNTH_CHORD_MOD_MAJ13] = {"maj13", {MAJ13, MAJ13, MAJ13}, 0},
-    [SYNTH_CHORD_MOD_SIX_NINE] = {"6/9", {SIX_NINE, SIX_NINE, SIX_NINE}, 0},
-    [SYNTH_CHORD_MOD_MAJ7_SHARP11] = {"maj7#11", {MAJ7_SHARP11, MAJ7_SHARP11, MAJ7_SHARP11}, 0},
-    [SYNTH_CHORD_MOD_DOM13] = {"13", {DOM13, DOM13, DOM13}, 0},
-    [SYNTH_CHORD_MOD_DOM7_FLAT9] = {"7b9", {DOM7_FLAT9, DOM7_FLAT9, DOM7_FLAT9}, 0},
-    [SYNTH_CHORD_MOD_DOM7_ALT] = {"7alt", {DOM7_ALT, DOM7_ALT, DOM7_ALT}, 0},
-    [SYNTH_CHORD_MOD_NINTH] = {"9th", {MAJ9, MIN9, DIM9}, 0},
-    [SYNTH_CHORD_MOD_OG_NINTH] = {"OG 9th", {OG_MAJ9, OG_MIN9, OG_DIM9}, 0},
-    [SYNTH_CHORD_MOD_FLAT_MAJOR] = {"bMajor", {MAJOR, MAJOR, MAJOR}, -1},
-    [SYNTH_CHORD_MOD_PASSING_DIM7] = {"pass dim7", {DIM7, DIM7, DIM7}, 1},
-    [SYNTH_CHORD_MOD_TRITONE_DOM7] = {"tritone7", {DOM7, DOM7, DOM7}, -6},
-    [SYNTH_CHORD_MOD_BACKDOOR_DOM7] = {"backdoor7", {DOM7, DOM7, DOM7}, -2},
-    [SYNTH_CHORD_MOD_BORROWED_SEVENTH] = {"borrow7", {MIN7, MAJ7, MAJ7}, 0},
+    [SYNTH_CHORD_MOD_NONE] = {"none", {MAJOR, MINOR, DIM, AUG}, 0},
+    [SYNTH_CHORD_MOD_FLIP_MAJOR_MINOR] = MOD("maj/min", MINOR, MAJOR, MINOR, 0),
+    [SYNTH_CHORD_MOD_DOM7] = MOD("dom7", DOM7, DOM7, DOM7, 0),
+    [SYNTH_CHORD_MOD_MAJ7_MIN7] = MOD("7", MAJ7, MIN7, HALF_DIM7, 0),
+    [SYNTH_CHORD_MOD_ADD9] = MOD("add9", ADD9, MIN_ADD9, DIM_ADD9, 0),
+    [SYNTH_CHORD_MOD_SUS4] = MOD("sus4", SUS4, SUS4, SUS4, 0),
+    [SYNTH_CHORD_MOD_SIXTH_OR_SUS2] = MOD("6/sus2", MAJOR6, SUS2, SUS2, 0),
+    /* Manual 2.9: major and minor become diminished; button 7 becomes minor. */
+    [SYNTH_CHORD_MOD_DIM_OR_MINOR] = MOD("dim/min", DIM, DIM, MINOR, 0),
+    [SYNTH_CHORD_MOD_AUGMENTED] = MOD("aug", AUG, AUG, AUG, 0),
+    [SYNTH_CHORD_MOD_DOM7_SHARP9] = MOD("7#9", DOM7_SHARP9, DOM7_SHARP9, DOM7_SHARP9, 0),
+    [SYNTH_CHORD_MOD_SUS4_FLAT7] = MOD("7sus4", SUS4_FLAT7, SUS4_FLAT7, SUS4_FLAT7, 0),
+    [SYNTH_CHORD_MOD_ADD11] = MOD("add11", ADD11, MIN_ADD11, DIM_ADD11, 0),
+    [SYNTH_CHORD_MOD_HALF_DIM7] = MOD("m7b5", HALF_DIM7, HALF_DIM7, HALF_DIM7, 0),
+    [SYNTH_CHORD_MOD_DOM9] = MOD("9", DOM9, DOM9, DOM9, 0),
+    [SYNTH_CHORD_MOD_MIN11] = MOD("m11", MIN11, MIN11, MIN11, 0),
+    [SYNTH_CHORD_MOD_MIN_MAJ7] = MOD("mMaj7", MIN_MAJ7, MIN_MAJ7, MIN_MAJ7, 0),
+    [SYNTH_CHORD_MOD_MAJ13] = MOD("maj13", MAJ13, MAJ13, MAJ13, 0),
+    [SYNTH_CHORD_MOD_SIX_NINE] = MOD("6/9", SIX_NINE, SIX_NINE, SIX_NINE, 0),
+    [SYNTH_CHORD_MOD_MAJ7_SHARP11] = MOD("maj7#11", MAJ7_SHARP11, MAJ7_SHARP11, MAJ7_SHARP11, 0),
+    [SYNTH_CHORD_MOD_DOM13] = MOD("13", DOM13, DOM13, DOM13, 0),
+    [SYNTH_CHORD_MOD_DOM7_FLAT9] = MOD("7b9", DOM7_FLAT9, DOM7_FLAT9, DOM7_FLAT9, 0),
+    [SYNTH_CHORD_MOD_DOM7_ALT] = MOD("7alt", DOM7_ALT, DOM7_ALT, DOM7_ALT, 0),
+    /* Manual 2.9: "On the diminished chord it plays m7b5." */
+    [SYNTH_CHORD_MOD_NINTH] = MOD("9th", MAJ9, MIN9, HALF_DIM7, 0),
+    [SYNTH_CHORD_MOD_OG_NINTH] = MOD("OG 9th", OG_MAJ9, OG_MIN9, OG_HALF_DIM7, 0),
+    [SYNTH_CHORD_MOD_FLAT_MAJOR] = MOD("bMajor", MAJOR, MAJOR, MAJOR, -1),
+    [SYNTH_CHORD_MOD_PASSING_DIM7] = MOD("pass dim7", DIM7, DIM7, DIM7, 1),
+    [SYNTH_CHORD_MOD_TRITONE_DOM7] = MOD("tritone7", DOM7, DOM7, DOM7, -6),
+    [SYNTH_CHORD_MOD_BACKDOOR_DOM7] = MOD("backdoor7", DOM7, DOM7, DOM7, -2),
+    [SYNTH_CHORD_MOD_BORROWED_SEVENTH] = MOD("borrow7", MIN7, MAJ7, MAJ7, 0),
 };
 
-static const uint8_t DEGREE_ROOTS[7] = {0, 2, 4, 5, 7, 9, 11};
-static const uint8_t DEGREE_FAMILIES[7] = {0, 1, 1, 0, 0, 1, 2};
+#undef MOD
+
+typedef struct {
+    const char *name;
+    bool available;
+    uint8_t steps[7];
+} scale_definition_t;
+
+/* Button chords stack diatonic thirds on each scale degree, as the manual's
+ * Major layout does. Names are the companion app's scale labels. */
+static const scale_definition_t SCALES[SYNTH_SCALE_COUNT] = {
+    [SYNTH_SCALE_MAJOR] = {"MAJOR", true, {0, 2, 4, 5, 7, 9, 11}},
+    [SYNTH_SCALE_NATURAL_MINOR] = {"MINOR", true, {0, 2, 3, 5, 7, 8, 10}},
+    [SYNTH_SCALE_HARMONIC_MINOR] = {"HARM MIN", true, {0, 2, 3, 5, 7, 8, 11}},
+    [SYNTH_SCALE_MELODIC_MINOR] = {"MELOD MIN", true, {0, 2, 3, 5, 7, 9, 11}},
+    [SYNTH_SCALE_MAJOR_PENTATONIC] = {"MAJ PEN", false, {0}},
+    [SYNTH_SCALE_MINOR_PENTATONIC] = {"MIN PEN", false, {0}},
+    [SYNTH_SCALE_BLUES] = {"BLUES", false, {0}},
+    [SYNTH_SCALE_DORIAN] = {"DORIAN", true, {0, 2, 3, 5, 7, 9, 10}},
+    [SYNTH_SCALE_MIXOLYDIAN] = {"MIXOLYD", true, {0, 2, 4, 5, 7, 9, 10}},
+    [SYNTH_SCALE_LYDIAN] = {"LYDIAN", true, {0, 2, 4, 6, 7, 9, 11}},
+};
 static const char *const KEY_NAMES[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
 static const char *const BASS_NAMES[] = {"OFF", "ROOT", "SLASH"};
 static const char *const MODE_NAMES[] = {"DEFAULT", "EXTENDED", "CHROMATIC", "BORROW", "OG"};
@@ -128,6 +156,14 @@ const char *synth_key_name(synth_key_t key)
 {
     return (unsigned)key < SYNTH_KEY_COUNT ? KEY_NAMES[key] : "?";
 }
+const char *synth_scale_name(synth_scale_t scale)
+{
+    return (unsigned)scale < SYNTH_SCALE_COUNT ? SCALES[scale].name : "?";
+}
+bool synth_scale_is_available(synth_scale_t scale)
+{
+    return (unsigned)scale < SYNTH_SCALE_COUNT && SCALES[scale].available;
+}
 const char *synth_bass_mode_name(synth_bass_mode_t mode)
 {
     return (unsigned)mode < SYNTH_BASS_MODE_COUNT ? BASS_NAMES[mode] : "?";
@@ -141,6 +177,8 @@ const char *synth_chord_modifier_name(synth_chord_modifier_t modifier)
     return (unsigned)modifier < SYNTH_CHORD_MOD_COUNT ? MODIFIERS[modifier].name : "?";
 }
 
+static int abs_int(int value) { return value < 0 ? -value : value; }
+
 static int wrap_step(int value, int steps, int count)
 {
     int result = (value % count + steps) % count;
@@ -149,6 +187,17 @@ static int wrap_step(int value, int steps, int count)
 synth_key_t synth_key_step(synth_key_t key, int8_t semitones)
 {
     return (synth_key_t)wrap_step((int)key, semitones, SYNTH_KEY_COUNT);
+}
+synth_scale_t synth_scale_step(synth_scale_t scale, int8_t steps)
+{
+    int value = synth_scale_is_available(scale) ? (int)scale : (int)SYNTH_SCALE_MAJOR;
+    int direction = steps < 0 ? -1 : 1;
+    for (int remaining = abs_int(steps); remaining > 0; --remaining) {
+        do {
+            value = wrap_step(value, direction, SYNTH_SCALE_COUNT);
+        } while (!SCALES[value].available);
+    }
+    return (synth_scale_t)value;
 }
 synth_bass_mode_t synth_bass_mode_step(synth_bass_mode_t mode, int8_t steps)
 {
@@ -173,8 +222,6 @@ int8_t synth_chord_key_shift(synth_joystick_mode_t mode, control_joystick_direct
     }
     return direction == CONTROL_JOYSTICK_RIGHT ? 1 : direction == CONTROL_JOYSTICK_LEFT ? -1 : 0;
 }
-
-static int abs_int(int value) { return value < 0 ? -value : value; }
 
 static void invert(int16_t *notes, uint8_t count, uint8_t inversion)
 {
@@ -258,6 +305,23 @@ static void fit_register(int16_t *notes, uint8_t count)
     for (uint8_t i = 0; i < count; ++i) notes[i] += shift;
 }
 
+static family_t degree_family(const scale_definition_t *scale, uint8_t index)
+{
+    int root = scale->steps[index];
+    int third = (scale->steps[(index + 2) % 7] - root + 12) % 12;
+    int fifth = (scale->steps[(index + 4) % 7] - root + 12) % 12;
+    if (third == 4) return fifth == 8 ? FAMILY_AUG : FAMILY_MAJOR;
+    return fifth == 6 ? FAMILY_DIM : FAMILY_MINOR;
+}
+
+/* Combined global/button/slash shifts can exceed MIDI; fold by whole octaves. */
+static int fold_midi(int note)
+{
+    while (note > 127) note -= 12;
+    while (note < 0) note += 12;
+    return note;
+}
+
 static void append_name(char name[16], const char *part)
 {
     size_t used = 0;
@@ -270,6 +334,7 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
 {
     if (request == NULL || chord == NULL ||
         (unsigned)request->key >= SYNTH_KEY_COUNT ||
+        !synth_scale_is_available(request->scale) ||
         request->degree == 0 || request->degree > SYNTH_CHORD_BUTTON_COUNT ||
         (unsigned)request->modifier >= SYNTH_CHORD_MOD_COUNT ||
         (unsigned)request->bass_mode >= SYNTH_BASS_MODE_COUNT ||
@@ -282,14 +347,16 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
     for (uint8_t i = 0; i < request->previous_note_count; ++i) {
         if (request->previous_notes[i] > 127) return -1;
     }
+    const scale_definition_t *scale = &SCALES[request->scale];
     const modifier_definition_t *modifier = &MODIFIERS[request->modifier];
-    const chord_formula_t *formula = &FORMULAS[modifier->family[DEGREE_FAMILIES[request->degree - 1]]];
-    int root = SYNTH_DEFAULT_ROOT_MIDI + (int)request->key + DEGREE_ROOTS[request->degree - 1] +
-               12 * ((int)request->global_octave_shift + request->button_octave_shift) + modifier->root_shift;
-    if (root < 0 || root > 127) return -1;
+    const chord_formula_t *formula =
+        &FORMULAS[modifier->family[degree_family(scale, (uint8_t)(request->degree - 1))]];
+    int root = fold_midi(SYNTH_DEFAULT_ROOT_MIDI + (int)request->key + scale->steps[request->degree - 1] +
+                         12 * ((int)request->global_octave_shift + request->button_octave_shift) +
+                         modifier->root_shift);
 
     synth_chord_t result = {
-        .degree = request->degree, .key = request->key, .root_midi = (uint8_t)root,
+        .degree = request->degree, .key = request->key, .scale = request->scale, .root_midi = (uint8_t)root,
         .modifier = request->modifier, .inversion = request->inversion,
         .bass_mode = request->bass_mode, .bass_degree = request->bass_degree,
         .voice_leading_enabled = request->voice_leading_enabled, .note_count = formula->count,
@@ -311,9 +378,8 @@ int synth_build_chord(const synth_chord_request_t *request, synth_chord_t *chord
     if (request->bass_mode != SYNTH_BASS_MODE_OFF) {
         int bass = root - 24;
         if (request->bass_mode == SYNTH_BASS_MODE_SLASH) {
-            bass = SYNTH_DEFAULT_ROOT_MIDI + (int)request->key + DEGREE_ROOTS[request->bass_degree - 1] +
-                   12 * ((int)request->global_octave_shift + request->bass_octave_shift);
-            if (bass < 0 || bass > 127) return -1;
+            bass = fold_midi(SYNTH_DEFAULT_ROOT_MIDI + (int)request->key + scale->steps[request->bass_degree - 1] +
+                             12 * ((int)request->global_octave_shift + request->bass_octave_shift));
         }
         while (bass >= lowest) bass -= 12;
         while (bass < 0) bass += 12;

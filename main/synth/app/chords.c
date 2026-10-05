@@ -74,3 +74,33 @@ void synth_app_chord_state_clear_held(synth_app_chord_state_t *state)
     state->held_mask = 0;
     memset(state->held_chord_valid, 0, sizeof(state->held_chord_valid));
 }
+
+bool synth_app_chord_state_toggle_lock(synth_app_chord_state_t *state,
+                                       uint8_t slot,
+                                       synth_chord_modifier_t modifier,
+                                       synth_key_t key)
+{
+    if (state == NULL || slot >= SYNTH_CHORD_BUTTON_COUNT) {
+        return false;
+    }
+    if (modifier == SYNTH_CHORD_MOD_NONE || state->locked_modifier[slot] == modifier) {
+        state->locked_modifier[slot] = SYNTH_CHORD_MOD_NONE;
+        return false;
+    }
+    state->locked_modifier[slot] = modifier;
+    state->locked_key[slot] = key;
+    state->locked_octave[slot] = 0;
+    return true;
+}
+
+void synth_app_chord_state_pin_locks(synth_app_chord_state_t *state, int8_t key_octave_carry)
+{
+    if (state == NULL) {
+        return;
+    }
+    for (uint8_t slot = 0; slot < SYNTH_CHORD_BUTTON_COUNT; ++slot) {
+        if (state->locked_modifier[slot] != SYNTH_CHORD_MOD_NONE) {
+            state->locked_octave[slot] = (int8_t)(state->locked_octave[slot] - key_octave_carry);
+        }
+    }
+}

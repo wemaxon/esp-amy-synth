@@ -57,6 +57,7 @@ static const uint8_t MIC_GAIN_UNITY_PERCENT = 23;
 
 static synth_app_state_t s_app = {
     .key = SYNTH_KEY_C,
+    .scale = SYNTH_SCALE_MAJOR,
     .global_octave_shift = SYNTH_APP_GLOBAL_OCTAVE_DEFAULT,
     .modifier = SYNTH_CHORD_MOD_NONE,
     .joystick_mode = SYNTH_JOYSTICK_MODE_DEFAULT,
@@ -190,12 +191,15 @@ static bool build_chord(uint8_t degree, synth_chord_t *chord)
 {
     synth_app_chord_build_context_t context = {
         .key = s_app.key,
+        .scale = s_app.scale,
         .global_octave_shift = s_app.global_octave_shift,
         .button_octave_shift = s_app.button_octave_shift,
         .modifier = s_app.modifier,
         .focus_slot = s_app.chords.focus_slot,
         .held_mask = s_app.chords.held_mask,
         .locked_modifier = s_app.chords.locked_modifier,
+        .locked_key = s_app.chords.locked_key,
+        .locked_octave = s_app.chords.locked_octave,
         .bass_mode = s_app.bass_mode,
         .slash_bass_slot = s_app.slash_bass_slot,
         .chord_inversion = s_app.chords.chord_inversion,
@@ -778,6 +782,7 @@ static bool step_key(int8_t semitones)
         return false;
     }
 
+    synth_app_chord_state_pin_locks(&s_app.chords, (int8_t)(next_octave - s_app.global_octave_shift));
     s_app.key = next_key;
     s_app.global_octave_shift = next_octave;
     synth_app_chord_state_clear_voice_anchor(&s_app.chords);
@@ -877,6 +882,16 @@ static void step_bass_mode(void)
     update_ui();
 }
 
+static void step_scale(void)
+{
+    s_app.scale = synth_scale_step(s_app.scale, 1);
+    synth_app_chord_state_clear_voice_anchor(&s_app.chords);
+    ESP_LOGI(TAG, "scale=%s", synth_scale_name(s_app.scale));
+    set_status(synth_scale_name(s_app.scale));
+    refresh_held_chords();
+    update_ui();
+}
+
 static void toggle_voice_leading(void)
 {
     s_app.voice_leading_enabled = !s_app.voice_leading_enabled;
@@ -926,16 +941,15 @@ static void toggle_focused_chord_lock(void)
         return;
     }
 
-    if (s_app.chords.locked_modifier[slot] == s_app.modifier) {
-        s_app.chords.locked_modifier[slot] = SYNTH_CHORD_MOD_NONE;
+    if (!synth_app_chord_state_toggle_lock(&s_app.chords, slot, s_app.modifier, s_app.key)) {
         ESP_LOGI(TAG, "chord %u lock cleared", (unsigned)(slot + 1));
         set_status("LOCK OFF");
     } else {
-        s_app.chords.locked_modifier[slot] = s_app.modifier;
         ESP_LOGI(TAG,
-                 "chord %u lock=%s",
+                 "chord %u lock=%s key=%s",
                  (unsigned)(slot + 1),
-                 synth_chord_modifier_name(s_app.modifier));
+                 synth_chord_modifier_name(s_app.modifier),
+                 synth_key_name(s_app.key));
         set_status("LOCKED");
     }
     play_degree((uint8_t)(slot + 1));
@@ -1088,6 +1102,10 @@ static void toggle_current_effect(void)
     }
     if (effect == PLAY_UI_EFFECT_GLIDE) {
         step_glide_level();
+        return;
+    }
+    if (effect == PLAY_UI_EFFECT_SCALE) {
+        step_scale();
         return;
     }
     if (effect == PLAY_UI_EFFECT_LFO) {

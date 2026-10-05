@@ -1,9 +1,12 @@
-/* Characterization of production code, not a second chord implementation. */
+/* Characterization of production code, not a second chord implementation.
+ * Named vectors quote the official HiChord Rev 2.9 manual. */
+#include <stdio.h>
 #include <string.h>
 #include "synth/amy_runtime.h"
 #include "synth/chord_engine.h"
 #include "synth/amy_voice_map.h"
 #include "synth/app/chord_tools.h"
+#include "synth/app/chords.h"
 #include "synth/app/key.h"
 
 static int matches(const synth_chord_t *chord, const char *name,
@@ -41,7 +44,65 @@ int host_vector_chord_ninth(void)
     request.degree = 6;
     if (synth_build_chord(&request, &chord) || !matches(&chord, "Am9", (uint8_t[]){69,72,76,79,83}, 5)) return 0;
     request.modifier = SYNTH_CHORD_MOD_OG_NINTH;
-    return synth_build_chord(&request, &chord) == 0 && matches(&chord, "Am9", (uint8_t[]){69,72,76,79,84}, 5);
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "Am9", (uint8_t[]){69,72,76,79,84}, 5)) return 0;
+    /* Manual 2.9: "On the diminished chord it plays m7b5." */
+    request.degree = 7;
+    request.modifier = SYNTH_CHORD_MOD_NINTH;
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "Bm7b5", (uint8_t[]){71,74,77,81}, 4)) return 0;
+    /* OG keeps the corrected name and the Rev 2.8 doubled-third notes. */
+    request.modifier = SYNTH_CHORD_MOD_OG_NINTH;
+    return synth_build_chord(&request, &chord) == 0 && matches(&chord, "Bm7b5", (uint8_t[]){71,74,77,81,86}, 5);
+}
+int host_vector_chord_dim_left(void)
+{
+    /* Manual 2.9: "Major and minor chords become diminished. The diminished
+     * chord (button 7) becomes minor." C -> Cdim, Bdim -> Bm. */
+    synth_chord_request_t request = {.degree = 1, .modifier = SYNTH_CHORD_MOD_DIM_OR_MINOR};
+    synth_chord_t chord;
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "Cdim", (uint8_t[]){60,63,66}, 3)) return 0;
+    request.degree = 2;
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "Ddim", (uint8_t[]){62,65,68}, 3)) return 0;
+    request.degree = 7;
+    return synth_build_chord(&request, &chord) == 0 && matches(&chord, "Bm", (uint8_t[]){71,74,78}, 3);
+}
+int host_vector_chord_scales(void)
+{
+    /* Seven-note scales stack diatonic thirds on each degree of the key. */
+    static const struct { synth_scale_t scale; const char *names[7]; } cases[] = {
+        {SYNTH_SCALE_MAJOR, {"C", "Dm", "Em", "F", "G", "Am", "Bdim"}},
+        {SYNTH_SCALE_NATURAL_MINOR, {"Cm", "Ddim", "D#", "Fm", "Gm", "G#", "A#"}},
+        {SYNTH_SCALE_HARMONIC_MINOR, {"Cm", "Ddim", "D#aug", "Fm", "G", "G#", "Bdim"}},
+        {SYNTH_SCALE_MELODIC_MINOR, {"Cm", "Dm", "D#aug", "F", "G", "Adim", "Bdim"}},
+        {SYNTH_SCALE_DORIAN, {"Cm", "Dm", "D#", "F", "Gm", "Adim", "A#"}},
+        {SYNTH_SCALE_MIXOLYDIAN, {"C", "Dm", "Edim", "F", "Gm", "Am", "A#"}},
+        {SYNTH_SCALE_LYDIAN, {"C", "D", "Em", "F#dim", "G", "Am", "Bm"}},
+    };
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); ++c) {
+        for (uint8_t degree = 1; degree <= 7; ++degree) {
+            synth_chord_request_t request = {.degree = degree, .scale = cases[c].scale};
+            synth_chord_t chord;
+            if (synth_build_chord(&request, &chord) || strcmp(chord.name, cases[c].names[degree - 1]) != 0) {
+                return 0;
+            }
+        }
+    }
+    synth_chord_request_t request = {.degree = 3, .scale = SYNTH_SCALE_HARMONIC_MINOR};
+    synth_chord_t chord;
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "D#aug", (uint8_t[]){63,67,71}, 3)) return 0;
+    /* Augmented degrees follow the major column for joystick modifiers. */
+    request.modifier = SYNTH_CHORD_MOD_DIM_OR_MINOR;
+    if (synth_build_chord(&request, &chord) || !matches(&chord, "D#dim", (uint8_t[]){63,66,69}, 3)) return 0;
+    /* Public sources do not define pentatonic/blues button chords. */
+    request.scale = SYNTH_SCALE_MAJOR_PENTATONIC;
+    chord.note_count = 99;
+    if (synth_build_chord(&request, &chord) != -1 || chord.note_count != 99) return 0;
+    request.scale = SYNTH_SCALE_COUNT;
+    if (synth_build_chord(&request, &chord) != -1) return 0;
+    return synth_scale_step(SYNTH_SCALE_MELODIC_MINOR, 1) == SYNTH_SCALE_DORIAN &&
+           synth_scale_step(SYNTH_SCALE_DORIAN, -1) == SYNTH_SCALE_MELODIC_MINOR &&
+           synth_scale_step(SYNTH_SCALE_LYDIAN, 1) == SYNTH_SCALE_MAJOR &&
+           synth_scale_step(SYNTH_SCALE_MAJOR, -1) == SYNTH_SCALE_LYDIAN &&
+           strcmp(synth_scale_name(SYNTH_SCALE_HARMONIC_MINOR), "HARM MIN") == 0;
 }
 int host_vector_chord_borrow(void)
 {
@@ -105,8 +166,13 @@ int host_vector_chord_register(void)
         .global_octave_shift = 2, .button_octave_shift = 1, .modifier = SYNTH_CHORD_MOD_MAJ13};
     synth_chord_t chord;
     /* Shift the whole voicing down, rather than wrapping just the 13th. */
+    if (synth_build_chord(&request, &chord) ||
+        !matches(&chord, "A#maj13", (uint8_t[]){106,110,113,117,120,127}, 6)) return 0;
+    /* +2 global and +2 button exceed MIDI; the voicing folds down whole octaves. */
+    request.button_octave_shift = 2;
+    request.modifier = SYNTH_CHORD_MOD_NONE;
     return synth_build_chord(&request, &chord) == 0 &&
-           matches(&chord, "A#maj13", (uint8_t[]){106,110,113,117,120,127}, 6);
+           matches(&chord, "A#dim", (uint8_t[]){118,121,124}, 3);
 }
 int host_vector_chord_invalid(void)
 {
@@ -139,26 +205,40 @@ int host_vector_chord_gestures(void)
         synth_joystick_mode_step(SYNTH_JOYSTICK_MODE_DEFAULT, -1) == SYNTH_JOYSTICK_MODE_OG;
 }
 
-#include <stdio.h>
 
 static int application_chords(void)
 {
-    int8_t octaves[7] = {0}, inversions[7] = {0};
-    synth_chord_modifier_t locks[7] = {SYNTH_CHORD_MOD_NINTH};
+    int8_t octaves[7] = {0};
+    synth_app_chord_state_t state = SYNTH_APP_CHORD_STATE_INITIALIZER;
+    if (!synth_app_chord_state_toggle_lock(&state, 0, SYNTH_CHORD_MOD_NINTH, SYNTH_KEY_B)) return 0;
     synth_app_chord_build_context_t context = {.key = SYNTH_KEY_B,
-        .button_octave_shift = octaves, .chord_inversion = inversions,
-        .locked_modifier = locks, .held_mask = 3, .focus_slot = 1,
+        .button_octave_shift = octaves, .chord_inversion = state.chord_inversion,
+        .locked_modifier = state.locked_modifier, .locked_key = state.locked_key,
+        .locked_octave = state.locked_octave, .held_mask = 3, .focus_slot = 1,
         .modifier = SYNTH_CHORD_MOD_FLAT_MAJOR};
     synth_chord_t chord;
     if (!synth_app_build_chord_for_degree(&context, 1, &chord) ||
         !matches(&chord, "Bmaj9", (uint8_t[]){71,75,78,82,85}, 5)) return 0;
     if (!synth_app_build_chord_for_degree(&context, 2, &chord) ||
         !matches(&chord, "C", (uint8_t[]){72,76,79}, 3)) return 0;
-    /* A key gesture transposes locked chords too, including the B/C carry. */
+    /* Manual 2.9: "A locked chord stays pinned to the key it was locked in."
+     * A B->C key step carries the global octave; the lock keeps its pitch. */
+    int8_t previous_octave = context.global_octave_shift;
     if (!synth_app_key_step(context.key, 0, 1, &context.key, &context.global_octave_shift)) return 0;
+    synth_app_chord_state_pin_locks(&state, (int8_t)(context.global_octave_shift - previous_octave));
     context.modifier = SYNTH_CHORD_MOD_NONE;
     if (!synth_app_build_chord_for_degree(&context, 1, &chord) ||
-        !matches(&chord, "Cmaj9", (uint8_t[]){72,76,79,83,86}, 5)) return 0;
+        !matches(&chord, "Bmaj9", (uint8_t[]){71,75,78,82,85}, 5)) return 0;
+    if (!synth_app_build_chord_for_degree(&context, 2, &chord) ||
+        !matches(&chord, "Dm", (uint8_t[]){74,77,81}, 3)) return 0;
+    /* A deliberate global octave change still moves locked buttons. */
+    context.global_octave_shift = 2;
+    if (!synth_app_build_chord_for_degree(&context, 1, &chord) || chord.notes[0] != 83) return 0;
+    context.global_octave_shift = 1;
+    /* Locking the same modifier again unlocks, and the button follows the key. */
+    if (synth_app_chord_state_toggle_lock(&state, 0, SYNTH_CHORD_MOD_NINTH, context.key)) return 0;
+    if (!synth_app_build_chord_for_degree(&context, 1, &chord) ||
+        !matches(&chord, "C", (uint8_t[]){72,76,79}, 3)) return 0;
     context.bass_mode = SYNTH_BASS_MODE_SLASH;
     context.slash_bass_slot = 0;
     if (!synth_app_build_chord_for_degree(&context, 2, &chord) ||
@@ -166,8 +246,14 @@ static int application_chords(void)
     /* Releasing the designated bass leaves the held chord's own root. */
     context.held_mask = 2;
     if (!synth_app_build_chord_for_degree(&context, 2, &chord) || chord.bass_note != 62) return 0;
+    /* The selected scale reaches the engine. */
+    context.scale = SYNTH_SCALE_NATURAL_MINOR;
+    context.bass_mode = SYNTH_BASS_MODE_OFF;
+    if (!synth_app_build_chord_for_degree(&context, 1, &chord) || strcmp(chord.name, "Cm") != 0) return 0;
     return !synth_app_build_chord_for_degree(&context, 0, &chord) &&
-           !synth_app_build_chord_for_degree(&context, 8, &chord);
+           !synth_app_build_chord_for_degree(&context, 8, &chord) &&
+           synth_app_button_octave_step(1, 1, &octaves[0]) && octaves[0] == 2 &&
+           !synth_app_button_octave_step(2, 1, &octaves[0]);
 }
 
 static int register_boundaries(void)
@@ -175,7 +261,7 @@ static int register_boundaries(void)
     for (unsigned key = 0; key < 12; ++key)
     for (uint8_t degree = 1; degree <= 7; ++degree)
     for (int8_t global = -2; global <= 2; ++global)
-    for (int8_t button = -2; button <= 1; ++button)
+    for (int8_t button = -2; button <= 2; ++button)
     for (unsigned mod = 0; mod < SYNTH_CHORD_MOD_COUNT; ++mod) {
         synth_chord_request_t request = {.key = (synth_key_t)key, .degree = degree,
             .global_octave_shift = global, .button_octave_shift = button,
@@ -199,12 +285,12 @@ static int matrix(void)
     static const uint16_t pitch_classes[][3] = {
         {0x091,0x089,0x049}, {0x089,0x091,0x089}, {0x491,0x491,0x491},
         {0x891,0x489,0x449}, {0x095,0x08d,0x04d}, {0x0a1,0x0a1,0x0a1},
-        {0x291,0x085,0x085}, {0x089,0x049,0x049}, {0x111,0x111,0x111},
+        {0x291,0x085,0x085}, {0x049,0x049,0x089}, {0x111,0x111,0x111},
         {0x499,0x499,0x499}, {0x4a1,0x4a1,0x4a1}, {0x0b1,0x0a9,0x069},
         {0x449,0x449,0x449}, {0x495,0x495,0x495}, {0x4a9,0x4a9,0x4a9},
         {0x889,0x889,0x889}, {0xa95,0xa95,0xa95}, {0x295,0x295,0x295},
         {0x8d1,0x8d1,0x8d1}, {0x695,0x695,0x695}, {0x493,0x493,0x493},
-        {0x45b,0x45b,0x45b}, {0x895,0x48d,0x44d}, {0x891,0x489,0x449},
+        {0x45b,0x45b,0x45b}, {0x895,0x48d,0x449}, {0x891,0x489,0x449},
         {0x091,0x091,0x091}, {0x249,0x249,0x249}, {0x491,0x491,0x491},
         {0x491,0x491,0x491}, {0x489,0x891,0x891},
     };
@@ -258,6 +344,7 @@ int main(void)
         {"bass", host_vector_chord_bass}, {"voice assignment", host_vector_chord_voice_assignment},
         {"register", host_vector_chord_register}, {"invalid", host_vector_chord_invalid},
         {"gestures", host_vector_chord_gestures}, {"matrix", matrix},
+        {"default left", host_vector_chord_dim_left}, {"scales", host_vector_chord_scales},
         {"application chords", application_chords}, {"register boundaries", register_boundaries},
     };
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); ++i) {

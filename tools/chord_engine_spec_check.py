@@ -66,14 +66,13 @@ def assert_app_and_api_invariants(
     )
     idle_index = idle_clear.start() if idle_clear is not None else -1
     modifier_index = joystick_body.find("synth_chord_modifier_from_joystick")
-    combined_public_sources = chord_h + chord_c + app_c + play_ui_c + play_ui_h
 
     require("#define SYNTH_CHORD_INVERSION_COUNT 3" in chord_h, "inversion count must be 3")
     require("#define SYNTH_APP_GLOBAL_OCTAVE_DEFAULT 0" in app_key_h, "global octave default must be 0")
     require("#define SYNTH_APP_GLOBAL_OCTAVE_MIN -2" in app_key_h, "global octave min must be -2")
     require("#define SYNTH_APP_GLOBAL_OCTAVE_MAX 2" in app_key_h, "global octave max must be +2")
     require("#define SYNTH_APP_BUTTON_OCTAVE_MIN -2" in app_key_h, "button octave min must be -2")
-    require("#define SYNTH_APP_BUTTON_OCTAVE_MAX 1" in app_key_h, "button octave max must be +1")
+    require("#define SYNTH_APP_BUTTON_OCTAVE_MAX 2" in app_key_h, "button octave max must be +2")
     require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in app_c, "app must use shared global octave default")
     require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in play_ui_c, "play UI must use shared global octave default")
     require("bounce" not in app_c.lower(),
@@ -93,12 +92,10 @@ def assert_app_and_api_invariants(
             "key stepping must carry octave across B/C wraps")
     require("root - 24" in chord_c, "ROOT bass must be two octaves below the chord root")
     require("bass_degree" in chord_h and "bass_degree" in chord_c, "slash bass must use bass degree")
-    require(
-        "SYNTH_SCALE" not in combined_public_sources and "synth_scale_" not in combined_public_sources,
-        "legacy scale-selection API/UI must not remain",
-    )
-    require("PLAY_UI_EFFECT_SCALE" not in play_ui_h + play_ui_c + app_c, "scale must not be an effect item")
-    require('"SCALE %s"' not in play_ui_c, "scale must not be displayed as a user setting")
+    require(".scale = s_app.scale" in app_c and "synth_scale_step" in app_c,
+            "selected scale must reach the chord engine")
+    require("PLAY_UI_EFFECT_SCALE" in play_ui_h and '"SCALE %s"' in play_ui_c,
+            "scale must be a settings item after the effects (HiChord 2.9 menu order)")
     require("slash_offset" not in chord_h + chord_c + app_c, "legacy slash offsets must not remain")
     require("SYNTH_CHORD_MOD_ROOT_DOWN" not in chord_h + chord_c, "root-down modifier must not remain")
     require("SYNTH_CHORD_MOD_ROOT_UP" not in chord_h + chord_c, "root-up modifier must not remain")

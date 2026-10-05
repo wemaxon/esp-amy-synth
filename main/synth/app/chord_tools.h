@@ -9,12 +9,15 @@
 
 typedef struct {
     synth_key_t key;
+    synth_scale_t scale;
     int8_t global_octave_shift;
     const int8_t *button_octave_shift;
     synth_chord_modifier_t modifier;
     uint8_t focus_slot;
     uint8_t held_mask;
     const synth_chord_modifier_t *locked_modifier;
+    const synth_key_t *locked_key;     /* optional; NULL makes locks follow the key */
+    const int8_t *locked_octave;
     synth_bass_mode_t bass_mode;
     uint8_t slash_bass_slot;
     const int8_t *chord_inversion;

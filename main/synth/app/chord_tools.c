@@ -39,21 +39,35 @@ static uint8_t slot_from_degree(uint8_t degree)
     return degree > 0 ? (uint8_t)(degree - 1) : 0;
 }
 
+static bool transient_modifier_applies(const synth_app_chord_build_context_t *context, uint8_t slot)
+{
+    return context->modifier != SYNTH_CHORD_MOD_NONE &&
+           slot == context->focus_slot &&
+           (context->held_mask & (1U << slot)) != 0;
+}
+
 static synth_chord_modifier_t effective_modifier_for_slot(const synth_app_chord_build_context_t *context,
                                                           uint8_t slot)
 {
     if (context == NULL) {
         return SYNTH_CHORD_MOD_NONE;
     }
-    if (context->modifier != SYNTH_CHORD_MOD_NONE &&
-        slot == context->focus_slot &&
-        (context->held_mask & (1U << slot)) != 0) {
+    if (transient_modifier_applies(context, slot)) {
         return context->modifier;
     }
     if (slot < SYNTH_CHORD_BUTTON_COUNT && context->locked_modifier != NULL) {
         return context->locked_modifier[slot];
     }
     return SYNTH_CHORD_MOD_NONE;
+}
+
+static bool slot_is_pinned(const synth_app_chord_build_context_t *context, uint8_t slot)
+{
+    return context->locked_modifier != NULL &&
+           context->locked_key != NULL &&
+           context->locked_octave != NULL &&
+           context->locked_modifier[slot] != SYNTH_CHORD_MOD_NONE &&
+           !transient_modifier_applies(context, slot);
 }
 
 uint8_t synth_app_first_held_slot_except(uint8_t held_mask, uint8_t excluded_slot)
@@ -110,6 +124,7 @@ bool synth_app_build_chord_for_degree(const synth_app_chord_build_context_t *con
 
     synth_chord_request_t request = {
         .key = context->key,
+        .scale = context->scale,
         .degree = degree,
         .global_octave_shift = context->global_octave_shift,
         .button_octave_shift = context->button_octave_shift[slot],
@@ -120,6 +135,10 @@ bool synth_app_build_chord_for_degree(const synth_app_chord_build_context_t *con
         .bass_octave_shift = context->button_octave_shift[bass_slot],
         .voice_leading_enabled = context->voice_leading_enabled,
     };
+    if (slot_is_pinned(context, slot)) {
+        request.key = context->locked_key[slot];
+        request.global_octave_shift = (int8_t)(request.global_octave_shift + context->locked_octave[slot]);
+    }
     if (context->voice_leading_enabled &&
         context->voice_anchor_valid &&
         context->voice_anchor != NULL) {

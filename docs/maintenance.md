@@ -128,21 +128,38 @@ the result to six musical voices. Keep note order by musical role, not pitch:
 inversions change pitches without rearranging root/third/fifth slots.
 
 The behavioral reference is the [official 2.9 beta manual](https://hichord.github.io/hichord-beta-updater/manual/)
-and [companion source](https://app.hichord.shop/app.js?v=20260701a), inspected
-2026-09-21. Default, Extended, Chromatic, Borrow, and OG are exposed. Chromatic
-horizontal gestures transpose once per direction edge, including held chords.
-Borrow shifts the chord root, not the selected key; locks retain those modifiers.
+and [companion source](https://app.hichord.shop/app.js?v=20260701a), re-checked
+2026-10-05; [features.md](hichord/features.md) mirrors it. Default, Extended,
+Chromatic, Borrow, and OG are exposed. Chromatic horizontal gestures transpose
+once per direction edge, including held chords. Borrow shifts the chord root,
+not the selected key. A Chord Lock stores its key and stays pinned to it; key
+steps that carry the global octave (B/C) are cancelled per lock so the locked
+pitch does not jump, while deliberate global octave changes still move it.
 Existing enum values are retained, with new modes/modifiers appended.
+`synth_scale_t` uses the companion app's scale numbering (CC 103).
 
 Public-source limits and deliberate local policies (not verified device parity):
 
-- The manual's older Default example says add9, while its 2.9 change notes and
-  companion OG comments describe major/minor ninths. Default uses a seventh plus
-  ninth; Extended add9 remains distinct. OG replaces that ninth with the doubled
-  third. Diminished-family ninths use half-diminished harmony plus a ninth.
-- Only the existing major-scale seven-button layout is implemented. HiChord's
-  other nine scales remain a gap: exact button voicings, particularly pentatonic
-  and blues, are not established by the public material. No guessed scale table.
+- Default Down-right is a true ninth (seventh plus ninth); on the diminished
+  button it plays m7b5, as the 2.9 manual states. Extended add9 remains
+  distinct. OG replaces the ninth with the doubled third and keeps the corrected
+  names; its diminished variant (m7b5 plus doubled third) is inferred.
+- Default Left turns major and minor chords diminished and the diminished
+  chord minor. Up (flip) on the diminished chord gives minor, and sus/aug
+  directions on it use the same formulas as other chords; the manual does not
+  specify these.
+- Seven of the ten scales are implemented: Major, Natural/Harmonic/Melodic
+  Minor, Dorian, Mixolydian, Lydian. Each button stacks the scale's own third
+  and fifth on its degree. Augmented degrees (harmonic/melodic minor III+) take
+  the major column for joystick modifiers; this is unpublished. Major
+  Pentatonic, Minor Pentatonic and Blues stay reserved in the enum but are
+  skipped by the selector and rejected by the engine: their seven-button chords
+  are not published (only hint: "Min6: Minor Pentatonic, button 6"). No guessed
+  table; capture a real unit's USB MIDI output to add them.
+- Per-button and global octave shifts are both -2..+2. Where combined shifts
+  exceed MIDI, the root folds down whole octaves before voicing.
+- The companion app can set one inversion for all seven buttons (CC 56); the
+  device itself only cycles per-button inversions, which is what is implemented.
 - Voice leading searches three inversions at the nominal and adjacent octaves,
   minimizing sorted pitch movement with a mean-register penalty. Equal scores
   prefer the requested inversion/register. With no history, manual inversion
@@ -155,9 +172,10 @@ Public-source limits and deliberate local policies (not verified device parity):
   chords retain the existing button-order priority and capacity limits.
 
 Tests execute production construction, application chord helpers, and voice
-assignment. Independent pitch-class expectations cover all keys, degrees,
-modifiers, inversions, and bass modes; explicit vectors cover names, pitches,
-Borrow/OG, register limits, locks, slash bass, and voice leading. Passing these
+assignment. Pitch-class expectations cover all keys, degrees, modifiers,
+inversions, and bass modes; explicit vectors quote the 2.9 manual's examples and
+cover names, pitches, scales, Borrow/OG, register limits, pinned locks, slash
+bass, and voice leading. Passing these
 tests proves the specified local behavior, not comparison with HiChord hardware.
 
 ### Looper

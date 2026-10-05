@@ -90,6 +90,7 @@ native_test(chord
     main/synth/chord_engine.c
     main/synth/amy_voice_map.c
     main/synth/app/chord_tools.c
+    main/synth/app/chords.c
     main/synth/app/key.c)
 native_test(calibration_store
     main/hmi/calibration_store.c)

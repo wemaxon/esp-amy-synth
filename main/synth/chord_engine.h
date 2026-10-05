@@ -31,6 +31,22 @@ typedef enum {
     SYNTH_KEY_COUNT,
 } synth_key_t;
 
+/* HiChord order (companion-app CC 103 values). Pentatonic and blues button
+ * chords are not published; those scales are reserved and unavailable. */
+typedef enum {
+    SYNTH_SCALE_MAJOR = 0,
+    SYNTH_SCALE_NATURAL_MINOR,
+    SYNTH_SCALE_HARMONIC_MINOR,
+    SYNTH_SCALE_MELODIC_MINOR,
+    SYNTH_SCALE_MAJOR_PENTATONIC,
+    SYNTH_SCALE_MINOR_PENTATONIC,
+    SYNTH_SCALE_BLUES,
+    SYNTH_SCALE_DORIAN,
+    SYNTH_SCALE_MIXOLYDIAN,
+    SYNTH_SCALE_LYDIAN,
+    SYNTH_SCALE_COUNT,
+} synth_scale_t;
+
 typedef enum {
     SYNTH_BASS_MODE_OFF = 0,
     SYNTH_BASS_MODE_ROOT,
@@ -82,6 +98,7 @@ typedef enum {
 
 typedef struct {
     synth_key_t key;
+    synth_scale_t scale;
     uint8_t degree;
     int8_t global_octave_shift;
     int8_t button_octave_shift;
@@ -104,6 +121,7 @@ typedef struct {
     uint8_t bass_note;
     synth_bass_mode_t bass_mode;
     synth_key_t key;
+    synth_scale_t scale;
     synth_chord_modifier_t modifier;
     int8_t inversion;
     uint8_t bass_degree;
@@ -112,6 +130,10 @@ typedef struct {
 } synth_chord_t;
 
 const char *synth_key_name(synth_key_t key);
+const char *synth_scale_name(synth_scale_t scale);
+bool synth_scale_is_available(synth_scale_t scale);
+/* Steps through available scales only, wrapping in HiChord menu order. */
+synth_scale_t synth_scale_step(synth_scale_t scale, int8_t steps);
 const char *synth_bass_mode_name(synth_bass_mode_t mode);
 const char *synth_joystick_mode_name(synth_joystick_mode_t mode);
 const char *synth_chord_modifier_name(synth_chord_modifier_t modifier);

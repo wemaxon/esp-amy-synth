@@ -17,6 +17,10 @@ extern "C" {
 
 typedef struct {
     synth_chord_modifier_t locked_modifier[SYNTH_CHORD_BUTTON_COUNT];
+    /* A lock stays in the key it was made in; locked_octave cancels the
+     * global-octave carry of later B/C key steps so its pitch stays put. */
+    synth_key_t locked_key[SYNTH_CHORD_BUTTON_COUNT];
+    int8_t locked_octave[SYNTH_CHORD_BUTTON_COUNT];
     int8_t chord_inversion[SYNTH_CHORD_BUTTON_COUNT];
     uint8_t held_mask;
     uint8_t focus_slot;
@@ -35,6 +39,14 @@ uint8_t synth_app_chord_state_active_valid_slot(const synth_app_chord_state_t *s
                                                 const bool valid[SYNTH_CHORD_BUTTON_COUNT]);
 uint8_t synth_app_chord_state_focused_slot(synth_app_chord_state_t *state);
 void synth_app_chord_state_clear_held(synth_app_chord_state_t *state);
+/* Locks modifier in key, or unlocks when the slot already holds that modifier.
+ * Returns true when the slot is locked afterwards. */
+bool synth_app_chord_state_toggle_lock(synth_app_chord_state_t *state,
+                                       uint8_t slot,
+                                       synth_chord_modifier_t modifier,
+                                       synth_key_t key);
+/* Call after a key step with the global octave it carried (-1, 0 or +1). */
+void synth_app_chord_state_pin_locks(synth_app_chord_state_t *state, int8_t key_octave_carry);
 
 #ifdef __cplusplus
 }

@@ -14,7 +14,7 @@ extern "C" {
 #define SYNTH_APP_GLOBAL_OCTAVE_MIN -2
 #define SYNTH_APP_GLOBAL_OCTAVE_MAX 2
 #define SYNTH_APP_BUTTON_OCTAVE_MIN -2
-#define SYNTH_APP_BUTTON_OCTAVE_MAX 1
+#define SYNTH_APP_BUTTON_OCTAVE_MAX 2
 
 bool synth_app_key_step(synth_key_t current_key,
                         int8_t current_global_octave,

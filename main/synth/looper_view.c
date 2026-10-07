@@ -99,6 +99,9 @@ static void format_message(const synth_looper_runtime_view_t *view, char *messag
     case SYNTH_LOOPER_MESSAGE_NO_LOOP:
         snprintf(message, size, "%s", "NO LOOP");
         break;
+    case SYNTH_LOOPER_MESSAGE_ENDS_AT_LOOP:
+        snprintf(message, size, "%s", "ENDS AT LOOP");
+        break;
     case SYNTH_LOOPER_MESSAGE_EMPTY:
     default:
         snprintf(message, size, "%s", "EMPTY");

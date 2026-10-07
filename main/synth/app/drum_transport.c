@@ -1,65 +1,49 @@
 #include "synth/app/drum_transport.h"
 
-#include "esp_err.h"
-#include "esp_log.h"
+#include <stddef.h>
+
 #include "synth/transport_timing.h"
 
-#define DRUM_BIT(voice) ((uint8_t)(1U << (uint8_t)(voice)))
-
-static const char *TAG = "DRUM_TRANSPORT";
-
-static TickType_t step_deadline(const synth_app_drum_transport_t *transport,
-                                uint16_t bpm,
-                                uint32_t step_index)
+static uint64_t step_frame(uint64_t origin_frame, uint16_t bpm, uint32_t sample_rate, uint32_t step)
 {
-    uint64_t offset = synth_transport_step_offset(configTICK_RATE_HZ,
-                                                  bpm,
-                                                  step_index,
-                                                  4);
-    return transport->origin_tick + (TickType_t)offset;
+    return origin_frame + synth_transport_step_offset(sample_rate, bpm, step, 4);
 }
 
-static void trigger_voice(const synth_app_drum_transport_t *transport,
-                          synth_drum_voice_t voice,
-                          bool accented)
+/* First step of the grid at or after now (estimate with the rounded step
+ * length, then settle exactly in both directions). */
+static uint32_t next_step(uint64_t origin_frame, uint16_t bpm, uint32_t sample_rate, uint64_t now_frame)
 {
-    uint8_t velocity = synth_drums_default_velocity(voice, accented);
-    esp_err_t err = synth_drums_hit(transport->kit, voice, velocity);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "drum hit failed voice=%u err=%s", (unsigned)voice, esp_err_to_name(err));
+    if (now_frame <= origin_frame) {
+        return 0;
     }
-}
-
-static void trigger_step(const synth_app_drum_transport_t *transport, uint8_t step)
-{
-    synth_drum_pattern_step_t pattern =
-        synth_drum_pattern_step(transport->style, transport->variation, step);
-
-    for (uint8_t voice = 0; voice < SYNTH_DRUM_VOICE_COUNT; ++voice) {
-        uint8_t bit = DRUM_BIT(voice);
-        if ((pattern.mask & bit) != 0) {
-            trigger_voice(transport,
-                          (synth_drum_voice_t)voice,
-                          (pattern.accent_mask & bit) != 0);
-        }
+    uint64_t step_frames = synth_transport_step_offset(sample_rate, bpm, 1, 4);
+    uint32_t step = step_frames > 0 ? (uint32_t)((now_frame - origin_frame) / step_frames) : 0;
+    while (step > 0 && step_frame(origin_frame, bpm, sample_rate, step - 1U) >= now_frame) {
+        --step;
     }
+    while (step_frame(origin_frame, bpm, sample_rate, step) < now_frame) {
+        ++step;
+    }
+    return step;
 }
 
 void synth_app_drum_transport_start(synth_app_drum_transport_t *transport,
                                     synth_drum_loop_style_t style,
                                     uint16_t bpm,
-                                    TickType_t now)
+                                    uint32_t sample_rate,
+                                    uint64_t now_frame,
+                                    const uint64_t *anchor_frame)
 {
+    (void)sample_rate;
     if (transport == NULL) {
         return;
     }
 
     transport->style = style;
     transport->running = true;
-    transport->step_index = 0;
-    transport->origin_tick = now;
-    transport->next_tick = now;
     transport->scheduled_bpm = bpm;
+    transport->origin_frame = anchor_frame != NULL && *anchor_frame <= now_frame ? *anchor_frame : now_frame;
+    ++transport->restart_id;
 }
 
 void synth_app_drum_transport_stop(synth_app_drum_transport_t *transport)
@@ -69,38 +53,45 @@ void synth_app_drum_transport_stop(synth_app_drum_transport_t *transport)
     }
 
     transport->running = false;
-    transport->step_index = 0;
     transport->scheduled_bpm = 0;
 }
 
 bool synth_app_drum_transport_update(synth_app_drum_transport_t *transport,
                                      uint16_t bpm,
-                                     TickType_t now)
+                                     uint32_t sample_rate,
+                                     uint64_t now_frame)
 {
-    if (transport == NULL || !transport->running ||
-        (int32_t)(now - transport->next_tick) < 0) {
+    if (transport == NULL || !transport->running || bpm == 0 || bpm == transport->scheduled_bpm) {
         return false;
     }
 
-    if (bpm == 0) {
-        return false;
+    uint16_t old_bpm = transport->scheduled_bpm;
+    uint32_t step = next_step(transport->origin_frame, old_bpm, sample_rate, now_frame);
+    uint64_t due = step_frame(transport->origin_frame, old_bpm, sample_rate, step);
+    uint64_t offset = synth_transport_step_offset(sample_rate, bpm, step, 4);
+    if (offset > due) {
+        /* Keep the pattern position; restart the step count within the bar. */
+        step %= SYNTH_DRUM_PATTERN_STEPS;
+        offset = synth_transport_step_offset(sample_rate, bpm, step, 4);
     }
-    if (transport->scheduled_bpm != bpm) {
-        TickType_t offset = (TickType_t)synth_transport_step_offset(configTICK_RATE_HZ,
-                                                                    bpm,
-                                                                    transport->step_index,
-                                                                    4);
-        transport->origin_tick = transport->next_tick - offset;
-        transport->scheduled_bpm = bpm;
-    }
-
-    trigger_step(transport,
-                 (uint8_t)(transport->step_index % SYNTH_DRUM_PATTERN_STEPS));
-    ++transport->step_index;
-    transport->next_tick = step_deadline(transport, bpm, transport->step_index);
-    while ((int32_t)(now - transport->next_tick) >= 0) {
-        ++transport->step_index;
-        transport->next_tick = step_deadline(transport, bpm, transport->step_index);
-    }
+    transport->origin_frame = offset <= due ? due - offset : 0;
+    transport->scheduled_bpm = bpm;
     return true;
+}
+
+void synth_app_drum_transport_config(const synth_app_drum_transport_t *transport,
+                                     synth_beat_config_t *config)
+{
+    if (transport == NULL || config == NULL) {
+        return;
+    }
+    *config = (synth_beat_config_t){
+        .running = transport->running,
+        .kit = transport->kit,
+        .style = transport->style,
+        .variation = transport->variation,
+        .origin_frame = transport->origin_frame,
+        .bpm = transport->scheduled_bpm,
+        .restart_id = transport->restart_id,
+    };
 }

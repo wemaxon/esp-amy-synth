@@ -33,6 +33,7 @@ typedef enum {
     SYNTH_LOOPER_COMMAND_TOGGLE_PAUSE,
     SYNTH_LOOPER_COMMAND_CLEAR_ALL,
     SYNTH_LOOPER_COMMAND_CLEAR_TRACK,
+    SYNTH_LOOPER_COMMAND_SET_BEAT_GRID,
 } synth_looper_command_type_t;
 
 typedef struct {
@@ -41,6 +42,7 @@ typedef struct {
     int16_t value;
     uint16_t bpm;
     uint8_t track;
+    uint64_t frame;
 } synth_looper_command_t;
 
 typedef struct {
@@ -79,6 +81,7 @@ typedef enum {
     SYNTH_LOOPER_MESSAGE_PAUSED,
     SYNTH_LOOPER_MESSAGE_RESUMED,
     SYNTH_LOOPER_MESSAGE_NO_LOOP,
+    SYNTH_LOOPER_MESSAGE_ENDS_AT_LOOP,
 } synth_looper_message_code_t;
 
 typedef struct {
@@ -91,6 +94,8 @@ typedef struct {
     synth_looper_meter_t meter;
     uint64_t global_frame;
     uint32_t master_length_frames;
+    /* Audio frame of loop position 0 of the first loop; valid with a master. */
+    uint64_t master_anchor_frame;
     uint32_t target_record_frames;
     uint64_t record_start_frame;
     uint32_t count_in_beat_frames;

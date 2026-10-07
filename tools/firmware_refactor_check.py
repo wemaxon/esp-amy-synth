@@ -228,7 +228,6 @@ def check_looper_realtime_boundary() -> None:
     looper_track = source("main/synth/looper_track.c")
     timing = source("main/synth/transport_timing.c")
     control_route = source("main/synth/app/control_route.c")
-    drum_capture = source("main/synth/app/drum_capture.c")
     controls = source("main/hmi/controls.c")
     cmake = source("main/CMakeLists.txt")
 
@@ -257,16 +256,16 @@ def check_looper_realtime_boundary() -> None:
             "s_wheel = next" in controls and
             "uint32_t pressed = controls_pressed_mask();" in app,
             "control state or menu ownership is no longer published coherently")
-    require('"synth/app/drum_capture.c"' in cmake and
-            "synth_app_drum_capture_update" in drum_capture,
-            "drum-generator capture handoff is missing")
+    # Beats run live on the drum bus and are never recorded into loops.
+    require(not (ROOT / "main/synth/app/drum_capture.c").exists() and
+            "synth_amy_synth_bus_block" in source("main/synth/amy_engine.c"),
+            "looper must record the synth bus only, not hand running beats over")
     require('"synth/looper_track.c"' in cmake and
             "synth_looper_track_mix_playback" in looper_track,
             "authoritative looper track state module is missing")
-    require("bounce" not in app.lower() and
-            "bounce" not in looper.lower() and
-            "bounce" not in source("main/synth/looper.h").lower() and
-            "bounce" not in transport.lower(),
+    # Whole word: "debounce" (switch settling) is unrelated to loop bouncing.
+    require(not any(re.search(r"\bbounce", text.lower())
+                    for text in (app, looper, source("main/synth/looper.h"), transport)),
             "deleted automatic bounce path returned")
     require("heap_caps_malloc(buffer_bytes, MALLOC_CAP_8BIT)" not in looper,
             "looper storage reintroduced an internal-RAM fallback")
@@ -282,9 +281,12 @@ def check_looper_realtime_boundary() -> None:
             "looper reintroduced hidden live attenuation or nonlinear limiting")
     require("synth_looper_process_track_t" not in looper,
             "looper reintroduced per-buffer shadow track state")
+    # The old midpoint blend dulled the downbeat. The seam is now owned by the
+    # take: the loop start stays raw; only the end crossfades into the real
+    # pre-roll audio (tests/native/looper_take_harness.c).
     require("synth_looper_dsp_condition_seam" not in looper and
             "synth_looper_dsp_condition_seam" not in looper_dsp and
-            "crossfade" not in looper.lower(),
+            "synth_looper_take_capture" in looper,
             "looper reintroduced destructive seam rewriting")
     allocation = looper.find("esp_err_t allocation_err = allocate_all_track_buffers()")
     initialized = looper.find("s_initialized = true", allocation)

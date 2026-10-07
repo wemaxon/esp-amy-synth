@@ -9,7 +9,6 @@
 #include "hmi/controls.h"
 #include "synth/app/chords.h"
 #include "synth/app/drum_modes.h"
-#include "synth/app/drum_capture.h"
 #include "synth/app/effects.h"
 #include "synth/app/looper.h"
 #include "synth/app/mixer.h"
@@ -56,7 +55,12 @@ typedef struct {
     synth_app_looper_t looper;
     synth_app_mixer_t mixer;
     synth_app_drum_modes_t drums;
-    synth_app_drum_capture_t drum_capture;
+    /* Beat grid last sent to the looper (it aligns new recordings to it). */
+    bool beat_grid_sent;
+    uint64_t beat_grid_origin;
+    uint16_t beat_grid_bpm;
+    /* Beat last published to the audio-side scheduler. */
+    synth_beat_config_t beat_published;
     bool mode_bpm_submenu;
     synth_app_play_state_t play;
     bool drone_active;

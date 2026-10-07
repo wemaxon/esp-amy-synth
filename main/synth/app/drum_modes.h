@@ -19,6 +19,15 @@ extern "C" {
         .loop = SYNTH_APP_DRUM_TRANSPORT_INITIALIZER, \
     }
 
+/* Audio-frame clock from the looper snapshot. With a recorded loop, its
+ * position-0 frame anchors the beat so both stay on one grid. */
+typedef struct {
+    uint32_t sample_rate;
+    uint64_t frame;
+    bool has_loop_anchor;
+    uint64_t loop_anchor_frame;
+} synth_app_audio_clock_t;
+
 typedef struct {
     bool handled;
     bool ui_dirty;
@@ -42,7 +51,8 @@ synth_app_drum_result_t synth_app_drums_button_press(synth_app_drum_modes_t *dru
                                                      uint8_t button,
                                                      control_joystick_direction_t direction,
                                                      uint16_t bpm,
-                                                     TickType_t now);
+                                                     TickType_t now,
+                                                     const synth_app_audio_clock_t *clock);
 synth_app_drum_result_t synth_app_drums_button_release(synth_app_drum_modes_t *drums,
                                                        synth_play_mode_t mode,
                                                        uint8_t button);
@@ -51,7 +61,10 @@ synth_app_drum_result_t synth_app_drums_joystick(synth_app_drum_modes_t *drums,
                                                  uint8_t held_mask,
                                                  control_joystick_direction_t direction,
                                                  TickType_t now);
-bool synth_app_drums_update(synth_app_drum_modes_t *drums, uint16_t bpm, TickType_t now);
+bool synth_app_drums_update(synth_app_drum_modes_t *drums,
+                            uint16_t bpm,
+                            TickType_t now,
+                            const synth_app_audio_clock_t *clock);
 void synth_app_drums_stop_auto(synth_app_drum_modes_t *drums);
 void synth_app_drums_stop_loop(synth_app_drum_modes_t *drums);
 bool synth_app_drums_loop_active(const synth_app_drum_modes_t *drums);

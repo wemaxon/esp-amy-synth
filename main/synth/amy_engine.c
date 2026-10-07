@@ -1,5 +1,6 @@
 #include "synth/amy_engine.h"
 
+#include <stdatomic.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
@@ -18,6 +19,7 @@
 #include "synth/amy_audio.h"
 #include "synth/amy_event_builder.h"
 #include "synth/amy_flanger.h"
+#include "synth/beat_scheduler.h"
 #include "synth/amy_perf.h"
 #include "synth/amy_runtime.h"
 #include "synth/amy_voice_map.h"
@@ -65,7 +67,10 @@ static const float SYNTH_DELAY_FEEDBACK = 0.32f;
 static const float SYNTH_DELAY_FILTER_COEF = 0.28f;
 static const float SYNTH_TREMOLO_MAX_DEPTH = 0.95f;
 static const float LFO_MAX_PITCH_SEMITONES = 2.0f;
-static const uint8_t SYNTH_AMY_DRUM_OSC_COUNT = 8;
+/* Beat hits rotate through these. sample_offset only applies to a fresh start,
+ * so an oscillator must have finished its last hit before it comes round again
+ * (16 covers ~5 busy sixteenth steps of hats + kick + snare). */
+static const uint8_t SYNTH_AMY_DRUM_OSC_COUNT = 16;
 static const uint16_t AMY_DRUM_OSC_RESERVATION_OWNER = UINT16_MAX - 1U;
 static const float SYNTH_AMY_DRUM_AMP = 0.56f;
 static const uint32_t ENVELOPE_ATTACK_MIN_MS = 1;
@@ -93,7 +98,8 @@ static synth_sound_t s_sound = SYNTH_SOUND_SAW;
 static bool s_patch_loaded;
 static bool s_patch_pair_loaded;
 static uint16_t s_drum_osc_base;
-static uint8_t s_drum_next_osc;
+/* Drum hits come from the audio task (beat) and the app task (pads). */
+static _Atomic uint8_t s_drum_next_osc;
 static uint16_t s_patch_number;
 static uint8_t s_patch_voice_count;
 static uint8_t s_patch_oscs_per_voice;
@@ -198,11 +204,42 @@ static void reset_synth_bus_fx(void)
     amy_add_event(&event);
 }
 
+/* The synth bus as it reaches the output (int16, interleaved), without the
+ * drum bus. The looper records this, so a running beat stays live on its own
+ * bus instead of being baked into loops. */
+static int16_t s_synth_bus_block[AMY_BLOCK_SIZE * AMY_NCHANS];
+
+static int16_t synth_bus_output_sample(float value)
+{
+    /* AMY's final mix: 0.1 x bus volume, S8.23 -> 15-bit, then the ESP-IDF
+     * one-bit headroom shift. Soft clipping is approximated by saturation. */
+    float scaled = value * 0.1f * amy_global.volume[AMY_SYNTH_BUS] * 16384.0f;
+    if (scaled > 32767.0f) {
+        return 32767;
+    }
+    if (scaled < -32768.0f) {
+        return -32768;
+    }
+    return (int16_t)scaled;
+}
+
 static void amy_bus_postprocess(uint16_t bus, SAMPLE *buf, uint16_t len)
 {
-    if (bus == AMY_SYNTH_BUS) {
-        synth_amy_flanger_process(buf, len);
+    if (bus != AMY_SYNTH_BUS) {
+        return;
     }
+    synth_amy_flanger_process(buf, len);
+    uint16_t frames = len < AMY_BLOCK_SIZE ? len : AMY_BLOCK_SIZE;
+    for (uint16_t i = 0; i < frames; ++i) {
+        for (uint16_t c = 0; c < AMY_NCHANS; ++c) {
+            s_synth_bus_block[i * AMY_NCHANS + c] = synth_bus_output_sample(S2F(buf[c * len + i]));
+        }
+    }
+}
+
+const int16_t *synth_amy_synth_bus_block(void)
+{
+    return s_synth_bus_block;
 }
 
 static void amy_graph_lock(void)
@@ -1006,6 +1043,15 @@ esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
                                       uint8_t velocity,
                                       float level_gain)
 {
+    return synth_amy_drum_hit_at(pcm_preset, midi_note, velocity, level_gain, 0);
+}
+
+esp_err_t synth_amy_drum_hit_at(uint8_t pcm_preset,
+                                uint8_t midi_note,
+                                uint8_t velocity,
+                                float level_gain,
+                                uint16_t sample_offset)
+{
     if (!s_initialized || SYNTH_AMY_DRUM_OSC_COUNT == 0) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1013,8 +1059,9 @@ esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint16_t osc = (uint16_t)(s_drum_osc_base + s_drum_next_osc);
-    s_drum_next_osc = (uint8_t)((s_drum_next_osc + 1U) % SYNTH_AMY_DRUM_OSC_COUNT);
+    uint8_t slot = (uint8_t)(atomic_fetch_add_explicit(&s_drum_next_osc, 1U, memory_order_relaxed) %
+                             SYNTH_AMY_DRUM_OSC_COUNT);
+    uint16_t osc = (uint16_t)(s_drum_osc_base + slot);
 
     amy_event event;
     amy_event_build_drum_hit(&event,
@@ -1022,7 +1069,8 @@ esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
                              pcm_preset,
                              midi_note,
                              clamp_float((float)velocity / 127.0f, 0.0f, 1.0f),
-                             SYNTH_AMY_DRUM_AMP * level_gain);
+                             SYNTH_AMY_DRUM_AMP * level_gain,
+                             sample_offset);
     amy_add_event(&event);
     return ESP_OK;
 }
@@ -1428,6 +1476,12 @@ static void play_voice(uint8_t slot, uint8_t role, uint8_t note, const amy_sound
     s_voices[role].age = ++s_voice_age;
 }
 
+/* Beat hits for the block about to be rendered, at their exact sample. */
+static void schedule_block_events(void)
+{
+    synth_beat_scheduler_render_block(synth_looper_next_block_frame(), AMY_BLOCK_SIZE, AMY_SAMPLE_RATE);
+}
+
 static int16_t *render_audio_block(void)
 {
     amy_graph_lock();
@@ -1499,7 +1553,9 @@ esp_err_t synth_amy_init(const esp_pocket_audio_hw_t *hw)
 
     const synth_amy_audio_config_t audio_config = {
         .hw = hw,
+        .before_render = schedule_block_events,
         .render = render_audio_block,
+        .record_source = synth_amy_synth_bus_block,
         .active_osc_count = active_osc_count,
         .allocated_patch_osc_count = allocated_patch_osc_count,
 #if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED

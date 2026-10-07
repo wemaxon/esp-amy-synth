@@ -13,6 +13,8 @@ extern "C" {
 #define SYNTH_LOOPER_TRACK_COUNT 6
 #define SYNTH_LOOPER_TRACKS_PER_PAGE 2
 #define SYNTH_LOOPER_MAX_BARS 8
+/* Track 1 length in bars at power-up; 0 would be free length. */
+#define SYNTH_LOOPER_DEFAULT_BARS 4
 #define SYNTH_LOOPER_MAX_SECONDS 20
 
 typedef enum {
@@ -69,11 +71,17 @@ typedef struct {
 } synth_looper_diagnostics_t;
 
 esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count);
-void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channels);
+/* Mixes loop playback into block. record_block is what takes capture (the
+ * synth bus without drums); it must have the same layout as block. */
+void synth_looper_process_audio(int16_t *block, const int16_t *record_block, uint32_t frames, uint8_t channels);
 
 /* Control APIs are single-producer and apply accepted commands next audio block. */
 /* BPM must be nonzero; invalid values are rejected rather than substituted. */
 esp_err_t synth_looper_click(uint16_t bpm);
+/* A running beat's grid: anchor_frame is the audio frame of its step 0.
+ * Recordings armed while it runs start on its bar (bar mode) or beat (free
+ * length), so loops and the live beat share one grid. */
+esp_err_t synth_looper_set_beat_grid(bool running, uint64_t anchor_frame, uint16_t bpm);
 esp_err_t synth_looper_select_track(int8_t steps);
 esp_err_t synth_looper_set_track_volume(uint8_t track, uint8_t percent);
 esp_err_t synth_looper_set_current_track_volume(uint8_t percent);
@@ -87,9 +95,25 @@ esp_err_t synth_looper_toggle_pause(void);
 esp_err_t synth_looper_clear_all(void);
 esp_err_t synth_looper_clear_track(uint8_t track);
 bool synth_looper_current_track_is_waiting(void);
+/* True during a count-in, a sync wait or a recording: the player's hands are
+ * on the chords, so the joystick must not navigate the looper. */
+bool synth_looper_take_in_progress(void);
 
 /* Snapshots are coherent copies and never make the audio task wait. */
 void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot);
+
+/* The audio-frame clock shared by loops and the live beat. frame is at most
+ * one audio block old. loop_anchor_frame is position 0 of the first loop. */
+typedef struct {
+    uint32_t sample_rate_hz;
+    uint64_t frame;
+    bool has_loop;
+    uint64_t loop_anchor_frame;
+} synth_looper_clock_t;
+
+bool synth_looper_get_clock(synth_looper_clock_t *clock);
+/* Audio task only: the frame index of the next block to be processed. */
+uint64_t synth_looper_next_block_frame(void);
 void synth_looper_get_diagnostics(synth_looper_diagnostics_t *diagnostics);
 void synth_looper_record_process_time(uint32_t process_us, uint32_t audio_block_budget_us);
 const char *synth_looper_track_state_name(synth_looper_track_state_t state);

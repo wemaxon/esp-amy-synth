@@ -151,12 +151,12 @@ int32_t host_vector_amy_patch_portamento(void)
 int32_t host_vector_amy_drum_hit_bus(void)
 {
     amy_event event;
-    amy_event_build_drum_hit(&event, 120, 6, 53, 0.5f, 0.25f);
+    amy_event_build_drum_hit(&event, 120, 6, 53, 0.5f, 0.25f, 137);
     return event.bus == AMY_DRUM_BUS && AMY_DRUM_BUS != AMY_SYNTH_BUS &&
            event.osc == 120 && event.wave == PCM && event.preset == 6 &&
            event.midi_note == 53.0f && event.velocity == 0.5f &&
            event.amp_coefs[COEF_CONST] == 0.25f && event.filter_type == FILTER_NONE &&
-           event.pan_coefs[COEF_CONST] == 0.5f;
+           event.pan_coefs[COEF_CONST] == 0.5f && event.sample_offset == 137;
 }
 
 int32_t host_vector_amy_volume_reaches_every_bus(void)

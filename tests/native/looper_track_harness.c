@@ -4,21 +4,18 @@
 #include "synth/looper_dsp.h"
 #include "synth/looper_track.h"
 
-int32_t host_vector_looper_raw_capture(void)
+/* Recording advances the grid only; audio is written by the looper take. */
+int32_t host_vector_looper_grid_only(void)
 {
-    int16_t samples[4] = {0};
+    int16_t samples[4] = {9, 9, 9, 9};
     synth_looper_track_t track = {
         .samples = samples,
         .volume_percent = 100,
     };
     synth_looper_track_start_recording(&track, 4);
-    synth_looper_track_record_sample(&track, 1234, 4);
-    synth_looper_track_record_sample(&track, -2345, 4);
-    synth_looper_track_record_sample(&track, 3456, 4);
-    synth_looper_track_record_sample(&track, 4321, 4);
-    synth_looper_track_finish_recording(&track, 4);
-    return samples[0] == 1234 && samples[1] == -2345 &&
-           samples[2] == 3456 && samples[3] == 4321;
+    synth_looper_track_advance_recording(&track, 4);
+    synth_looper_track_advance_recording(&track, 4);
+    return track.record_position == 2 && samples[0] == 9 && samples[1] == 9;
 }
 
 int32_t host_vector_looper_exact_wrap(void)
@@ -65,7 +62,7 @@ int32_t host_vector_looper_target_completion(void)
     synth_looper_track_start_recording(&track, 4);
     int32_t completed_at = 0;
     for (int32_t position = 1; position <= 8; ++position) {
-        if (synth_looper_track_record_sample(&track, (int16_t)position, 8)) {
+        if (synth_looper_track_advance_recording(&track, 8)) {
             completed_at = position;
             break;
         }
@@ -75,7 +72,7 @@ int32_t host_vector_looper_target_completion(void)
 
 int main(void)
 {
-    CHECK_VECTOR(host_vector_looper_raw_capture, 1);
+    CHECK_VECTOR(host_vector_looper_grid_only, 1);
     CHECK_VECTOR(host_vector_looper_exact_wrap, 12341234);
     CHECK_VECTOR(host_vector_looper_muted_advances, 3);
     CHECK_VECTOR(host_vector_looper_target_completion, 4);

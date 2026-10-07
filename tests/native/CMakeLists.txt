@@ -61,8 +61,7 @@ native_test(pitch_detector
     main/synth/pitch_detector.c)
 native_test(transport_regression
     main/synth/transport_timing.c
-    main/synth/app/control_route.c
-    main/synth/app/drum_capture.c)
+    main/synth/app/control_route.c)
 native_test(playback
     main/synth/app/chords.c
     main/synth/app/play_state.c
@@ -102,6 +101,14 @@ native_test(mic_sample_dsp
     main/synth/mic_sample_dsp.c)
 native_test(looper_transport
     main/synth/looper_transport.c)
+native_test(looper_take
+    main/synth/looper_take.c)
+native_test(drum_transport
+    main/synth/app/drum_transport.c
+    main/synth/transport_timing.c)
+native_test(beat_scheduler
+    main/synth/beat_scheduler.c
+    main/synth/transport_timing.c)
 
 # Link the real upstream default-event initialization, replacing only enqueue.
 # Section GC omits unrelated upstream API functions and their engine dependencies.

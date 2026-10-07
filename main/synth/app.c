@@ -192,6 +192,52 @@ static uint8_t slot_from_degree(uint8_t degree)
     return degree > 0 ? (uint8_t)(degree - 1) : 0;
 }
 
+/* The looper's audio-frame clock; a recorded loop anchors the beat grid. */
+static synth_app_audio_clock_t audio_clock(void)
+{
+    synth_looper_clock_t looper = {0};
+    synth_looper_get_clock(&looper);
+    return (synth_app_audio_clock_t){
+        .sample_rate = looper.sample_rate_hz,
+        .frame = looper.frame,
+        .has_loop_anchor = looper.has_loop,
+        .loop_anchor_frame = looper.loop_anchor_frame,
+    };
+}
+
+/* The beat plays live on the drum bus and is not recorded; tell the looper
+ * where its grid is so recordings start on its bars and stay in time. */
+static bool beat_config_equal(const synth_beat_config_t *a, const synth_beat_config_t *b)
+{
+    return a->running == b->running && a->kit == b->kit && a->style == b->style &&
+           a->variation == b->variation && a->origin_frame == b->origin_frame && a->bpm == b->bpm &&
+           a->restart_id == b->restart_id;
+}
+
+static void publish_beat_grid(void)
+{
+    /* The audio task plays the hits sample-accurately from this description. */
+    synth_beat_config_t beat;
+    synth_app_drum_transport_config(&s_app.drums.loop, &beat);
+    if (!beat_config_equal(&beat, &s_app.beat_published)) {
+        synth_beat_publish(&beat);
+        s_app.beat_published = beat;
+    }
+
+    bool running = synth_app_drums_loop_active(&s_app.drums);
+    uint64_t origin = s_app.drums.loop.origin_frame;
+    uint16_t bpm = current_bpm();
+    if (running == s_app.beat_grid_sent &&
+        (!running || (origin == s_app.beat_grid_origin && bpm == s_app.beat_grid_bpm))) {
+        return;
+    }
+    if (synth_looper_set_beat_grid(running, origin, bpm) == ESP_OK) {
+        s_app.beat_grid_sent = running;
+        s_app.beat_grid_origin = origin;
+        s_app.beat_grid_bpm = bpm;
+    }
+}
+
 static bool build_chord(uint8_t degree, synth_chord_t *chord)
 {
     synth_app_chord_build_context_t context = {
@@ -747,14 +793,17 @@ static void handle_chord_event(const control_event_t *event)
         if (synth_app_drums_mode_uses_buttons(s_app.mode)) {
             s_app.chords.held_mask |= 1U << slot;
             s_app.chords.focus_slot = slot;
+            synth_app_audio_clock_t clock = audio_clock();
             synth_app_drum_result_t result =
                 synth_app_drums_button_press(&s_app.drums,
                                              s_app.mode,
                                              degree,
                                              s_app.joystick_direction,
                                              current_bpm(),
-                                             xTaskGetTickCount());
+                                             xTaskGetTickCount(),
+                                             &clock);
             apply_drum_result(&result);
+            publish_beat_grid();
             return;
         }
 
@@ -1518,21 +1567,6 @@ static void update_looper_periodic_ui(void)
     }
 }
 
-static void update_drum_capture(void)
-{
-    synth_looper_snapshot_t snapshot = {0};
-    synth_looper_get_snapshot(&snapshot);
-    if (!synth_app_drum_capture_update(&s_app.drum_capture,
-                                       &snapshot,
-                                       synth_app_drums_loop_active(&s_app.drums))) {
-        return;
-    }
-
-    synth_app_drums_stop_loop(&s_app.drums);
-    set_status("BEAT LOOPED");
-    update_ui();
-}
-
 static void update_mic_sample(void)
 {
 #if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
@@ -1625,7 +1659,8 @@ static void update_joystick(void)
         (pressed & (1UL << CONTROL_KEY_MENU)) != 0,
         (pressed & (1UL << CONTROL_SOUND_MENU)) != 0,
         (pressed & (1UL << CONTROL_MODE_MENU)) != 0,
-        synth_app_looper_visible(&s_app.looper),
+        /* While recording the stick plays (modifiers, key), never navigates. */
+        synth_app_looper_visible(&s_app.looper) && !synth_looper_take_in_progress(),
         s_app.mode,
         s_app.chords.held_mask != 0);
 
@@ -1835,9 +1870,10 @@ static void app_task(void *arg)
         synth_app_playback_update_strum(&s_app);
         synth_app_playback_update_arp(&s_app);
         synth_app_playback_update_repeat(&s_app);
-        update_drum_capture();
         update_mic_sample();
-        synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount());
+        synth_app_audio_clock_t clock = audio_clock();
+        synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount(), &clock);
+        publish_beat_grid();
         update_lfo();
         update_tremolo();
         update_wheel();

@@ -77,7 +77,7 @@ def assert_app_and_api_invariants(
     require("SYNTH_APP_GLOBAL_OCTAVE_DEFAULT" in play_ui_c, "play UI must use shared global octave default")
     require("bounce" not in app_c.lower(),
             "mode navigation must not bounce or replace the live drum transport")
-    require("synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount());" in app_c,
+    require("synth_app_drums_update(&s_app.drums, current_bpm(), xTaskGetTickCount(), &clock);" in app_c,
             "persistent drum transport must update independently of the selected UI mode")
     require(
         app_c.count("handle_mode_button_tap();") == 1

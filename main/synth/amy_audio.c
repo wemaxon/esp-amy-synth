@@ -49,6 +49,9 @@ static void audio_task(void *arg)
 #if ESP_POCKET_AUDIO_LEVEL_CALIBRATION_ENABLED
         synth_audio_meter_begin_block();
 #endif
+        if (s_config.before_render != NULL) {
+            s_config.before_render();
+        }
         int16_t *block = s_config.render();
         int64_t amy_done_us = esp_timer_get_time();
         /* The flanger runs inside AMY's render on the synth bus. */
@@ -59,7 +62,8 @@ static void audio_task(void *arg)
                                   AMY_BLOCK_SIZE,
                                   AMY_NCHANS);
 #endif
-        synth_looper_process_audio(block, AMY_BLOCK_SIZE, AMY_NCHANS);
+        const int16_t *record_block = s_config.record_source != NULL ? s_config.record_source() : block;
+        synth_looper_process_audio(block, record_block, AMY_BLOCK_SIZE, AMY_NCHANS);
         int64_t looper_done_us = esp_timer_get_time();
         synth_looper_record_process_time((uint32_t)(looper_done_us - amy_done_us),
                                          SYNTH_AUDIO_BLOCK_US);

@@ -84,9 +84,10 @@ synth_app_drum_result_t synth_app_drums_button_press(synth_app_drum_modes_t *dru
                                                      uint8_t button,
                                                      control_joystick_direction_t direction,
                                                      uint16_t bpm,
-                                                     TickType_t now)
+                                                     TickType_t now,
+                                                     const synth_app_audio_clock_t *clock)
 {
-    if (drums == NULL || !synth_app_drums_mode_uses_buttons(mode)) {
+    if (drums == NULL || clock == NULL || !synth_app_drums_mode_uses_buttons(mode)) {
         return (synth_app_drum_result_t){0};
     }
 
@@ -101,7 +102,12 @@ synth_app_drum_result_t synth_app_drums_button_press(synth_app_drum_modes_t *dru
                 .label = synth_drum_loop_style_name(style),
             };
         }
-        synth_app_drum_transport_start(&drums->loop, style, bpm, now);
+        synth_app_drum_transport_start(&drums->loop,
+                                       style,
+                                       bpm,
+                                       clock->sample_rate,
+                                       clock->frame,
+                                       clock->has_loop_anchor ? &clock->loop_anchor_frame : NULL);
         ESP_LOGI(TAG,
                  "drum loop style=%s variation=%s kit=%s",
                  synth_drum_loop_style_name(drums->loop.style),
@@ -241,13 +247,16 @@ synth_app_drum_result_t synth_app_drums_joystick(synth_app_drum_modes_t *drums,
     };
 }
 
-bool synth_app_drums_update(synth_app_drum_modes_t *drums, uint16_t bpm, TickType_t now)
+bool synth_app_drums_update(synth_app_drum_modes_t *drums,
+                            uint16_t bpm,
+                            TickType_t now,
+                            const synth_app_audio_clock_t *clock)
 {
-    if (drums == NULL) {
+    if (drums == NULL || clock == NULL) {
         return false;
     }
 
-    bool changed = synth_app_drum_transport_update(&drums->loop, bpm, now);
+    bool changed = synth_app_drum_transport_update(&drums->loop, bpm, clock->sample_rate, clock->frame);
 
     for (uint8_t voice = 0; voice < SYNTH_DRUM_VOICE_COUNT; ++voice) {
         uint8_t bit = DRUM_BIT(voice);

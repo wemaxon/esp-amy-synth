@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
 #include "synth/looper_dsp.h"
+#include "synth/looper_take.h"
 #include "synth/looper_track.h"
 #include "synth/looper_transport.h"
 #include "synth/looper_view.h"
@@ -22,6 +23,12 @@ static const char *TAG = "SYNTH_LOOPER";
 
 static const uint8_t LOOP_TRACK_DEFAULT_VOLUME_PERCENT = 100;
 static const uint32_t MIN_RECORD_MS = 120;
+/* Fixed record latency compensation: ~46 ms of I2S output buffering (8 x 256
+ * frames) before the player hears the click, plus ~45 ms from button press to
+ * sound (25 ms debounce, 20 ms control scan and app loop). Must exceed SEAM. */
+static const uint32_t RECORD_LATENCY_MS = 90;
+/* Loop-end crossfade into the pre-roll; keeps the wrap click-free. */
+static const uint32_t SEAM_MS = 50;
 #if ESP_POCKET_AUDIO_LOOPER_MIX_METER_ENABLED
 static const uint32_t METER_LOG_INTERVAL_MS = 1000;
 static const uint32_t CLIP_LOG_INTERVAL_MS = 500;
@@ -34,7 +41,16 @@ static uint32_t s_capacity_frames;
 static uint32_t s_master_length_frames;
 static uint64_t s_global_frame;
 static uint8_t s_current_track;
-static uint8_t s_bar_count;
+static uint8_t s_bar_count = SYNTH_LOOPER_DEFAULT_BARS;
+/* At most one take records at a time; it may outlive the track's RECORDING
+ * state by the latency, finishing the loop body after playback has begun. */
+static synth_looper_take_t s_take;
+static uint8_t s_take_track = UINT8_MAX;
+static uint64_t s_take_anchor_frame;
+static uint64_t s_master_anchor_frame;
+/* Grid of the live drum beat, which plays on its own bus and is not recorded. */
+static bool s_beat_grid_valid;
+static uint64_t s_beat_anchor_frame;
 static bool s_paused;
 static bool s_initialized;
 static uint16_t s_current_bpm = 120;
@@ -131,6 +147,10 @@ static void clear_track(uint8_t track)
         return;
     }
 
+    if (s_take_track == track) {
+        synth_looper_take_abort(&s_take);
+        s_take_track = UINT8_MAX;
+    }
     synth_looper_track_reset(&s_tracks[track], LOOP_TRACK_DEFAULT_VOLUME_PERCENT);
     s_mute_mask &= (uint8_t)~track_bit(track);
     s_solo_mask &= (uint8_t)~track_bit(track);
@@ -261,9 +281,45 @@ static void free_track_buffers(void)
     }
 }
 
+static void begin_take(uint8_t track, uint32_t length_frames, uint64_t anchor_frame)
+{
+    synth_looper_take_begin(&s_take, s_tracks[track].samples, s_capacity_frames, length_frames);
+    s_take_track = track;
+    s_take_anchor_frame = anchor_frame;
+}
+
+/* First line of the beat grid (every sixteenths_per_line steps from its
+ * anchor) at or after earliest; uses the drum transport's rational timing. */
+static uint64_t next_beat_grid_line(uint64_t earliest, uint32_t sixteenths_per_line)
+{
+    if (earliest <= s_beat_anchor_frame) {
+        return s_beat_anchor_frame;
+    }
+    uint64_t line_frames = synth_transport_step_offset(s_sample_rate_hz, s_current_bpm, sixteenths_per_line, 4);
+    if (line_frames == 0) {
+        return earliest;
+    }
+    /* line_frames is rounded down; settle on the exact line in both directions. */
+    uint32_t line = (uint32_t)((earliest - s_beat_anchor_frame) / line_frames);
+    while (line > 0 &&
+           s_beat_anchor_frame +
+                   synth_transport_step_offset(s_sample_rate_hz, s_current_bpm, (line - 1U) * sixteenths_per_line, 4) >=
+               earliest) {
+        --line;
+    }
+    while (s_beat_anchor_frame +
+               synth_transport_step_offset(s_sample_rate_hz, s_current_bpm, line * sixteenths_per_line, 4) <
+           earliest) {
+        ++line;
+    }
+    return s_beat_anchor_frame +
+           synth_transport_step_offset(s_sample_rate_hz, s_current_bpm, line * sixteenths_per_line, 4);
+}
+
 static void start_recording(uint8_t track, uint32_t target_frames)
 {
     synth_looper_track_start_recording(&s_tracks[track], target_frames);
+    begin_take(track, target_frames, s_global_frame);
     if (s_record_metronome_enabled) {
         synth_metronome_set_enabled(&s_record_metronome, true, s_current_bpm, s_global_frame);
     }
@@ -271,39 +327,75 @@ static void start_recording(uint8_t track, uint32_t target_frames)
     set_message(SYNTH_LOOPER_MESSAGE_RECORDING, 0, 0);
 }
 
-static void finalize_recording(uint8_t track, bool auto_advance, bool completed_target)
+/* The first loop is whole bars in bar mode and whole beats in free length. */
+static uint32_t length_unit_frames(void)
+{
+    if (s_bar_count > 0) {
+        return bars_to_frames(1, s_current_bpm);
+    }
+    return synth_metronome_beat_frames(s_sample_rate_hz, s_current_bpm);
+}
+
+static void set_take_length(uint8_t track, uint32_t length)
+{
+    if (s_take_track == track &&
+        synth_looper_take_set_length(&s_take, length) == SYNTH_LOOPER_TAKE_DONE) {
+        s_take_track = UINT8_MAX;
+    }
+}
+
+/* Grid side of a finished recording: the track starts looping now, at
+ * play_position; the take may still be completing the delayed loop body. */
+static void complete_track(uint8_t track, uint32_t length, uint32_t play_position)
 {
     synth_looper_track_t *slot = &s_tracks[track];
-    uint32_t min_frames = ms_to_frames(MIN_RECORD_MS);
-    if (slot->record_position < min_frames) {
+    synth_looper_track_finish_recording(slot, length);
+    slot->play_position = play_position % length;
+    synth_metronome_set_enabled(&s_record_metronome, false, s_current_bpm, s_global_frame);
+    if (s_master_length_frames == 0) {
+        s_master_length_frames = length;
+        s_master_anchor_frame = s_take_anchor_frame;
+    }
+    set_message(SYNTH_LOOPER_MESSAGE_PLAYING, 0, 0);
+    s_current_track = next_empty_track(track);
+}
+
+/* The grid reached the target, or an open take filled the buffer. */
+static void close_recording_at_grid(uint8_t track)
+{
+    synth_looper_track_t *slot = &s_tracks[track];
+    uint32_t elapsed = slot->record_position;
+    uint32_t length = slot->target_record_frames;
+    if (length == 0) {
+        length = synth_looper_take_snap_length(elapsed, length_unit_frames(), s_capacity_frames);
+    }
+    set_take_length(track, length);
+    complete_track(track, length, elapsed - length);
+}
+
+/* Stop click. Layers always span exactly one loop, so they end at the loop
+ * point. The first loop snaps to the nearest whole bar or beat: rounding up
+ * keeps recording to that point, rounding down starts the loop at once. */
+static void stop_recording_by_click(uint8_t track)
+{
+    synth_looper_track_t *slot = &s_tracks[track];
+    if (s_master_length_frames > 0) {
+        set_message(SYNTH_LOOPER_MESSAGE_ENDS_AT_LOOP, 0, 0);
+        return;
+    }
+    uint32_t elapsed = slot->record_position;
+    if (elapsed < ms_to_frames(MIN_RECORD_MS)) {
         clear_track(track);
         set_message(SYNTH_LOOPER_MESSAGE_TOO_SHORT, 0, 0);
         return;
     }
-
-    uint32_t length = slot->record_position;
-    if (completed_target && slot->target_record_frames > 0) {
-        length = slot->target_record_frames;
+    uint32_t length = synth_looper_take_snap_length(elapsed, length_unit_frames(), s_capacity_frames);
+    set_take_length(track, length);
+    if (length > elapsed) {
+        slot->target_record_frames = length;
+        return;
     }
-    if (completed_target && s_master_length_frames > 0 && track != 0) {
-        length = s_master_length_frames;
-    }
-    if (length > s_capacity_frames) {
-        length = s_capacity_frames;
-    }
-
-    synth_looper_track_finish_recording(slot, length);
-    synth_metronome_set_enabled(&s_record_metronome, false, s_current_bpm, s_global_frame);
-
-    if (s_master_length_frames == 0 || track == 0) {
-        s_master_length_frames = length;
-    }
-
-    set_message(SYNTH_LOOPER_MESSAGE_PLAYING, 0, 0);
-
-    if (auto_advance) {
-        s_current_track = next_empty_track(track);
-    }
+    complete_track(track, length, elapsed - length);
 }
 
 static void arm_waiting_track(uint8_t track, uint16_t bpm)
@@ -332,6 +424,10 @@ static void arm_waiting_track(uint8_t track, uint16_t bpm)
         uint64_t count_in_length = (uint64_t)beat_count * 4ULL;
         slot->count_in_beat_frames = beat_count;
         slot->record_start_frame = s_global_frame + count_in_length;
+        if (s_beat_grid_valid) {
+            /* A full count-in, then the beat's next bar line. */
+            slot->record_start_frame = next_beat_grid_line(slot->record_start_frame, 16U);
+        }
         slot->target_record_frames = target_frames;
         if (s_record_metronome_enabled) {
             synth_metronome_set_enabled(&s_record_metronome,
@@ -340,6 +436,17 @@ static void arm_waiting_track(uint8_t track, uint16_t bpm)
                                        slot->record_start_frame - count_in_length);
         }
         set_message(SYNTH_LOOPER_MESSAGE_COUNT_IN, 0, 0);
+        return;
+    }
+
+    if (s_beat_grid_valid) {
+        /* Free length over a running beat starts on its next beat. */
+        slot->record_armed = true;
+        slot->sync_to_master = false;
+        slot->count_in_beat_frames = 0;
+        slot->target_record_frames = 0;
+        slot->record_start_frame = next_beat_grid_line(s_global_frame, 4U);
+        set_message(SYNTH_LOOPER_MESSAGE_SYNC_WAIT, 0, 0);
         return;
     }
 
@@ -359,36 +466,19 @@ static bool process_track_should_start(const synth_looper_track_t *track,
     return global_frame >= track->record_start_frame;
 }
 
-static void start_process_recording(synth_looper_track_t *track,
+static void start_process_recording(uint8_t track_index,
                                     synth_metronome_t *record_metronome,
                                     bool record_metronome_enabled,
                                     uint16_t bpm,
                                     uint64_t global_frame)
 {
+    synth_looper_track_t *track = &s_tracks[track_index];
     uint32_t target_frames = track->target_record_frames;
     synth_looper_track_start_recording(track, target_frames);
+    begin_take(track_index, target_frames, global_frame);
     if (record_metronome_enabled && !synth_metronome_is_enabled(record_metronome)) {
         synth_metronome_set_enabled(record_metronome, true, bpm, global_frame);
     }
-}
-
-static void finish_process_recording(synth_looper_track_t *track,
-                                     uint8_t track_index,
-                                     bool completed_target,
-                                     uint32_t master_length_frames)
-{
-    uint32_t length = track->record_position;
-    if (completed_target && track->target_record_frames > 0) {
-        length = track->target_record_frames;
-    }
-    if (completed_target && master_length_frames > 0 && track_index != 0) {
-        length = master_length_frames;
-    }
-    if (length > s_capacity_frames) {
-        length = s_capacity_frames;
-    }
-
-    synth_looper_track_finish_recording(track, length);
 }
 
 static bool process_record_metronome_should_run(const synth_looper_track_t *tracks)
@@ -404,22 +494,15 @@ static bool process_record_metronome_should_run(const synth_looper_track_t *trac
     return false;
 }
 
-static bool process_track_recording(synth_looper_track_t *track,
-                                    const int16_t *block,
-                                    uint32_t frame,
-                                    uint8_t channels)
+/* Takes record the synth bus in mono (no drums, no loop playback). */
+static int16_t live_mono_sample(const int16_t *block, uint32_t frame, uint8_t channels)
 {
-    if (track->state != SYNTH_LOOPER_TRACK_RECORDING || track->samples == NULL) {
-        return false;
-    }
     uint32_t sample_index = frame * channels;
     int32_t mono = block[sample_index];
     if (channels > 1) {
         mono = (mono + block[sample_index + 1]) / 2;
     }
-    return synth_looper_track_record_sample(track,
-                                            synth_looper_dsp_encode_sample(mono),
-                                            s_capacity_frames);
+    return synth_looper_dsp_encode_sample(mono);
 }
 
 static void update_atomic_max(_Atomic uint32_t *maximum, uint32_t value)
@@ -439,6 +522,7 @@ static void build_runtime_view(synth_looper_runtime_view_t *view)
     *view = (synth_looper_runtime_view_t){
         .global_frame = s_global_frame,
         .master_length_frames = s_master_length_frames,
+        .master_anchor_frame = s_master_anchor_frame,
         .audio_block = atomic_load_explicit(&s_audio_block, memory_order_relaxed),
         .current_track = s_current_track,
         .bar_count = s_bar_count,
@@ -495,6 +579,8 @@ esp_err_t synth_looper_init(uint32_t sample_rate_hz, uint8_t channel_count)
     s_sample_rate_hz = sample_rate_hz;
     s_channel_count = channel_count;
     s_capacity_frames = sample_rate_hz * SYNTH_LOOPER_MAX_SECONDS;
+    synth_looper_take_init(&s_take, ms_to_frames(RECORD_LATENCY_MS), ms_to_frames(SEAM_MS));
+    s_take_track = UINT8_MAX;
     synth_metronome_init(&s_global_metronome, sample_rate_hz);
     synth_metronome_init(&s_record_metronome, sample_rate_hz);
     synth_looper_command_queue_init(&s_command_queue);
@@ -556,7 +642,7 @@ static void apply_click_command(uint16_t bpm)
         arm_waiting_track(s_current_track, bpm);
         break;
     case SYNTH_LOOPER_TRACK_RECORDING:
-        finalize_recording(s_current_track, true, false);
+        stop_recording_by_click(s_current_track);
         break;
     case SYNTH_LOOPER_TRACK_LOOPING:
         if (s_current_track == 0) {
@@ -691,8 +777,25 @@ static void apply_command(const synth_looper_command_t *command)
         break;
     }
     case SYNTH_LOOPER_COMMAND_TOGGLE_PAUSE:
-        if (has_any_loop()) {
+        if (synth_looper_take_active(&s_take)) {
+            /* A take finishes its delayed body in real time; pausing would
+             * splice later audio into the loop end. */
+            set_message(SYNTH_LOOPER_MESSAGE_RECORDING, 0, 0);
+        } else if (has_any_loop()) {
             s_paused = !s_paused;
+            if (!s_paused) {
+                /* Rejoin the shared grid (the live beat keeps running while
+                 * loops are paused): every loop resumes where it would be. */
+                for (uint8_t i = 0; i < SYNTH_LOOPER_TRACK_COUNT; ++i) {
+                    synth_looper_track_t *slot = &s_tracks[i];
+                    if (slot->state == SYNTH_LOOPER_TRACK_LOOPING &&
+                        slot->length_frames == s_master_length_frames && s_master_length_frames > 0 &&
+                        s_global_frame >= s_master_anchor_frame) {
+                        slot->play_position =
+                            (uint32_t)((s_global_frame - s_master_anchor_frame) % s_master_length_frames);
+                    }
+                }
+            }
             set_message(s_paused ? SYNTH_LOOPER_MESSAGE_PAUSED : SYNTH_LOOPER_MESSAGE_RESUMED, 0, 0);
         } else {
             s_paused = false;
@@ -701,6 +804,11 @@ static void apply_command(const synth_looper_command_t *command)
         break;
     case SYNTH_LOOPER_COMMAND_CLEAR_ALL:
         clear_all();
+        break;
+    case SYNTH_LOOPER_COMMAND_SET_BEAT_GRID:
+        set_current_bpm(command->bpm);
+        s_beat_grid_valid = command->value != 0;
+        s_beat_anchor_frame = command->frame;
         break;
     case SYNTH_LOOPER_COMMAND_CLEAR_TRACK:
         if (command->track == 0) {
@@ -727,10 +835,13 @@ static void drain_commands(void)
     }
 }
 
-void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channels)
+void synth_looper_process_audio(int16_t *block, const int16_t *record_block, uint32_t frames, uint8_t channels)
 {
     if (!s_initialized || block == NULL || frames == 0 || channels == 0) {
         return;
+    }
+    if (record_block == NULL) {
+        record_block = block;
     }
 
     drain_commands();
@@ -793,7 +904,7 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
 
         for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
             if (process_track_should_start(&s_tracks[track], global_frame, master_cycle_start)) {
-                start_process_recording(&s_tracks[track],
+                start_process_recording(track,
                                         &record_metronome,
                                         record_metronome_enabled,
                                         current_bpm,
@@ -802,18 +913,23 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
             }
         }
 
+        /* Audio goes through the take (latency-shifted, seam-folded); the
+         * track's RECORDING state only advances the grid. */
+        synth_looper_take_status_t take_status =
+            synth_looper_take_capture(&s_take, live_mono_sample(record_block, frame, channels));
+        if (take_status == SYNTH_LOOPER_TAKE_DONE) {
+            s_take_track = UINT8_MAX;
+        } else if (take_status == SYNTH_LOOPER_TAKE_FULL && s_take_track < SYNTH_LOOPER_TRACK_COUNT) {
+            set_take_length(s_take_track,
+                            synth_looper_take_snap_length(s_capacity_frames,
+                                                          length_unit_frames(),
+                                                          s_capacity_frames));
+        }
+
         for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
-            if (process_track_recording(&s_tracks[track], block, frame, channels)) {
-                finish_process_recording(&s_tracks[track],
-                                         track,
-                                         true,
-                                         s_master_length_frames);
+            if (synth_looper_track_advance_recording(&s_tracks[track], s_capacity_frames)) {
+                close_recording_at_grid(track);
                 just_completed[track] = true;
-                if (s_master_length_frames == 0 || track == 0) {
-                    s_master_length_frames = s_tracks[track].length_frames;
-                }
-                s_current_track = next_empty_track(track);
-                set_message(SYNTH_LOOPER_MESSAGE_PLAYING, 0, 0);
             }
         }
 
@@ -888,6 +1004,19 @@ void synth_looper_process_audio(int16_t *block, uint32_t frames, uint8_t channel
     s_record_metronome = record_metronome;
     atomic_fetch_add_explicit(&s_audio_block, 1, memory_order_release);
     publish_runtime_view();
+}
+
+esp_err_t synth_looper_set_beat_grid(bool running, uint64_t anchor_frame, uint16_t bpm)
+{
+    if (bpm == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return enqueue_command((synth_looper_command_t){
+        .type = SYNTH_LOOPER_COMMAND_SET_BEAT_GRID,
+        .value = running ? 1 : 0,
+        .bpm = bpm,
+        .frame = anchor_frame,
+    });
 }
 
 esp_err_t synth_looper_click(uint16_t bpm)
@@ -1050,6 +1179,27 @@ bool synth_looper_current_track_is_waiting(void)
            view.track_state[view.current_track] == SYNTH_LOOPER_TRACK_WAITING;
 }
 
+bool synth_looper_take_in_progress(void)
+{
+    if (!s_initialized) {
+        return false;
+    }
+
+    synth_looper_runtime_view_t view;
+    if (!synth_looper_snapshot_read(&s_snapshot_store, &view)) {
+        return false;
+    }
+    if (view.current_track_armed) {
+        return true;
+    }
+    for (uint8_t track = 0; track < SYNTH_LOOPER_TRACK_COUNT; ++track) {
+        if (view.track_state[track] == SYNTH_LOOPER_TRACK_RECORDING) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot)
 {
     if (snapshot == NULL) {
@@ -1066,6 +1216,29 @@ void synth_looper_get_snapshot(synth_looper_snapshot_t *snapshot)
     if (synth_looper_snapshot_read(&s_snapshot_store, &view)) {
         synth_looper_view_to_snapshot(s_sample_rate_hz, &view, snapshot);
     }
+}
+
+uint64_t synth_looper_next_block_frame(void)
+{
+    return s_global_frame;
+}
+
+bool synth_looper_get_clock(synth_looper_clock_t *clock)
+{
+    if (clock == NULL || !s_initialized) {
+        return false;
+    }
+    synth_looper_runtime_view_t view;
+    if (!synth_looper_snapshot_read(&s_snapshot_store, &view)) {
+        return false;
+    }
+    *clock = (synth_looper_clock_t){
+        .sample_rate_hz = s_sample_rate_hz,
+        .frame = view.global_frame,
+        .has_loop = view.master_length_frames > 0,
+        .loop_anchor_frame = view.master_anchor_frame,
+    };
+    return true;
 }
 
 void synth_looper_get_diagnostics(synth_looper_diagnostics_t *diagnostics)

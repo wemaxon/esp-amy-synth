@@ -30,6 +30,9 @@ esp_err_t synth_amy_install_mic_sample(const int16_t *samples,
                                        uint32_t frames,
                                        float reference_midi_note);
 bool synth_amy_mic_sample_ready(void);
+/* Last rendered block of the synth bus alone (no drums), interleaved int16 at
+ * output level. Valid in the audio task right after rendering. */
+const int16_t *synth_amy_synth_bus_block(void);
 float synth_amy_sound_velocity(synth_sound_t sound);
 bool synth_amy_sound_patch_info(synth_sound_t sound, uint16_t *patch_number, const char **patch_label);
 esp_err_t synth_amy_set_builtin_patch(uint16_t patch_number,
@@ -42,6 +45,12 @@ esp_err_t synth_amy_drum_hit_with_gain(uint8_t pcm_preset,
                                       uint8_t midi_note,
                                       uint8_t velocity,
                                       float level_gain);
+/* Starts sample_offset frames into the next rendered block (audio task). */
+esp_err_t synth_amy_drum_hit_at(uint8_t pcm_preset,
+                                uint8_t midi_note,
+                                uint8_t velocity,
+                                float level_gain,
+                                uint16_t sample_offset);
 esp_err_t synth_amy_set_volume(float normalized_volume);
 esp_err_t synth_amy_set_filter_enabled(bool enabled);
 esp_err_t synth_amy_set_filter_cutoff(float cutoff_hz);

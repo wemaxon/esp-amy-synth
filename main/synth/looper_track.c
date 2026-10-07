@@ -35,16 +35,14 @@ void synth_looper_track_start_recording(synth_looper_track_t *track, uint32_t ta
     track->count_in_beat_frames = 0;
 }
 
-bool synth_looper_track_record_sample(synth_looper_track_t *track,
-                                      int16_t sample,
-                                      uint32_t capacity_frames)
+bool synth_looper_track_advance_recording(synth_looper_track_t *track, uint32_t capacity_frames)
 {
     if (track == NULL || track->state != SYNTH_LOOPER_TRACK_RECORDING ||
-        track->samples == NULL || track->record_position >= capacity_frames) {
+        track->record_position >= capacity_frames) {
         return track != NULL && track->record_position >= capacity_frames;
     }
 
-    track->samples[track->record_position++] = sample;
+    ++track->record_position;
     return (track->target_record_frames > 0 &&
             track->record_position >= track->target_record_frames) ||
            track->record_position >= capacity_frames;

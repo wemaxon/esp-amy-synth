@@ -152,7 +152,8 @@ void amy_event_build_drum_hit(amy_event *event,
                               uint8_t pcm_preset,
                               uint8_t midi_note,
                               float velocity,
-                              float amplitude)
+                              float amplitude,
+                              uint16_t sample_offset)
 {
     if (event == NULL) {
         return;
@@ -168,6 +169,8 @@ void amy_event_build_drum_hit(amy_event *event,
     event->feedback = 0.0f;
     event->filter_type = FILTER_NONE;
     event->pan_coefs[COEF_CONST] = 0.5f;
+    /* PCM note-on starts this many frames into the next rendered block. */
+    event->sample_offset = sample_offset < AMY_BLOCK_SIZE ? sample_offset : AMY_BLOCK_SIZE - 1U;
 }
 
 void amy_event_send_volume(float volume)

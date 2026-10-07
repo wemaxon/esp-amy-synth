@@ -62,7 +62,8 @@ void amy_event_build_drum_hit(amy_event *event,
                               uint8_t pcm_preset,
                               uint8_t midi_note,
                               float velocity,
-                              float amplitude);
+                              float amplitude,
+                              uint16_t sample_offset);
 /* Final-mix volume is per bus in AMY; master volume must reach every bus. */
 void amy_event_send_volume(float volume);
 /* Flat EQ and no chorus on the synth bus, before a patch applies its own. */

@@ -211,11 +211,44 @@ queues reject new commands with `ESP_ERR_NO_MEM` without reordering accepted wor
 Three snapshot slots publish coherent views. A writer skips publication if
 both alternative slots are pinned; it never waits for readers.
 
-FREE recording stops manually. Fixed 1–8 bar lengths and drum steps use shared
-rational timing. Preserve raw captured samples at loop seams. Successful
-capture of a running built-in beat stops its generator once; cancelled captures
-and manual drum-pad recordings do not. Sound changes release musical voices
+Loop length (HiChord: "Track 1 sets the loop length. Every other track syncs to
+it"). The looper starts in 4-bar mode with a 4-beat count-in; 1–8 bars stop on
+their own, 0 is free length. A stop click on the first loop snaps it to the
+nearest whole bar (bar mode) or beat (free): rounding up keeps recording to that
+point, rounding down starts the loop at once. Layers start at the loop point and
+are always exactly one loop long; a stop click shows ENDS AT LOOP. Fixed bar
+lengths and drum steps use shared rational timing.
+
+Takes (`looper_take.c`) treat the loop as a circle. Capture is shifted by a
+fixed 90 ms record latency (I2S output buffering plus button-to-sound path), so
+playing against the click you hear lands on the beat. The loop start is stored
+raw; the last 50 ms crossfade (equal power) into the audio captured just before
+position 0, which is what leads into it when the loop wraps, so the seam is
+continuous and slightly early notes land at the loop end. Do not reintroduce the
+old midpoint seam blend; it dulled the downbeat. The take outlives the track's
+RECORDING state by the latency and finishes the body before it is played.
+While a take is in progress the joystick plays (modifiers, key) and does not
+navigate the looper. Sound changes release musical voices
 without releasing or reallocating the reserved drum oscillators.
+
+Beats are never recorded. Takes capture the synth bus only (copied in AMY's
+bus post-process hook at output level); drum loops keep playing live on the
+drum bus. One clock keeps them together: the drum transport runs on the
+looper's audio-frame clock (`synth_looper_get_clock`), a beat started over a
+loop locks to the loop's position 0, and a recording armed over a running beat
+starts on its next bar (bar mode, after a full count-in) or beat (free length).
+Resuming paused loops rejoins that grid, since the beat keeps running. Tempo
+changes with recorded loops break the shared grid.
+
+Drum loop hits are sample-accurate. The app only describes the beat (pattern,
+kit, grid origin, tempo) and publishes it lock-free (`synth_beat_publish`);
+right before each render the audio task asks `beat_scheduler.c` for the steps
+inside that block and sends each hit with its AMY `sample_offset`. Scheduling
+continues from where the previous block ended, so republishing never replays
+or skips a step; only a fresh start may play its first step up to 40 ms late
+(the app lags the audio clock). `sample_offset` applies to fresh PCM starts
+only, so drum hits rotate through 16 reserved oscillators. Drum pads and
+Auto-Drum still trigger from the app loop.
 
 ## Device acceptance
 
@@ -232,7 +265,8 @@ Profile WT0132P4 for at least five minutes per scenario:
 
 1. Idle synth; record and manually stop a FREE track.
 2. Record 1-, 2-, and 8-bar drum tracks at 127 BPM; listen through 20 wraps.
-3. Capture a running built-in beat; verify its generator stops exactly once.
+3. Record over a running built-in beat: the beat must keep playing and stay on
+   the loop's bars for minutes, and must not be audible in the recorded track.
 4. Play six synchronized tracks while changing selection, volume, mute, solo,
    pause, bars, BPM, and metronomes.
 5. Browse raw and patch sounds over a running beat while exercising OLED/input.

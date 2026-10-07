@@ -22,9 +22,9 @@ typedef struct {
 
 void synth_looper_track_reset(synth_looper_track_t *track, uint8_t default_volume_percent);
 void synth_looper_track_start_recording(synth_looper_track_t *track, uint32_t target_frames);
-bool synth_looper_track_record_sample(synth_looper_track_t *track,
-                                      int16_t sample,
-                                      uint32_t capacity_frames);
+/* Advances the recording grid by one frame (audio goes through the take).
+ * Returns true when the target length or the capacity is reached. */
+bool synth_looper_track_advance_recording(synth_looper_track_t *track, uint32_t capacity_frames);
 void synth_looper_track_finish_recording(synth_looper_track_t *track, uint32_t length_frames);
 bool synth_looper_track_mix_playback(synth_looper_track_t *track,
                                      bool audible,

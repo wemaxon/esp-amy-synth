@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "synth/amy_engine.h"
+#include "synth/beat_scheduler.h"
 #include "synth/level_calibration.h"
 
 #define DRUM_BIT(voice) ((uint8_t)(1U << (uint8_t)(voice)))
@@ -437,6 +438,14 @@ uint8_t synth_drums_default_velocity(synth_drum_voice_t voice, bool accented)
 
 esp_err_t synth_drums_hit(synth_drum_kit_t kit, synth_drum_voice_t voice, uint8_t velocity)
 {
+    return synth_drums_hit_at(kit, voice, velocity, 0);
+}
+
+esp_err_t synth_drums_hit_at(synth_drum_kit_t kit,
+                             synth_drum_voice_t voice,
+                             uint8_t velocity,
+                             uint16_t sample_offset)
+{
     if (kit >= SYNTH_DRUM_KIT_COUNT || voice >= SYNTH_DRUM_VOICE_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -447,10 +456,11 @@ esp_err_t synth_drums_hit(synth_drum_kit_t kit, synth_drum_voice_t voice, uint8_
         scaled = 127U;
     }
     const synth_drum_sample_t *sample = &DRUM_KITS[kit].sample[voice];
-    return synth_amy_drum_hit_with_gain(
+    return synth_amy_drum_hit_at(
         sample->preset,
         sample->midi_note,
         (uint8_t)scaled,
-        synth_level_calibration_drum_gain(kit, voice)
+        synth_level_calibration_drum_gain(kit, voice),
+        sample_offset
     );
 }

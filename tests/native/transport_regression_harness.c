@@ -3,7 +3,6 @@
 
 #include "synth/transport_timing.h"
 #include "synth/app/control_route.h"
-#include "synth/app/drum_capture.h"
 
 int32_t host_vector_transport_bar_matches_step_grid(void)
 {
@@ -42,49 +41,6 @@ int32_t host_vector_drum_mode_routes_to_drums(void)
                                             false);
 }
 
-int32_t host_vector_capture_stops_generator(void)
-{
-    synth_app_drum_capture_t capture = {0};
-    synth_looper_snapshot_t snapshot = {0};
-    snapshot.track_state[2] = SYNTH_LOOPER_TRACK_RECORDING;
-    if (synth_app_drum_capture_update(&capture, &snapshot, true)) {
-        return 0;
-    }
-    snapshot.track_state[2] = SYNTH_LOOPER_TRACK_LOOPING;
-    return synth_app_drum_capture_update(&capture, &snapshot, true);
-}
-
-int32_t host_vector_manual_capture_keeps_generator_state(void)
-{
-    synth_app_drum_capture_t capture = {0};
-    synth_looper_snapshot_t snapshot = {0};
-    snapshot.track_state[1] = SYNTH_LOOPER_TRACK_RECORDING;
-    synth_app_drum_capture_update(&capture, &snapshot, false);
-    snapshot.track_state[1] = SYNTH_LOOPER_TRACK_LOOPING;
-    return synth_app_drum_capture_update(&capture, &snapshot, false);
-}
-
-int32_t host_vector_cancelled_capture_keeps_generator(void)
-{
-    synth_app_drum_capture_t capture = {0};
-    synth_looper_snapshot_t snapshot = {0};
-    snapshot.track_state[4] = SYNTH_LOOPER_TRACK_RECORDING;
-    synth_app_drum_capture_update(&capture, &snapshot, true);
-    snapshot.track_state[4] = SYNTH_LOOPER_TRACK_EMPTY;
-    return synth_app_drum_capture_update(&capture, &snapshot, true);
-}
-
-int32_t host_vector_late_generator_capture(void)
-{
-    synth_app_drum_capture_t capture = {0};
-    synth_looper_snapshot_t snapshot = {0};
-    snapshot.track_state[3] = SYNTH_LOOPER_TRACK_RECORDING;
-    synth_app_drum_capture_update(&capture, &snapshot, false);
-    synth_app_drum_capture_update(&capture, &snapshot, true);
-    snapshot.track_state[3] = SYNTH_LOOPER_TRACK_LOOPING;
-    return synth_app_drum_capture_update(&capture, &snapshot, true);
-}
-
 int main(void)
 {
     CHECK_VECTOR(host_vector_transport_bar_matches_step_grid, 1);
@@ -92,9 +48,5 @@ int main(void)
     CHECK_VECTOR(host_vector_transport_long_run, 18897637);
     CHECK_VECTOR(host_vector_sound_menu_owns_joystick, 2);
     CHECK_VECTOR(host_vector_drum_mode_routes_to_drums, 6);
-    CHECK_VECTOR(host_vector_capture_stops_generator, 1);
-    CHECK_VECTOR(host_vector_manual_capture_keeps_generator_state, 0);
-    CHECK_VECTOR(host_vector_cancelled_capture_keeps_generator, 0);
-    CHECK_VECTOR(host_vector_late_generator_capture, 1);
     return 0;
 }

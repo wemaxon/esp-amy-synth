@@ -4,8 +4,11 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/esp-amy-synth,type=bind",
   "workspaceFolder": "/workspaces/esp-amy-synth",
   "remoteUser": "root",
+  "runArgs": ["--device-cgroup-rule=c 166:* rmw"],
   "mounts": [
-    "source=esp-amy-synth-build-${devcontainerId},target=/workspaces/esp-amy-synth/build,type=volume"
+    "source=esp-amy-synth-build-${devcontainerId},target=/workspaces/esp-amy-synth/build,type=volume",
+    "source=/dev,target=/dev,type=bind",
+    "source=esp-amy-synth-claude,target=/root/.claude,type=volume"
   ],
   "customizations": {
     "vscode": {

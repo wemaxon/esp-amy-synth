@@ -17,5 +17,6 @@
     "--compile-commands-dir=c:\\Users\\maxan\\Hobby\\Inforelektrikbau\\Synth_Sampler\\esp-amy-synth\\build"
   ],
   "idf.portWin": "COM6",
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.port": "/dev/ttyACM0"
 }

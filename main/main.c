@@ -15,6 +15,9 @@
 #include "esp_pocket_audio_board_config.h"
 #include "hmi/controls.h"
 #include "synth/app.h"
+#if CONFIG_HIL_CONSOLE
+#include "hil/hil_app.h"
+#endif
 
 static const char *TAG = "main";
 
@@ -122,6 +125,9 @@ static void app_task(void *arg)
         diagnostic_ui_run(hw);
     }
     ESP_ERROR_CHECK(synth_app_start(hw));
+#if CONFIG_HIL_CONSOLE
+    ESP_ERROR_CHECK(hil_app_start());
+#endif
     vTaskDelete(NULL);
 }
 

@@ -106,6 +106,12 @@ const char *controls_joystick_direction_name(control_joystick_direction_t direct
 const char *controls_switch_name(control_switch_t sw);
 const char *controls_switch_short_name(control_switch_t sw);
 
+/* Virtual input: a virtual press is OR'ed with the physical switch before
+ * debounce; an active virtual joystick position (x, y in -1..1, up = +y)
+ * replaces the measured one before direction classification. */
+void controls_set_virtual_switch(control_switch_t sw, bool pressed);
+void controls_set_virtual_joystick(bool active, float x, float y);
+
 #ifdef __cplusplus
 }
 #endif

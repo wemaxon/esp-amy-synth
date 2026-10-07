@@ -1,4 +1,9 @@
 set(wheel_sources)
+# Hardware-in-the-loop commands (components/hil_console) for test builds only.
+set(hil_sources)
+if(CONFIG_HIL_CONSOLE)
+    list(APPEND hil_sources "hil/hil_app.c" "hil/hil_capture.c" "hil/hil_input.c" "hil/hil_state.c")
+endif()
 if(CONFIG_ESP_POCKET_AUDIO_BOARD_WT0132P4_A1)
     list(APPEND wheel_sources "hmi/rotary_encoder.c")
 elseif(CONFIG_ESP_POCKET_AUDIO_BOARD_AI_THINKER_A1S)
@@ -26,6 +31,7 @@ idf_component_register(
         "hmi/play_ui.c"
         "hmi/switch_expander.c"
         ${wheel_sources}
+        ${hil_sources}
         "synth/amy_audio.c"
         "synth/audio_meter.c"
         "synth/amy_flanger.c"
@@ -85,6 +91,7 @@ idf_component_register(
         pcf8574
         pcf8575
         pocket-oled
+        hil_console
 
     INCLUDE_DIRS
         "."

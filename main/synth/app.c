@@ -1,6 +1,7 @@
 #include "synth/app.h"
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -11,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_pocket_audio_board_config.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "hmi/controls.h"
 #include "hmi/keymap.h"
@@ -98,6 +100,67 @@ static uint16_t current_bpm(void)
     return synth_app_tempo_bpm(&s_app.tempo);
 }
 static void apply_pending_sound_now(void);
+
+/* Snapshot requests, served on the app task so the copy is consistent. */
+static _Atomic(synth_app_snapshot_t *) s_snapshot_request;
+static SemaphoreHandle_t s_snapshot_done;
+
+esp_err_t synth_app_snapshot(synth_app_snapshot_t *snapshot, uint32_t timeout_ms)
+{
+    if (snapshot == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_snapshot_done == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    atomic_store_explicit(&s_snapshot_request, snapshot, memory_order_release);
+    if (xSemaphoreTake(s_snapshot_done, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return ESP_OK;
+    }
+    synth_app_snapshot_t *expected = snapshot;
+    if (atomic_compare_exchange_strong(&s_snapshot_request, &expected, NULL)) {
+        return ESP_ERR_TIMEOUT; /* withdrawn before the app task took it */
+    }
+    xSemaphoreTake(s_snapshot_done, portMAX_DELAY); /* taken: it is being written */
+    return ESP_OK;
+}
+
+static void serve_snapshot_request(void)
+{
+    synth_app_snapshot_t *out = atomic_exchange_explicit(&s_snapshot_request, NULL, memory_order_acq_rel);
+    if (out == NULL) {
+        return;
+    }
+    uint8_t focus = s_app.chords.focus_slot;
+    *out = (synth_app_snapshot_t){
+        .mode = s_app.mode,
+        .key = s_app.key,
+        .scale = s_app.scale,
+        .global_octave = s_app.global_octave_shift,
+        .held_mask = s_app.chords.held_mask,
+        .focus_slot = focus,
+        .focused_chord_valid = focus < SYNTH_CHORD_BUTTON_COUNT &&
+                               (s_app.chords.held_mask & (1U << focus)) != 0 &&
+                               s_app.chords.held_chord_valid[focus],
+        .modifier = s_app.modifier,
+        .joystick_direction = s_app.joystick_direction,
+        .joystick_mode = s_app.joystick_mode,
+        .selected_setting = synth_app_effects_selected(&s_app.fx),
+        .voice_leading = s_app.voice_leading_enabled,
+        .bass_mode = s_app.bass_mode,
+        .sound = synth_app_sound_current(&s_app.sound),
+        .bpm = current_bpm(),
+        .stack_free_bytes = (uint32_t)uxTaskGetStackHighWaterMark(NULL),
+    };
+    memcpy(out->button_octave, s_app.button_octave_shift, sizeof(out->button_octave));
+    strlcpy(out->chord_name, s_app.chord_name, sizeof(out->chord_name));
+    strlcpy(out->status, s_app.status, sizeof(out->status));
+    if (out->focused_chord_valid) {
+        out->focused_chord = s_app.chords.held_chords[focus];
+    }
+    synth_app_drum_transport_config(&s_app.drums.loop, &out->beat);
+    xSemaphoreGive(s_snapshot_done);
+}
 
 static esp_err_t apply_mic_gain(uint8_t percent)
 {
@@ -1878,6 +1941,7 @@ static void app_task(void *arg)
         update_tremolo();
         update_wheel();
         update_looper_periodic_ui();
+        serve_snapshot_request();
         vTaskDelay(APP_UPDATE_TICKS);
     }
 }
@@ -1899,6 +1963,11 @@ esp_err_t synth_app_start(const esp_pocket_audio_hw_t *hw)
     apply_current_glide();
     ESP_RETURN_ON_ERROR(play_ui_start(hw), TAG, "play UI start failed");
     update_ui();
+
+    s_snapshot_done = xSemaphoreCreateBinary();
+    if (s_snapshot_done == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
 
     BaseType_t task_created = xTaskCreatePinnedToCore(
         app_task,

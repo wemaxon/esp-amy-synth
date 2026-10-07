@@ -1,0 +1,5 @@
+# Hardware test build (tools/hil.py): the hardware-in-the-loop console on the
+# USB-Serial-JTAG console. Layered on sdkconfig.defaults and
+# sdkconfig.defaults.esp32p4.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_HIL_CONSOLE=y

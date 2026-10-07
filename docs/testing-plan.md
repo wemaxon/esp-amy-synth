@@ -49,8 +49,8 @@ https://github.com/espressif/esp-toolchain-docs/blob/main/qemu/README.md
    for discrete/integer behavior; documented tolerances for floating-point audio.
    Never regenerate reference outputs merely to make a failure disappear.
 5. **Automate P4 hardware and performance.** Explicit device identity/reservation,
-   flash/run/capture timeouts, calibration preservation, pytest-embedded, optional
-   audio loopback. Separate render cost, I/O wait, scheduling latency and underruns.
+   flash/run/capture timeouts, calibration preservation, the test console and
+   `tools/hil.py` (see maintenance.md), optional audio loopback. Separate render cost, I/O wait, scheduling latency and underruns.
    Export bounded counters outside the audio callback. Test simultaneous controls,
    display, microphone, effects and six-track looping under load.
 6. **Evaluate QEMU only for uncovered supported behavior.** Do not maintain custom

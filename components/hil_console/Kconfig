@@ -1,0 +1,11 @@
+menu "Hardware-in-the-loop console"
+
+    config HIL_CONSOLE
+        bool "Command console for hardware tests"
+        default n
+        depends on ESP_CONSOLE_USB_SERIAL_JTAG
+        help
+            Test builds only (sdkconfig.test, tools/hil.py). A line-based
+            command console on the USB-Serial-JTAG console with JSON replies.
+
+endmenu

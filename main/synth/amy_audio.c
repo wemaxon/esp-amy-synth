@@ -1,5 +1,6 @@
 #include "synth/amy_audio.h"
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -36,6 +37,7 @@ static const BaseType_t AUDIO_TASK_CORE = 1;
 
 static synth_amy_audio_config_t s_config;
 static TaskHandle_t s_audio_task;
+static _Atomic(synth_amy_audio_tap_t) s_tap;
 #if ESP_POCKET_AUDIO_MIC_INPUT_ENABLED
 static int16_t s_input_block[AMY_BLOCK_SIZE * AMY_NCHANS];
 #endif
@@ -63,6 +65,7 @@ static void audio_task(void *arg)
                                   AMY_NCHANS);
 #endif
         const int16_t *record_block = s_config.record_source != NULL ? s_config.record_source() : block;
+        uint64_t block_frame = synth_looper_next_block_frame();
         synth_looper_process_audio(block, record_block, AMY_BLOCK_SIZE, AMY_NCHANS);
         int64_t looper_done_us = esp_timer_get_time();
         synth_looper_record_process_time((uint32_t)(looper_done_us - amy_done_us),
@@ -76,6 +79,16 @@ static void audio_task(void *arg)
         int64_t render_done_us = esp_timer_get_time();
         if (s_config.capture_mutes_output != NULL && s_config.capture_mutes_output()) {
             memset(block, 0, AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(*block));
+        }
+        synth_amy_audio_tap_t tap = atomic_load_explicit(&s_tap, memory_order_acquire);
+        if (tap != NULL) {
+            tap(&(synth_amy_audio_tap_block_t){
+                .frame = block_frame,
+                .frames = AMY_BLOCK_SIZE,
+                .channels = AMY_NCHANS,
+                .output = block,
+                .synth_bus = record_block,
+            });
         }
         size_t bytes_written = 0;
         esp_err_t err = i2s_channel_write(
@@ -128,6 +141,11 @@ static void audio_task(void *arg)
 uint32_t synth_amy_audio_block_us(void)
 {
     return SYNTH_AUDIO_BLOCK_US;
+}
+
+void synth_amy_audio_set_tap(synth_amy_audio_tap_t tap)
+{
+    atomic_store_explicit(&s_tap, tap, memory_order_release);
 }
 
 esp_err_t synth_amy_audio_start(const synth_amy_audio_config_t *config)

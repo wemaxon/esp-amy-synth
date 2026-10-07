@@ -33,6 +33,21 @@ typedef struct {
     synth_amy_audio_output_mute_cb_t capture_mutes_output;
 } synth_amy_audio_config_t;
 
+/* One rendered block as seen by an audio tap (hardware tests). */
+typedef struct {
+    uint64_t frame;            /* looper audio-frame index of the block */
+    uint32_t frames;
+    uint8_t channels;
+    const int16_t *output;     /* interleaved, exactly what goes to the DAC */
+    const int16_t *synth_bus;  /* interleaved synth bus alone (no drums, no loops) */
+} synth_amy_audio_tap_block_t;
+
+typedef void (*synth_amy_audio_tap_t)(const synth_amy_audio_tap_block_t *block);
+
+/* Installs (or with NULL removes) a function called in the audio task after
+ * every block is final. It must not block. */
+void synth_amy_audio_set_tap(synth_amy_audio_tap_t tap);
+
 uint32_t synth_amy_audio_block_us(void);
 esp_err_t synth_amy_audio_start(const synth_amy_audio_config_t *config);
 

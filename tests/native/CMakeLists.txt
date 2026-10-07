@@ -22,7 +22,8 @@ target_include_directories(test_build_options INTERFACE
     "${REPO_ROOT}/components/pcf857x"
     "${REPO_ROOT}/components/pcf8574"
     "${REPO_ROOT}/components/pcf8575"
-    "${REPO_ROOT}/components/amy/amy/src")
+    "${REPO_ROOT}/components/amy/amy/src"
+    "${REPO_ROOT}/components/hil_console/include")
 target_compile_options(test_build_options INTERFACE -Wall -Wextra -Werror)
 target_compile_definitions(test_build_options INTERFACE BLOCK_SIZE_BITS=8)
 
@@ -103,6 +104,8 @@ native_test(looper_transport
     main/synth/looper_transport.c)
 native_test(looper_take
     main/synth/looper_take.c)
+native_test(hil_json
+    components/hil_console/hil_json.c)
 native_test(drum_transport
     main/synth/app/drum_transport.c
     main/synth/transport_timing.c)

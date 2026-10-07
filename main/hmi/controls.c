@@ -105,6 +105,14 @@ static portMUX_TYPE s_state_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_gpio_irq_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_expander_irq_mux = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_service_task;
+/* Virtual input: switch presses and a joystick position supplied in software.
+ * They take part in normal processing: virtual switches are OR'ed into the raw
+ * levels before debounce, and an active virtual joystick position replaces the
+ * measured one before direction classification. */
+static uint32_t s_virtual_switch_mask;
+static bool s_virtual_joystick_active;
+static float s_virtual_joystick_x;
+static float s_virtual_joystick_y;
 
 static size_t configured_expander_count(void)
 {
@@ -335,8 +343,16 @@ static bool mapping_is_available(const switch_mapping_t *mapping)
            mapping->pin < s_expanders[mapping->expander].pin_count;
 }
 
-static bool raw_switch_pressed(const switch_mapping_t *mapping)
+static bool raw_switch_pressed(control_switch_t sw)
 {
+    portENTER_CRITICAL(&s_state_mux);
+    bool virtual_pressed = (s_virtual_switch_mask & (1UL << sw)) != 0;
+    portEXIT_CRITICAL(&s_state_mux);
+    if (virtual_pressed) {
+        return true;
+    }
+
+    const switch_mapping_t *mapping = &SWITCH_MAP[sw];
     if (!mapping_is_available(mapping)) {
         return false;
     }
@@ -522,7 +538,7 @@ static esp_err_t update_expander_switches(TickType_t now_ticks)
 
     for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
         if (!SWITCH_MAP[i].is_gpio) {
-            debounce_switch((control_switch_t)i, raw_switch_pressed(&SWITCH_MAP[i]), now_ticks);
+            debounce_switch((control_switch_t)i, raw_switch_pressed((control_switch_t)i), now_ticks);
         }
     }
     refresh_expander_debounce_state(now_ticks);
@@ -541,7 +557,7 @@ static void update_gpio_switches(TickType_t now_ticks)
         uint32_t sw = __builtin_ctz(pending_mask);
         pending_mask &= ~(1UL << sw);
         if (sw < CONTROL_SWITCH_COUNT && SWITCH_MAP[sw].is_gpio) {
-            debounce_switch((control_switch_t)sw, raw_switch_pressed(&SWITCH_MAP[sw]), now_ticks);
+            debounce_switch((control_switch_t)sw, raw_switch_pressed((control_switch_t)sw), now_ticks);
         }
     }
 }
@@ -573,11 +589,18 @@ static esp_err_t update_joystick(void)
 
     portENTER_CRITICAL(&s_state_mux);
     control_joystick_direction_t previous = s_joystick.direction;
+    bool virtual_active = s_virtual_joystick_active;
+    float virtual_x = s_virtual_joystick_x;
+    float virtual_y = s_virtual_joystick_y;
     portEXIT_CRITICAL(&s_state_mux);
 
     next.x.raw = raw_x;
     next.y.raw = raw_y;
     joystick_calibration_normalize_xy(raw_x, raw_y, &next.x.value, &next.y.value);
+    if (virtual_active) {
+        next.x.value = virtual_x;
+        next.y.value = virtual_y;
+    }
     next.direction = controls_joystick_direction_update(previous, next.x.value, next.y.value);
 #else
     next.direction = CONTROL_JOYSTICK_CENTER;
@@ -776,6 +799,40 @@ static esp_err_t start_service_task(void)
     return task_created == pdPASS ? ESP_OK : ESP_FAIL;
 }
 
+void controls_set_virtual_switch(control_switch_t sw, bool pressed)
+{
+    if (sw >= CONTROL_SWITCH_COUNT) {
+        return;
+    }
+    portENTER_CRITICAL(&s_state_mux);
+    if (pressed) {
+        s_virtual_switch_mask |= 1UL << sw;
+    } else {
+        s_virtual_switch_mask &= ~(1UL << sw);
+    }
+    portEXIT_CRITICAL(&s_state_mux);
+
+    /* Have the next service cycle sample this switch. */
+    if (SWITCH_MAP[sw].is_gpio) {
+        portENTER_CRITICAL(&s_gpio_irq_mux);
+        s_gpio_irq_pending_mask |= 1UL << sw;
+        portEXIT_CRITICAL(&s_gpio_irq_mux);
+    } else {
+        portENTER_CRITICAL(&s_expander_irq_mux);
+        s_expander_irq_pending = true;
+        portEXIT_CRITICAL(&s_expander_irq_mux);
+    }
+}
+
+void controls_set_virtual_joystick(bool active, float x, float y)
+{
+    portENTER_CRITICAL(&s_state_mux);
+    s_virtual_joystick_active = active;
+    s_virtual_joystick_x = x;
+    s_virtual_joystick_y = y;
+    portEXIT_CRITICAL(&s_state_mux);
+}
+
 esp_err_t controls_init(i2c_master_bus_handle_t bus)
 {
     if (s_initialized) {
@@ -814,7 +871,7 @@ esp_err_t controls_init(i2c_master_bus_handle_t bus)
 
     TickType_t now = xTaskGetTickCount();
     for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
-        bool pressed = SWITCH_MAP[i].is_gpio ? raw_switch_pressed(&SWITCH_MAP[i]) : false;
+        bool pressed = SWITCH_MAP[i].is_gpio ? raw_switch_pressed((control_switch_t)i) : false;
         s_switches[i].stable_pressed = pressed;
         s_switches[i].sampled_pressed = pressed;
         s_switches[i].changed_at = now;
@@ -826,7 +883,7 @@ esp_err_t controls_init(i2c_master_bus_handle_t bus)
     ESP_RETURN_ON_ERROR(controls_update(), TAG, "initial controls update failed");
     now = xTaskGetTickCount();
     for (size_t i = 0; i < CONTROL_SWITCH_COUNT; ++i) {
-        bool pressed = raw_switch_pressed(&SWITCH_MAP[i]);
+        bool pressed = raw_switch_pressed((control_switch_t)i);
         s_switches[i].stable_pressed = pressed;
         s_switches[i].sampled_pressed = pressed;
         s_switches[i].changed_at = now;

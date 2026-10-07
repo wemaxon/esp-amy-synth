@@ -297,9 +297,11 @@ def check_looper_realtime_boundary() -> None:
 def check_obsolete_test_removed() -> None:
     require(not (ROOT / "pytest_hello_world.py").exists(),
             "obsolete hello-world pytest returned")
-    smoke = source("pytest_firmware.py")
-    require("esp-pocket-audio synth app starting" in smoke,
-            "firmware smoke test no longer checks the real entrypoint")
+    require(not (ROOT / "pytest_firmware.py").exists(),
+            "device tests live in tests/hil (tools/hil.py), not pytest-embedded")
+    hil = source("tests/hil/test_controls.py")
+    require("test_boots_into_play" in hil,
+            "hardware tests no longer check that the firmware boots into the app")
 
 
 def main() -> None:

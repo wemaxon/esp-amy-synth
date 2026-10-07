@@ -53,9 +53,42 @@ On an existing patched checkout, use `python3 tools/amy_patches.py --check`.
 Neither command resets local changes. Native CI applies this same patch and runs
 Debug/Release CTest suites with JUnit artifacts. Missing dependencies fail the build.
 
-Device boot checks live in `pytest_firmware.py` and require connected hardware.
 Compare build warnings, binary size, RAM use, and relevant device measurements
 before and after behavior-sensitive changes.
+
+### Hardware-in-the-loop tests
+
+`python tools/hil.py` (from an ESP-IDF shell, serial port free) builds the test
+firmware in `build/p4-test` from `sdkconfig.test`, flashes it and runs
+`tests/hil` against the board; `--no-flash` reuses the flashed firmware and
+names select tests (`python tools/hil.py test_chords`). Captured audio is saved
+as WAV in `build/hil`. Normal builds do not contain the console.
+
+The firmware offers neutral ports; test code only uses them:
+
+- virtual input (`controls_set_virtual_switch`, `controls_set_virtual_joystick`):
+  virtual switches enter before debounce, the virtual joystick before the
+  direction classifier, so input handling is exercised too;
+- `synth_app_snapshot`: a typed copy of the app state, taken on the app task;
+- `synth_looper_get_clock` / `synth_looper_get_snapshot`;
+- the audio tap (`synth_amy_audio_set_tap`), installed only while capturing.
+
+`components/hil_console` is generic and knows nothing about the synth: a line
+console on the USB-Serial-JTAG console (ESP-IDF `esp_console` registry), a small
+JSON writer with escaping (`hil_json.h`, native-tested), reply helpers and the
+built-in `ping` and `reboot`. Every command sends exactly one reply line, `@`
+plus JSON, so logs can interleave; bulk data precedes it as `@=` base64 lines.
+Its own option `CONFIG_HIL_CONSOLE` (set by `sdkconfig.test`) gates its sources.
+
+`main/hil/` holds this firmware's commands, compiled only with that option:
+`press`/`release <1-7|J|K|M|S>`, `joy <x> <y>|off`, `state` and
+`capture <output|synth> <ms>` (mono audio plus the looper frame of its first
+sample, so audio can be compared with the beat and loop grid). A new command is
+one handler in `main/hil/` and one line in its table in `hil_app.c`. Normal
+builds contain none of it; the unused ports are dropped by the linker.
+
+Tests use only the standard library and pyserial (`tests/hil/device.py` client,
+`analysis.py` checks, `base.py` navigation). A new bug gets a scenario here.
 
 ## VS Code devcontainer
 

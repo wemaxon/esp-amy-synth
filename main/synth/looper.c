@@ -1237,6 +1237,7 @@ bool synth_looper_get_clock(synth_looper_clock_t *clock)
         .frame = view.global_frame,
         .has_loop = view.master_length_frames > 0,
         .loop_anchor_frame = view.master_anchor_frame,
+        .loop_length_frames = view.master_length_frames,
     };
     return true;
 }

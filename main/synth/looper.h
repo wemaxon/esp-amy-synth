@@ -109,6 +109,7 @@ typedef struct {
     uint64_t frame;
     bool has_loop;
     uint64_t loop_anchor_frame;
+    uint32_t loop_length_frames;
 } synth_looper_clock_t;
 
 bool synth_looper_get_clock(synth_looper_clock_t *clock);
